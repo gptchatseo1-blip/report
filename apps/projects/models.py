@@ -86,6 +86,15 @@ class ProjectBrandRule(TimestampedModel):
         if self.kind == self.Kind.REGEX:
             validate_safe_regex(self.pattern)
 
+        if self.project_id and self.pattern:
+            rules = type(self).objects.filter(project_id=self.project_id, kind=self.kind)
+            if self.pk:
+                rules = rules.exclude(pk=self.pk)
+            if any(rule.pattern.casefold() == self.pattern.casefold() for rule in rules.only("pattern")):
+                raise ValidationError(
+                    {"pattern": "Такое брендовое правило уже существует в этом проекте."}
+                )
+
     def matches(self, query: str) -> bool:
         if not self.active:
             return False
