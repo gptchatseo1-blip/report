@@ -1,0 +1,25 @@
+{% extends "imports/base.html" %}
+{% block title %}Категории работ{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>Добавить категорию</h1>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button class="button" type="submit">Сохранить</button>
+    </form>
+</div>
+<div class="card">
+    <h2>Категории</h2>
+    <table>
+        <thead><tr><th>Проект</th><th>Категория</th><th>Порядок</th><th>Активна</th></tr></thead>
+        <tbody>
+        {% for category in categories %}
+            <tr><td>{{ category.project }}</td><td>{{ category.name }}</td><td>{{ category.sort_order }}</td><td>{{ category.active|yesno:"Да,Нет" }}</td></tr>
+        {% empty %}
+            <tr><td colspan="4">Категорий пока нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

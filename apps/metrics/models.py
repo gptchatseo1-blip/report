@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 from apps.imports.models import ImportBatch
@@ -69,3 +70,74 @@ class KeywordPosition(models.Model):
 
     def __str__(self):
         return f"{self.query}: {self.position_raw or self.get_position_status_display()}"
+
+
+class SourceSnapshot(models.Model):
+    class Source(models.TextChoices):
+        METRIKA = "yandex_metrika", "Яндекс Метрика"
+        WEBMASTER = "yandex_webmaster", "Яндекс Вебмастер"
+
+    class RetrievalMethod(models.TextChoices):
+        SYNTHETIC = "synthetic", "Синтетические данные"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="source_snapshots")
+    source = models.CharField(max_length=32, choices=Source.choices)
+    retrieval_method = models.CharField(
+        max_length=16, choices=RetrievalMethod.choices, default=RetrievalMethod.SYNTHETIC
+    )
+    period_start = models.DateField()
+    period_end = models.DateField()
+    payload = models.JSONField(default=dict)
+    checksum = models.CharField(max_length=64)
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generated_source_snapshots",
+    )
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-period_start", "source"]
+        verbose_name = "Снимок источника"
+        verbose_name_plural = "Снимки источников"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "source", "period_start", "period_end"],
+                name="unique_project_source_period",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.project} — {self.get_source_display()} — {self.period_start:%m.%Y}"
+
+
+class MetricPoint(models.Model):
+    class Unit(models.TextChoices):
+        COUNT = "count", "Количество"
+        PERCENT = "percent", "Процент"
+        SECONDS = "seconds", "Секунды"
+        NUMBER = "number", "Число"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    snapshot = models.ForeignKey(SourceSnapshot, on_delete=models.CASCADE, related_name="metrics")
+    metric_code = models.CharField(max_length=80)
+    numeric_value = models.DecimalField(max_digits=18, decimal_places=4)
+    unit = models.CharField(max_length=16, choices=Unit.choices)
+    dimensions = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["snapshot", "metric_code"]
+        verbose_name = "Показатель"
+        verbose_name_plural = "Показатели"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["snapshot", "metric_code"], name="unique_snapshot_metric_code"
+            )
+        ]
+        indexes = [models.Index(fields=["metric_code"], name="metric_code_idx")]
+
+    def __str__(self):
+        return f"{self.metric_code}: {self.numeric_value}"

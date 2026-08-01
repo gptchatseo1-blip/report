@@ -15,6 +15,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", health, name="health"),
     path("imports/", include("apps.imports.urls")),
+    path("metrics/", include("apps.metrics.urls")),
+    path("worklog/", include("apps.worklog.urls")),
 ]
 
 if settings.DEBUG:
