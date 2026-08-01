@@ -1,0 +1,30 @@
+{% extends "imports/base.html" %}
+{% block title %}Синтетические источники{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>Синтетические Метрика и Вебмастер</h1>
+    <p>Будут созданы стабильные обезличенные снимки за отчётный месяц и два предыдущих месяца.</p>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button class="button" type="submit">Подготовить данные</button>
+    </form>
+</div>
+<div class="card">
+    <h2>Последние снимки</h2>
+    <table>
+        <thead><tr><th>Проект</th><th>Источник</th><th>Период</th><th>Метод</th><th>Показателей</th></tr></thead>
+        <tbody>
+        {% for snapshot in snapshots %}
+            <tr>
+                <td>{{ snapshot.project }}</td><td>{{ snapshot.get_source_display }}</td>
+                <td>{{ snapshot.period_start }} — {{ snapshot.period_end }}</td>
+                <td>{{ snapshot.get_retrieval_method_display }}</td><td>{{ snapshot.metrics.count }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5">Снимков пока нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

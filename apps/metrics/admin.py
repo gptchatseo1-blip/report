@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import KeywordPosition, RankingSnapshot
+from .models import KeywordPosition, MetricPoint, RankingSnapshot, SourceSnapshot
 
 
 @admin.register(RankingSnapshot)
@@ -60,4 +60,35 @@ class KeywordPositionAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SourceSnapshot)
+class SourceSnapshotAdmin(admin.ModelAdmin):
+    list_display = ["project", "source", "period_start", "period_end", "retrieval_method"]
+    list_filter = ["source", "retrieval_method"]
+    readonly_fields = [
+        "project",
+        "source",
+        "retrieval_method",
+        "period_start",
+        "period_end",
+        "payload",
+        "checksum",
+        "generated_by",
+        "generated_at",
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(MetricPoint)
+class MetricPointAdmin(admin.ModelAdmin):
+    list_display = ["metric_code", "numeric_value", "unit", "snapshot"]
+    list_filter = ["unit", "snapshot__source"]
+    search_fields = ["metric_code", "snapshot__project__name"]
+    readonly_fields = ["snapshot", "metric_code", "numeric_value", "unit", "dimensions"]
+
+    def has_add_permission(self, request):
         return False

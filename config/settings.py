@@ -16,6 +16,7 @@ INSTALLED_APPS = [
     "apps.projects",
     "apps.imports",
     "apps.metrics",
+    "apps.worklog",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

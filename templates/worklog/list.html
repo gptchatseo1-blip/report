@@ -1,0 +1,20 @@
+{% extends "imports/base.html" %}
+{% block title %}Выполненные работы{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>Выполненные работы</h1>
+    <p><a class="button" href="{% url 'worklog:create' %}">Добавить работу</a> <a href="{% url 'worklog:category_create' %}">Категории</a></p>
+</div>
+<div class="card">
+    <table>
+        <thead><tr><th>Дата</th><th>Проект</th><th>Категория</th><th>Работа</th><th>Статус</th><th>Ответственный</th></tr></thead>
+        <tbody>
+        {% for item in items %}
+            <tr><td>{{ item.work_date }}</td><td>{{ item.project }}</td><td>{{ item.category.name }}</td><td>{{ item.title }}</td><td>{{ item.get_status_display }}</td><td>{{ item.responsible|default:"—" }}</td></tr>
+        {% empty %}
+            <tr><td colspan="6">Работ пока нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
