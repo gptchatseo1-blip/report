@@ -1,0 +1,15 @@
+{% extends "imports/base.html" %}
+{% block title %}Загрузка позиций{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>Загрузка позиций Topvisor</h1>
+    <p>Обязательные столбцы: <strong>Запрос</strong>, <strong>Позиция</strong> и <strong>Частотность</strong>. Дополнительно можно передать Группу и URL.</p>
+    <p>Поддерживаются CSV в UTF-8/CP1251 и XLSX, не более 3000 строк.</p>
+    <p><a href="{% url 'imports:template' %}">Скачать пустой CSV-шаблон</a></p>
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button class="button" type="submit">Проверить файл</button>
+    </form>
+</div>
+{% endblock %}

@@ -6,5 +6,6 @@ __pycache__
 *.pyc
 .pytest_cache
 .ruff_cache
+media
 reference_reports.zip
 *.docx

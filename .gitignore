@@ -8,4 +8,5 @@ __pycache__/
 htmlcov/
 *.sqlite3
 staticfiles/
+media/
 .DS_Store

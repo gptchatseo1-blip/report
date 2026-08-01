@@ -1,0 +1,24 @@
+{% extends "imports/base.html" %}
+{% block title %}История импортов{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>История импортов</h1>
+    <p><a class="button" href="{% url 'imports:upload' %}">Загрузить CSV/XLSX</a></p>
+    <table>
+        <thead><tr><th>Файл</th><th>Проект</th><th>Параметры</th><th>Строки</th><th>Статус</th></tr></thead>
+        <tbody>
+        {% for batch in batches %}
+            <tr>
+                <td><a href="{% url 'imports:detail' batch.id %}">{{ batch.original_filename }}</a></td>
+                <td>{{ batch.project }}</td>
+                <td>{{ batch.snapshot_date }} · {{ batch.get_search_engine_display }} · {{ batch.region }}</td>
+                <td>{{ batch.valid_rows }} корректных / {{ batch.error_rows }} с ошибками</td>
+                <td>{{ batch.get_status_display }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="5">Импортов пока нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
