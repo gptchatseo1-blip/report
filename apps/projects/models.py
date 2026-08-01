@@ -91,8 +91,7 @@ class ProjectBrandRule(TimestampedModel):
             if self.pk:
                 rules = rules.exclude(pk=self.pk)
             duplicate_exists = any(
-                rule.pattern.casefold() == self.pattern.casefold()
-                for rule in rules.only("pattern")
+                rule.pattern.casefold() == self.pattern.casefold() for rule in rules.only("pattern")
             )
             if duplicate_exists:
                 raise ValidationError(
