@@ -14,7 +14,6 @@ from openpyxl import load_workbook
 
 from apps.metrics.models import KeywordPosition
 
-MAX_ROWS = 3000
 MAX_HEADER_SCAN_ROWS = 20
 MAX_XLSX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 
@@ -181,9 +180,6 @@ def _parse_rows(rows, snapshot_date=None) -> ImportPreview:
         if not any(_string_value(value) for value in row):
             continue
         total_rows += 1
-        if total_rows > MAX_ROWS:
-            raise ImportFileError(f"В файле больше {MAX_ROWS} непустых строк.")
-
         raw_values = _raw_values(headers, row)
         parsed, row_errors = _parse_data_row(row_number, row, column_map, raw_values)
         if row_errors:

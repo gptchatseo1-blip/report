@@ -7,7 +7,7 @@ from django.urls import reverse
 from openpyxl import Workbook
 
 from apps.imports.models import ImportBatch
-from apps.imports.parser import ImportFileError, parse_position_file
+from apps.imports.parser import parse_position_file
 from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.projects.models import Project
 
@@ -151,11 +151,14 @@ def test_xlsx_preview_is_supported(staff_client, project):
     assert batch.preview_payload[0]["frequency"] == 45
 
 
-def test_more_than_3000_rows_is_rejected():
+def test_more_than_3000_rows_is_supported():
     rows = ["Запрос;Позиция;Частотность"]
     rows.extend(f"Запрос {index};1;10" for index in range(3001))
-    with pytest.raises(ImportFileError, match="больше 3000"):
-        parse_position_file("positions.csv", "\n".join(rows).encode("utf-8"))
+    preview = parse_position_file("positions.csv", "\n".join(rows).encode("utf-8"))
+
+    assert preview.total_rows == 3001
+    assert len(preview.valid_rows) == 3001
+    assert preview.errors == []
 
 
 def test_import_pages_require_staff_authentication(client):

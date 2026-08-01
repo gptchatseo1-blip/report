@@ -65,7 +65,8 @@ def create_import_preview(*, project, uploaded_file, snapshot_date, search_engin
                         raw_values=error.raw_values,
                     )
                     for error in preview.errors
-                ]
+                ],
+                batch_size=1000,
             )
     except IntegrityError:
         return ImportBatch.objects.get(**lookup), False
@@ -93,7 +94,8 @@ def confirm_import(batch_id):
         tracked_keyword_count=batch.valid_rows,
     )
     KeywordPosition.objects.bulk_create(
-        [KeywordPosition(ranking_snapshot=snapshot, **row) for row in batch.preview_payload]
+        [KeywordPosition(ranking_snapshot=snapshot, **row) for row in batch.preview_payload],
+        batch_size=1000,
     )
     batch.status = ImportBatch.Status.IMPORTED
     batch.confirmed_at = timezone.now()
