@@ -90,7 +90,11 @@ class ProjectBrandRule(TimestampedModel):
             rules = type(self).objects.filter(project_id=self.project_id, kind=self.kind)
             if self.pk:
                 rules = rules.exclude(pk=self.pk)
-            if any(rule.pattern.casefold() == self.pattern.casefold() for rule in rules.only("pattern")):
+            duplicate_exists = any(
+                rule.pattern.casefold() == self.pattern.casefold()
+                for rule in rules.only("pattern")
+            )
+            if duplicate_exists:
                 raise ValidationError(
                     {"pattern": "Такое брендовое правило уже существует в этом проекте."}
                 )
