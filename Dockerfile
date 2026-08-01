@@ -12,7 +12,9 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir ".[dev]"
 COPY . .
 
-RUN useradd --create-home --uid 10001 app && chown -R app:app /app
+RUN mkdir -p /app/media \
+    && useradd --create-home --uid 10001 app \
+    && chown -R app:app /app
 USER app
 
 EXPOSE 8000

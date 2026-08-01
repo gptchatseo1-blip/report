@@ -1,0 +1,52 @@
+{% extends "imports/base.html" %}
+{% block title %}Предпросмотр импорта{% endblock %}
+{% block content %}
+<div class="card">
+    <h1>{{ batch.original_filename }}</h1>
+    <p><strong>Проект:</strong> {{ batch.project }}</p>
+    <p><strong>Срез:</strong> {{ batch.snapshot_date }} · {{ batch.get_search_engine_display }} · {{ batch.region }}</p>
+    <p><strong>SHA-256:</strong> <code>{{ batch.file_checksum }}</code></p>
+    <p><strong>Результат:</strong> {{ batch.valid_rows }} корректных строк, {{ batch.error_rows }} строк с ошибками.</p>
+    <p><strong>Статус:</strong> {{ batch.get_status_display }}</p>
+    {% if batch.status == "preview" and not batch.error_rows and batch.valid_rows %}
+        <form method="post" action="{% url 'imports:confirm' batch.id %}">
+            {% csrf_token %}
+            <button class="button" type="submit">Подтвердить импорт</button>
+        </form>
+    {% elif batch.error_rows %}
+        <p class="error">Исправьте ошибки в исходном файле и загрузите его повторно.</p>
+    {% endif %}
+</div>
+
+{% if errors %}
+<div class="card">
+    <h2>Ошибки</h2>
+    <table>
+        <thead><tr><th>Строка</th><th>Код</th><th>Описание</th><th>Исходные значения</th></tr></thead>
+        <tbody>
+        {% for error in errors %}
+            <tr><td>{{ error.row_number }}</td><td>{{ error.code }}</td><td>{{ error.message }}</td><td><code>{{ error.raw_values }}</code></td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if preview_rows %}
+<div class="card">
+    <h2>Предпросмотр корректных строк</h2>
+    <table>
+        <thead><tr><th>Запрос</th><th>Частотность</th><th>Позиция</th><th>Статус</th><th>Группа</th><th>URL</th></tr></thead>
+        <tbody>
+        {% for row in preview_rows %}
+            <tr>
+                <td>{{ row.query }}</td><td>{{ row.frequency }}</td>
+                <td>{{ row.position_raw|default:"—" }}</td><td>{{ row.position_status }}</td>
+                <td>{{ row.group_name|default:"—" }}</td><td><code>{{ row.target_url|default:"—" }}</code></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

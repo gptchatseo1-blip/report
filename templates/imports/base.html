@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Импорт позиций{% endblock %}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f5f6f8; color: #202124; }
+        header { background: #1f2937; color: white; padding: 14px 24px; }
+        header a { color: white; margin-right: 18px; }
+        main { max-width: 1180px; margin: 24px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { border-bottom: 1px solid #ddd; padding: 9px; text-align: left; vertical-align: top; }
+        th { background: #f0f2f5; }
+        .button { display: inline-block; background: #1769aa; color: white; border: 0; border-radius: 5px;
+            padding: 10px 16px; text-decoration: none; cursor: pointer; }
+        .button-secondary { background: #59636e; }
+        .error { color: #a40000; }
+        .success { color: #087f23; }
+        .warning { color: #8a5500; }
+        .messages { padding: 0; list-style: none; }
+        .messages li { background: white; border-left: 4px solid #1769aa; padding: 12px; margin-bottom: 8px; }
+        form p { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; }
+        input, select { padding: 8px; max-width: 520px; }
+        code { overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+<header>
+    <a href="{% url 'imports:list' %}">Импорты</a>
+    <a href="{% url 'imports:upload' %}">Загрузить позиции</a>
+    <a href="{% url 'admin:index' %}">Администрирование</a>
+</header>
+<main>
+    {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}<li class="{{ message.tags }}">{{ message }}</li>{% endfor %}
+        </ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>
