@@ -1,7 +1,30 @@
 from django.contrib import admin
 from django.utils import timezone
 
-from .models import NarrativeBlock, Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
+from .models import (
+    GeneratedArtifact,
+    NarrativeBlock,
+    Report,
+    ReportDatasetSnapshot,
+    ReportVersion,
+    ValidationIssue,
+)
+
+
+@admin.register(GeneratedArtifact)
+class GeneratedArtifactAdmin(admin.ModelAdmin):
+    list_display = ["filename", "artifact_type", "status", "report_version", "size", "created_at"]
+    list_filter = ["artifact_type", "status", "is_draft"]
+    readonly_fields = [field.name for field in GeneratedArtifact._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return request.method in ("GET", "HEAD", "OPTIONS")
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Report)

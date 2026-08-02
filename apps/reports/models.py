@@ -184,3 +184,49 @@ class ValidationIssue(models.Model):
 
     def __str__(self):
         return f"{self.code}: {self.version}"
+
+
+def artifact_upload_to(instance, filename):
+    """Keep storage names derived exclusively from trusted UUIDs."""
+    return (
+        f"reports/{instance.report_version.report.project_id}/"
+        f"{instance.report_version_id}/{filename}"
+    )
+
+
+class GeneratedArtifact(models.Model):
+    class Type(models.TextChoices):
+        DOCX = "docx", "DOCX"
+        PDF = "pdf", "PDF"
+        XLSX = "xlsx", "XLSX"
+
+    class Status(models.TextChoices):
+        GENERATING = "generating", "Формируется"
+        READY = "ready", "Готов"
+        FAILED = "failed", "Ошибка"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    report_version = models.ForeignKey(
+        ReportVersion, on_delete=models.CASCADE, related_name="generated_artifacts"
+    )
+    artifact_type = models.CharField(max_length=8, choices=Type.choices)
+    profile = models.CharField(max_length=16, default="full", editable=False)
+    is_draft = models.BooleanField(default=False)
+    file = models.FileField(upload_to=artifact_upload_to, blank=True, max_length=255)
+    filename = models.CharField(max_length=255, blank=True)
+    mime_type = models.CharField(max_length=100, blank=True)
+    size = models.PositiveBigIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True)
+    generator_version = models.CharField(max_length=32, default="mvp1.0")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.GENERATING)
+    generation_log = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.filename or f"{self.artifact_type}: {self.report_version}"
