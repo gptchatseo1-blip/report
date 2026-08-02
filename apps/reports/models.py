@@ -97,6 +97,72 @@ class ReportDatasetSnapshot(models.Model):
         return f"{self.version} — {self.checksum[:12]}"
 
 
+class NarrativeBlock(models.Model):
+    class Kind(models.TextChoices):
+        DETERMINISTIC = "deterministic", "Детерминированный"
+        MANUAL = "manual", "Ручной"
+
+    class Status(models.TextChoices):
+        GENERATED = "generated", "Сформирован"
+        EDITED = "edited", "Отредактирован"
+        CONFIRMED = "confirmed", "Подтверждён"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    report_version = models.ForeignKey(
+        ReportVersion, on_delete=models.CASCADE, related_name="narrative_blocks"
+    )
+    section_code = models.CharField(max_length=80)
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.DETERMINISTIC)
+    generated_text = models.TextField(blank=True)
+    edited_text = models.TextField(blank=True)
+    facts = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.GENERATED)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["report_version", "section_code", "sort_order"],
+                name="unique_narrative_block_order",
+            )
+        ]
+
+    IMMUTABLE_FIELDS = (
+        "report_version_id",
+        "section_code",
+        "kind",
+        "generated_text",
+        "facts",
+        "sort_order",
+    )
+
+    @property
+    def effective_text(self):
+        return self.edited_text if self.edited_text.strip() else self.generated_text
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            original = type(self).objects.get(pk=self.pk)
+            changed = {
+                field: "Сгенерированные данные narrative нельзя изменять после создания."
+                for field in self.IMMUTABLE_FIELDS
+                if getattr(original, field) != getattr(self, field)
+            }
+            if changed:
+                raise ValidationError(changed)
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.report_version}: {self.section_code} ({self.sort_order})"
+
+
 class ValidationIssue(models.Model):
     class Severity(models.TextChoices):
         WARNING = "warning", "Предупреждение"
@@ -107,6 +173,7 @@ class ValidationIssue(models.Model):
         ReportVersion, on_delete=models.CASCADE, related_name="validation_issues"
     )
     code = models.CharField(max_length=80)
+    section_code = models.CharField(max_length=80, blank=True)
     severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
     message = models.TextField(blank=True)
     details = models.JSONField(default=dict, blank=True)

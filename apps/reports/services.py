@@ -103,6 +103,11 @@ def build_position_facts(*, project, report_month):
                 "search_engine": engine,
                 "region": region,
                 "distribution": distribution,
+                "visibility_change": calculate_change(
+                    report_snapshot.visibility if report_snapshot else None,
+                    previous_snapshot.visibility if previous_snapshot else None,
+                    kind=ChangeKind.PERCENTAGE_POINTS,
+                ),
                 "ranking_depth": report_snapshot.ranking_depth if report_snapshot else None,
                 "depth_comment": depth_comment(report_snapshot.ranking_depth)
                 if engine == "google" and report_snapshot
@@ -434,18 +439,21 @@ def create_report_version(*, report, created_by=None):
         payload=payload,
         checksum=snapshot_checksum(payload),
     )
-    issues = []
-    for segment in payload["calculated"]["positions"]["segments"]:
-        for warning in segment["warnings"]:
-            issues.append(
-                ValidationIssue(
-                    version=version,
-                    code=warning["code"],
-                    details=warning,
-                    message="Глубина проверки позиций изменилась относительно предыдущего месяца.",
-                )
-            )
+    issues = [
+        ValidationIssue(
+            version=version,
+            code=warning["code"],
+            section_code="position_dynamics",
+            details=warning,
+            message="Глубина проверки позиций изменилась относительно предыдущего месяца.",
+        )
+        for segment in payload["calculated"]["positions"]["segments"]
+        for warning in segment["warnings"]
+    ]
     ValidationIssue.objects.bulk_create(issues)
+    from .narratives import generate_narratives
+
+    generate_narratives(version)
     return version
 
 

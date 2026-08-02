@@ -140,3 +140,26 @@ Topvisor и конкретными конфигурациями поисково
 Docker-образ содержит LibreOffice Writer в headless-режиме и метрически совместимый
 с Calibri шрифт Carlito, включая кириллицу. Клиентский `reference_reports.zip` и все
 DOCX исключены из build context через `.dockerignore`.
+
+## Детерминированные выводы и контроль качества
+
+Для каждой зафиксированной версии сервис создаёт русскоязычные `NarrativeBlock` только из
+`ReportDatasetSnapshot.payload`. Исходный `generated_text` и связанные `facts` сохраняются;
+пользователь редактирует только `edited_text` и статус подтверждения, а свойство `effective_text`
+выбирает редакцию при её наличии. После создания версия, раздел, тип, порядок, `generated_text`
+и `facts` блока неизменяемы. Генератор не обращается к Topvisor, импортам или другим исходным таблицам и не
+использует LLM.
+
+```python
+from apps.reports.narratives import generate_narratives
+from apps.reports.validation import get_publication_readiness, validate_report_version
+
+blocks = generate_narratives(version)
+issues = validate_report_version(version)
+readiness = get_publication_readiness(version)
+```
+
+Валидатор повторяем: при запуске он заменяет предыдущий набор автоматических проблем версии.
+Ошибки блокируют публикацию и финальный экспорт; предупреждения не препятствуют черновому
+экспорту. Проверка публикационной готовности всегда запускает актуальную валидацию, поэтому
+непроверенная или изменённая редакция текста не может автоматически считаться готовой. Сам экспорт в MVP-1 пока не реализован. Snapshot после фиксации остаётся неизменяемым.

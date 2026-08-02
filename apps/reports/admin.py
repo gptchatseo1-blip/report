@@ -1,6 +1,7 @@
 from django.contrib import admin
+from django.utils import timezone
 
-from .models import Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
+from .models import NarrativeBlock, Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
 
 
 @admin.register(Report)
@@ -52,11 +53,68 @@ class ReportDatasetSnapshotAdmin(admin.ModelAdmin):
         return False
 
 
+@admin.register(NarrativeBlock)
+class NarrativeBlockAdmin(admin.ModelAdmin):
+    list_display = ["report_version", "section_code", "kind", "status", "sort_order", "updated_at"]
+    list_filter = ["kind", "status", "section_code"]
+    search_fields = ["report_version__report__project__name", "generated_text", "edited_text"]
+    readonly_fields = [
+        "report_version",
+        "section_code",
+        "kind",
+        "generated_text",
+        "facts",
+        "sort_order",
+        "confirmed_by",
+        "confirmed_at",
+        "created_at",
+        "updated_at",
+    ]
+    fields = [
+        "report_version",
+        "section_code",
+        "kind",
+        "generated_text",
+        "edited_text",
+        "facts",
+        "status",
+        "confirmed_by",
+        "confirmed_at",
+        "sort_order",
+        "created_at",
+        "updated_at",
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        if obj.status == NarrativeBlock.Status.CONFIRMED:
+            if obj.confirmed_at is None:
+                obj.confirmed_by = request.user
+                obj.confirmed_at = timezone.now()
+        else:
+            obj.confirmed_by = None
+            obj.confirmed_at = None
+        super().save_model(request, obj, form, change)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(ValidationIssue)
 class ValidationIssueAdmin(admin.ModelAdmin):
-    list_display = ["code", "severity", "version", "created_at"]
+    list_display = ["code", "severity", "section_code", "version", "created_at"]
     list_filter = ["severity", "code"]
-    readonly_fields = ["version", "code", "severity", "message", "details", "created_at"]
+    readonly_fields = [
+        "version",
+        "code",
+        "severity",
+        "section_code",
+        "message",
+        "details",
+        "created_at",
+    ]
 
     def has_add_permission(self, request):
         return False
