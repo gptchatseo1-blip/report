@@ -35,6 +35,7 @@ def import_upload(request):
                 snapshot_date=form.cleaned_data["snapshot_date"],
                 search_engine=form.cleaned_data["search_engine"],
                 region=form.cleaned_data["region"],
+                ranking_depth=form.cleaned_data["ranking_depth"],
                 user=request.user,
             )
         except ImportFileError as exc:
