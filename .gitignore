@@ -10,3 +10,5 @@ htmlcov/
 staticfiles/
 media/
 .DS_Store
+
+*.egg-info/
