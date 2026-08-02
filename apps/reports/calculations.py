@@ -5,7 +5,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
-FORMULA_VERSION = "mvp1.1"
+FORMULA_VERSION = "mvp1.2-depth-aware"
 SEMANTICS_CHANGE_WARNING_THRESHOLD = Decimal("20")
 POSITION_RANGES = ((1, 3), (4, 10), (11, 20), (21, 30), (31, 50), (51, 100))
 ZERO = Decimal("0")
@@ -107,19 +107,50 @@ class PositionDistribution:
     top_30: int
 
 
-def calculate_position_distribution(items: Iterable[PositionItem]) -> PositionDistribution:
+def calculate_position_distribution(
+    items: Iterable[PositionItem], *, ranking_depth: int = 100
+) -> PositionDistribution:
     items = tuple(items)
     ranges = {
         f"{lower}-{upper}": sum(
             1 for item in items if item.position is not None and lower <= item.position <= upper
         )
         for lower, upper in POSITION_RANGES
+        if upper <= ranking_depth
     }
     return PositionDistribution(
         len(items),
         ranges,
-        ranges["1-3"] + ranges["4-10"],
-        sum(ranges[key] for key in ("1-3", "4-10", "11-20", "21-30")),
+        ranges.get("1-3", 0) + ranges.get("4-10", 0),
+        sum(ranges.get(key, 0) for key in ("1-3", "4-10", "11-20", "21-30")),
+    )
+
+
+def normalize_ranking_depth(raw) -> int:
+    """Normalize a Topvisor depth value without inventing unverified ranges."""
+    import re
+
+    match = re.search(r"\d+", str(raw))
+    if not match or int(match.group()) < 10:
+        raise ValueError("Unsupported ranking depth")
+    return int(match.group())
+
+
+def depth_comment(depth: int) -> str:
+    return (
+        f"Проверка позиций в Google выполнена до ТОП-{depth}. Для запросов, по которым сайт "
+        "не найден в пределах этой глубины, точная позиция не определена"
+    )
+
+
+def top_11_20_rows(items: Iterable[PositionItem], *, depth: int, mode: str = "auto"):
+    if mode == "disabled" or depth < 20:
+        return ()
+    return tuple(
+        sorted(
+            (item for item in items if item.position is not None and 11 <= item.position <= 20),
+            key=lambda item: (item.position, item.query.casefold()),
+        )
     )
 
 
