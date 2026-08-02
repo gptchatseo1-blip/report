@@ -45,6 +45,7 @@ def upload_positions(client, project, source_file):
             "snapshot_date": "2026-07-31",
             "search_engine": "yandex",
             "region": "Москва",
+            "ranking_depth": "20",
             "source_file": source_file,
         },
     )
@@ -73,6 +74,7 @@ def test_csv_preview_and_confirmation_create_normalized_positions(staff_client, 
 
     snapshot = RankingSnapshot.objects.get(import_batch=batch)
     assert snapshot.tracked_keyword_count == 2
+    assert snapshot.ranking_depth == 20
     ranked = KeywordPosition.objects.get(normalized_query="купить камень")
     assert ranked.frequency == 120
     assert ranked.position_value == 3
