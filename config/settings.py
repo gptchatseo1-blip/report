@@ -17,6 +17,7 @@ INSTALLED_APPS = [
     "apps.imports",
     "apps.metrics",
     "apps.worklog",
+    "apps.topvisor",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -83,3 +84,8 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 LOGIN_URL = "/admin/login/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+TOPVISOR_USER_ID = os.getenv("TOPVISOR_USER_ID", "")
+TOPVISOR_API_KEY = os.getenv("TOPVISOR_API_KEY", "")
+TOPVISOR_API_BASE_URL = os.getenv("TOPVISOR_API_BASE_URL", "https://api.topvisor.com/v2/json")
+TOPVISOR_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TOPVISOR_REQUEST_TIMEOUT_SECONDS", "15"))
+TOPVISOR_MAX_RETRIES = int(os.getenv("TOPVISOR_MAX_RETRIES", "3"))

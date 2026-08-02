@@ -32,12 +32,20 @@ class TimestampedModel(models.Model):
 
 
 class Project(TimestampedModel):
+    class Top1120Mode(models.TextChoices):
+        AUTO = "auto", "Автоматически"
+        ENABLED = "enabled", "Включено"
+        DISABLED = "disabled", "Выключено"
+
     name = models.CharField("Название", max_length=200)
     domain = models.CharField("Домен", max_length=253)
     normalized_domain = models.CharField(max_length=253, unique=True, editable=False)
     timezone = models.CharField("Часовой пояс", max_length=64, default="Europe/Moscow")
     language = models.CharField("Язык", max_length=10, default="ru")
     active = models.BooleanField("Активен", default=True)
+    top_11_20_mode = models.CharField(
+        "Таблица ТОП-11–20", max_length=8, choices=Top1120Mode.choices, default=Top1120Mode.AUTO
+    )
 
     class Meta:
         ordering = ["name"]

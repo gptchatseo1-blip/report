@@ -16,7 +16,9 @@ class ImportConfirmationError(Exception):
     pass
 
 
-def create_import_preview(*, project, uploaded_file, snapshot_date, search_engine, region, user):
+def create_import_preview(
+    *, project, uploaded_file, snapshot_date, search_engine, region, user, ranking_depth=100
+):
     max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     if uploaded_file.size > max_bytes:
         raise ImportFileError(f"Файл больше {settings.MAX_UPLOAD_SIZE_MB} МБ.")
@@ -36,6 +38,7 @@ def create_import_preview(*, project, uploaded_file, snapshot_date, search_engin
         "snapshot_date": snapshot_date,
         "search_engine": search_engine,
         "region": region.strip(),
+        "ranking_depth": ranking_depth,
     }
     existing = ImportBatch.objects.filter(**lookup).first()
     if existing:
@@ -92,6 +95,9 @@ def confirm_import(batch_id):
         search_engine=batch.search_engine,
         region=batch.region,
         tracked_keyword_count=batch.valid_rows,
+        depth_raw=str(batch.ranking_depth),
+        ranking_depth=batch.ranking_depth,
+        depth_source=RankingSnapshot.DepthSource.MANUAL,
     )
     KeywordPosition.objects.bulk_create(
         [KeywordPosition(ranking_snapshot=snapshot, **row) for row in batch.preview_payload],

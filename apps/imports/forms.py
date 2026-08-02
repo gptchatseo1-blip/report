@@ -19,6 +19,11 @@ class PositionImportForm(forms.Form):
         label="Поисковая система", choices=ImportBatch.SearchEngine.choices
     )
     region = forms.CharField(label="Регион", max_length=120)
+    ranking_depth = forms.TypedChoiceField(
+        label="Глубина проверки",
+        choices=[(x, f"ТОП-{x}") for x in (10, 20, 30, 50, 100)],
+        coerce=int,
+    )
     source_file = forms.FileField(label="CSV или XLSX")
 
     def __init__(self, *args, **kwargs):

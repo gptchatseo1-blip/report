@@ -11,12 +11,32 @@ class RankingSnapshot(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="ranking_snapshots")
     import_batch = models.OneToOneField(
-        ImportBatch, on_delete=models.PROTECT, related_name="ranking_snapshot"
+        ImportBatch,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="ranking_snapshot",
     )
     snapshot_date = models.DateField()
     search_engine = models.CharField(max_length=16)
     region = models.CharField(max_length=120)
     tracked_keyword_count = models.PositiveIntegerField(default=0)
+    ranking_depth = models.PositiveSmallIntegerField(default=100)
+    depth_raw = models.CharField(max_length=100, default="100")
+    depth_retrieved_at = models.DateTimeField(null=True, blank=True)
+
+    class DepthSource(models.TextChoices):
+        TOPVISOR_API = "topvisor_api", "Topvisor API"
+        MANUAL = "manual", "Ручной импорт"
+
+    depth_source = models.CharField(
+        max_length=16, choices=DepthSource.choices, default=DepthSource.MANUAL
+    )
+    topvisor_configuration_id = models.CharField(max_length=120, blank=True)
+    visibility = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    visibility_raw = models.JSONField(null=True, blank=True)
+    response_checksum = models.CharField(max_length=64, blank=True)
+    retrieved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -27,6 +47,13 @@ class RankingSnapshot(models.Model):
             models.Index(
                 fields=["project", "snapshot_date", "search_engine", "region"],
                 name="ranking_lookup_idx",
+            )
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "snapshot_date", "topvisor_configuration_id"],
+                condition=~models.Q(topvisor_configuration_id=""),
+                name="unique_topvisor_ranking_snapshot",
             )
         ]
 
