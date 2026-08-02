@@ -27,5 +27,4 @@ class NarrativeEditForm(forms.ModelForm):
 
     class Meta:
         model = NarrativeBlock
-        fields = ("edited_text", "status")
-        labels = {"status": "Статус"}
+        fields = ("edited_text",)

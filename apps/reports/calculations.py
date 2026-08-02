@@ -5,7 +5,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
-FORMULA_VERSION = "mvp1.2-depth-aware"
+FORMULA_VERSION = "mvp1.3-position-metadata"
 SEMANTICS_CHANGE_WARNING_THRESHOLD = Decimal("20")
 POSITION_RANGES = ((1, 3), (4, 10), (11, 20), (21, 30), (31, 50), (51, 100))
 ZERO = Decimal("0")
@@ -93,6 +93,8 @@ class PositionItem:
     query: str
     frequency: int
     position: int | None
+    group: str = ""
+    target_url: str = ""
 
     def __post_init__(self):
         if self.frequency is None or self.frequency < 0:

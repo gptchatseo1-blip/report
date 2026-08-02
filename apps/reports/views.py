@@ -30,6 +30,22 @@ SECTION_TITLES = {
     "iks": "ИКС",
     "completed_work": "Выполненные работы",
 }
+ENGINE_LABELS = {"google": "Google", "yandex": "Яндекс"}
+METRIC_SECTIONS = {
+    "traffic": ("yandex_metrika", ("visits",)),
+    "clicks_impressions": ("yandex_webmaster", ("search_clicks", "search_impressions")),
+    "ctr": ("yandex_webmaster", ("search_ctr",)),
+    "indexing": ("yandex_webmaster", ("indexed_pages",)),
+    "iks": ("yandex_webmaster", ("iks",)),
+}
+METRIC_LABELS = {
+    "visits": "Визиты",
+    "search_clicks": "Клики",
+    "search_impressions": "Показы",
+    "search_ctr": "CTR",
+    "indexed_pages": "Проиндексированные страницы",
+    "iks": "ИКС",
+}
 
 
 @login_required
@@ -139,11 +155,69 @@ def version_create(request, report_id):
     return redirect("reports:version-detail", version_id=version.id)
 
 
-def _preview_context(version):
+def _segment_rows(payload, code):
+    segments = payload.get("calculated", {}).get("positions", {}).get("segments", [])
+    rows = []
+    for source in segments:
+        row = dict(source)
+        row["engine_label"] = ENGINE_LABELS.get(
+            source.get("search_engine"), source.get("search_engine") or "Поиск"
+        )
+        if code == "top_11_20":
+            row["rows"] = source.get("top_11_20", [])
+        rows.append(row)
+    return rows
+
+
+def _metric_rows(payload, code):
+    if code not in METRIC_SECTIONS:
+        return []
+    source, codes = METRIC_SECTIONS[code]
+    facts = payload.get("calculated", {}).get("sources", {}).get("sources", {}).get(source, {})
+    changes = facts.get("normalized_changes", {})
+    series = facts.get("three_month_series", {})
+    return [
+        {
+            "code": metric_code,
+            "label": METRIC_LABELS.get(metric_code, metric_code),
+            "change": changes.get(metric_code, {}),
+            "series": series.get(metric_code, []),
+        }
+        for metric_code in codes
+        if metric_code in changes or metric_code in series
+    ]
+
+
+def _traffic_rows(payload):
+    traffic = (
+        payload.get("calculated", {})
+        .get("sources", {})
+        .get("sources", {})
+        .get("yandex_metrika", {})
+        .get("traffic_sources", {})
+    )
+    values = {}
+    report_start = payload.get("periods", {}).get("report", {}).get("start")
+    for source in payload.get("source_snapshots", []):
+        if source.get("source") != "yandex_metrika" or source.get("period_start") != report_start:
+            continue
+        for metric in source.get("metrics", []):
+            code = metric.get("code", "")
+            if code.startswith("source_"):
+                values[code.removeprefix("source_").removesuffix("_visits")] = metric.get("value")
+    return [
+        {"source": source, "visits": values.get(source), "share": share}
+        for source, share in traffic.get("shares", {}).items()
+    ]
+
+
+def _preview_context(version, *, form_overrides=None):
     snapshot = version.snapshot
     blocks = {block.section_code: block for block in version.narrative_blocks.all()}
     issues = list(version.validation_issues.all())
     sections = []
+    payload = snapshot.payload
+    form_overrides = form_overrides or {}
     for code in SECTION_ORDER:
         block = blocks.get(code)
         if not block:
@@ -156,10 +230,14 @@ def _preview_context(version):
                 "block": block,
                 "facts": block.facts,
                 "issues": section_issues,
-                "form": NarrativeEditForm(instance=block),
+                "form": form_overrides.get(block.id, NarrativeEditForm(instance=block)),
+                "segments": _segment_rows(payload, code),
+                "metric_rows": _metric_rows(payload, code),
+                "traffic_rows": _traffic_rows(payload) if code == "traffic_sources" else [],
+                "work_rows": payload.get("completed_work", []) if code == "completed_work" else [],
+                "periods": payload.get("periods", {}),
             }
         )
-    payload = snapshot.payload
     provenance = []
     for item in payload.get("ranking_sources", []):
         source = item.get("provenance", {})
@@ -191,6 +269,8 @@ def _preview_context(version):
     return {
         "version": version,
         "report": version.report,
+        "snapshot_project": payload.get("project", {}),
+        "snapshot_month": payload.get("periods", {}).get("report", {}).get("start"),
         "sections": sections,
         "issues": issues,
         "errors": errors,
@@ -244,11 +324,26 @@ def narrative_edit(request, block_id):
     block = _block(block_id)
     form = NarrativeEditForm(request.POST, instance=block)
     if form.is_valid():
-        form.save()
+        block = form.save(commit=False)
+        block.status = (
+            NarrativeBlock.Status.EDITED
+            if block.edited_text.strip()
+            else NarrativeBlock.Status.GENERATED
+        )
+        block.confirmed_by = None
+        block.confirmed_at = None
+        block.save()
         validate_report_version(block.report_version)
     else:
+        version = (
+            ReportVersion.objects.select_related("report__project", "snapshot", "created_by")
+            .prefetch_related("narrative_blocks", "validation_issues")
+            .get(pk=block.report_version_id)
+        )
         return render(
-            request, "reports/_narrative_form.html", {"block": block, "form": form}, status=400
+            request,
+            "reports/_preview.html",
+            _preview_context(version, form_overrides={block.id: form}),
         )
     return _updated_preview(request, block.report_version)
 

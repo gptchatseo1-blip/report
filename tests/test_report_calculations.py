@@ -18,6 +18,7 @@ from apps.reports.calculations import (
     check_ctr,
     compare_semantics,
     depth_comment,
+    top_11_20_rows,
 )
 from apps.reports.services import build_position_facts, build_source_facts
 
@@ -123,7 +124,7 @@ def test_source_service_normalizes_counts_and_builds_source_facts():
     facts = build_source_facts(project=project, report_month=date(2026, 7, 1))
     metrika = facts["sources"][SourceSnapshot.Source.METRIKA]
     webmaster = facts["sources"][SourceSnapshot.Source.WEBMASTER]
-    assert facts["formula_version"] == "mvp1.2-depth-aware"
+    assert facts["formula_version"] == "mvp1.3-position-metadata"
     assert metrika["normalized_changes"]["visits"].current is not None
     assert metrika["traffic_sources"].warning is None
     assert [item["month"] for item in metrika["three_month_series"]["visits"]] == [
@@ -240,3 +241,13 @@ def test_url_group_batch_facts_retain_all_intersections_and_warning():
     assert fact.group == exact
     assert fact.overlapping_groups == (exact, broad)
     assert fact.warnings == ("url_group_overlap",)
+
+
+def test_top_11_20_preserves_optional_group_and_target_url():
+    row = PositionItem("seo report", 100, 12, "Reports", "https://example.com/report/")
+    result = top_11_20_rows([row], depth=20, mode="enabled")
+    assert result[0].group == "Reports"
+    assert result[0].target_url == "https://example.com/report/"
+    assert top_11_20_rows([row], depth=20, mode="auto") == result
+    assert top_11_20_rows([row], depth=20, mode="disabled") == ()
+    assert top_11_20_rows([row], depth=10, mode="enabled") == ()
