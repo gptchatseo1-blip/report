@@ -200,6 +200,7 @@ def preview_version(db, user, project):
         (
             "visibility",
             "position_distribution",
+            "top_10",
             "top_11_20",
             "position_dynamics",
             "traffic",
@@ -244,7 +245,7 @@ def test_preview_renders_snapshot_metrics_segments_work_and_safe_provenance(
         assert expected in html
     assert "21-30" not in html and "31-50" not in html and "51-100" not in html
     assert "must-not-render" not in html
-    assert "Изменённое живое название" not in html
+    assert "<title>Версия 1 — Универсальный проект</title>" in html
 
 
 @pytest.mark.django_db
@@ -319,3 +320,75 @@ def test_edit_runs_validator(client, user, preview_version, monkeypatch):
         reverse("reports:narrative-edit", args=[block.id]), {"edited_text": "Проверенный вывод"}
     )
     assert called == [block.report_version]
+
+
+def _replace_position_segments(version, segments):
+    from copy import deepcopy
+
+    from apps.reports.models import ReportDatasetSnapshot
+    from apps.reports.services import snapshot_checksum
+
+    payload = deepcopy(version.snapshot.payload)
+    payload["calculated"]["positions"]["segments"] = segments
+    ReportDatasetSnapshot.objects.filter(version=version).update(
+        payload=payload, checksum=snapshot_checksum(payload)
+    )
+
+
+@pytest.mark.django_db
+def test_google_top_20_has_no_top_30_or_deeper_range(client, user, preview_version):
+    client.force_login(user)
+    google = preview_version.snapshot.payload["calculated"]["positions"]["segments"][0]
+    _replace_position_segments(preview_version, [google])
+    html = client.get(reverse("reports:version-detail", args=[preview_version.id])).content.decode()
+    assert "TOP-30" not in html
+    assert "21-30" not in html
+
+
+@pytest.mark.django_db
+def test_top_30_is_rendered_for_confirmed_depth(client, user, preview_version):
+    client.force_login(user)
+    segment = preview_version.snapshot.payload["calculated"]["positions"]["segments"][0]
+    segment = {**segment, "ranking_depth": 30}
+    segment["distribution"] = {
+        **segment["distribution"],
+        "ranges": {"1-3": 1, "4-10": 2, "11-20": 1, "21-30": 1},
+        "top_30": 5,
+        "total": 5,
+    }
+    _replace_position_segments(preview_version, [segment])
+    html = client.get(reverse("reports:version-detail", args=[preview_version.id])).content.decode()
+    assert "<th>TOP-30</th>" in html
+    assert "<td>5</td>" in html
+
+
+@pytest.mark.django_db
+def test_mixed_depth_shows_top_30_only_in_confirmed_segment(client, user, preview_version):
+    client.force_login(user)
+    segments = preview_version.snapshot.payload["calculated"]["positions"]["segments"]
+    google = segments[0]
+    yandex = {**segments[1], "ranking_depth": 100}
+    yandex["distribution"] = {
+        **yandex["distribution"],
+        "ranges": {"1-3": 2, "4-10": 1, "11-20": 1, "21-30": 2},
+        "top_30": 6,
+        "total": 6,
+    }
+    _replace_position_segments(preview_version, [google, yandex])
+    html = client.get(reverse("reports:version-detail", args=[preview_version.id])).content.decode()
+    google_article = html.split('data-engine="google"', 1)[1].split("</article>", 1)[0]
+    yandex_article = html.split('data-engine="yandex"', 1)[1].split("</article>", 1)[0]
+    assert "TOP-30" not in google_article
+    assert "TOP-30" in yandex_article
+
+
+@pytest.mark.django_db
+def test_report_and_version_navigation_keep_current_project(client, user, preview_version):
+    client.force_login(user)
+    report_response = client.get(reverse("reports:report-detail", args=[preview_version.report_id]))
+    version_response = client.get(reverse("reports:version-detail", args=[preview_version.id]))
+    expected_url = reverse("reports:report-list", args=[preview_version.report.project_id])
+    assert report_response.context["project"] == preview_version.report.project
+    assert version_response.context["project"] == preview_version.report.project
+    assert expected_url in report_response.content.decode()
+    assert expected_url in version_response.content.decode()

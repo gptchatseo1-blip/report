@@ -133,7 +133,12 @@ def report_detail(request, report_id):
     return render(
         request,
         "reports/report_detail.html",
-        {"report": report, "versions": versions, "version_token": token},
+        {
+            "project": report.project,
+            "report": report,
+            "versions": versions,
+            "version_token": token,
+        },
     )
 
 
@@ -288,7 +293,9 @@ def version_detail(request, version_id):
         ).prefetch_related("narrative_blocks", "validation_issues"),
         pk=version_id,
     )
-    return render(request, "reports/version_detail.html", _preview_context(version))
+    context = _preview_context(version)
+    context["project"] = version.report.project
+    return render(request, "reports/version_detail.html", context)
 
 
 def _updated_preview(request, version):
