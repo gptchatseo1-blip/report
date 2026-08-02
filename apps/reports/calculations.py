@@ -104,7 +104,7 @@ class PositionDistribution:
     total: int
     ranges: Mapping[str, int]
     top_10: int
-    top_30: int
+    top_30: int | None
 
 
 def calculate_position_distribution(
@@ -122,7 +122,9 @@ def calculate_position_distribution(
         len(items),
         ranges,
         ranges.get("1-3", 0) + ranges.get("4-10", 0),
-        sum(ranges.get(key, 0) for key in ("1-3", "4-10", "11-20", "21-30")),
+        sum(ranges.get(key, 0) for key in ("1-3", "4-10", "11-20", "21-30"))
+        if ranking_depth >= 30
+        else None,
     )
 
 

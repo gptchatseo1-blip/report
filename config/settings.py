@@ -18,6 +18,7 @@ INSTALLED_APPS = [
     "apps.metrics",
     "apps.worklog",
     "apps.topvisor",
+    "apps.reports",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
