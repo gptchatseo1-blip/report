@@ -17,6 +17,7 @@ from apps.reports.calculations import (
     calculate_source_shares,
     check_ctr,
     compare_semantics,
+    depth_comment,
 )
 from apps.reports.services import build_position_facts, build_source_facts
 
@@ -69,6 +70,22 @@ def test_position_ranges_are_exclusive_and_top_values_are_cumulative():
     assert result.total == 14
 
 
+@pytest.mark.parametrize(
+    ("depth", "expected_ranges"),
+    [
+        (10, {"1-3", "4-10"}),
+        (20, {"1-3", "4-10", "11-20"}),
+        (30, {"1-3", "4-10", "11-20", "21-30"}),
+        (50, {"1-3", "4-10", "11-20", "21-30", "31-50"}),
+        (100, {"1-3", "4-10", "11-20", "21-30", "31-50", "51-100"}),
+    ],
+)
+def test_position_ranges_never_exceed_confirmed_depth(depth, expected_ranges):
+    result = calculate_position_distribution([PositionItem("query", 10, None)], ranking_depth=depth)
+    assert set(result.ranges) == expected_ranges
+    assert depth_comment(depth).startswith(f"Проверка позиций в Google выполнена до ТОП-{depth}.")
+
+
 def test_frequency_is_mandatory_for_position_calculation():
     with pytest.raises(ValueError, match="frequency"):
         PositionItem("query", None, 1)
@@ -106,7 +123,7 @@ def test_source_service_normalizes_counts_and_builds_source_facts():
     facts = build_source_facts(project=project, report_month=date(2026, 7, 1))
     metrika = facts["sources"][SourceSnapshot.Source.METRIKA]
     webmaster = facts["sources"][SourceSnapshot.Source.WEBMASTER]
-    assert facts["formula_version"] == "mvp1.1"
+    assert facts["formula_version"] == "mvp1.2-depth-aware"
     assert metrika["normalized_changes"]["visits"].current is not None
     assert metrika["traffic_sources"].warning is None
     assert [item["month"] for item in metrika["three_month_series"]["visits"]] == [
