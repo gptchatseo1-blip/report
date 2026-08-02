@@ -12,6 +12,10 @@ dependencies = [
   "gunicorn==23.0.0",
   "openpyxl==3.1.5",
   "defusedxml==0.7.1",
+  "python-docx==1.2.0",
+  "matplotlib==3.10.5",
+  "Pillow==11.3.0",
+  "pypdf==5.9.0",
 ]
 
 [project.optional-dependencies]

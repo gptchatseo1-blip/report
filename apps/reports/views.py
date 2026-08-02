@@ -4,14 +4,15 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError
 from django.db.models import Count, Max, OuterRef, Subquery
-from django.http import HttpResponseNotAllowed
+from django.http import FileResponse, Http404, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from apps.projects.models import Project
 
+from .exporting import ExportBlocked, generate_artifact
 from .forms import NarrativeEditForm, ReportCreateForm
-from .models import NarrativeBlock, Report, ReportVersion, ValidationIssue
+from .models import GeneratedArtifact, NarrativeBlock, Report, ReportVersion, ValidationIssue
 from .narratives import SECTION_ORDER
 from .services import create_report_version
 from .validation import validate_report_version
@@ -295,7 +296,50 @@ def version_detail(request, version_id):
     )
     context = _preview_context(version)
     context["project"] = version.report.project
+    context["artifacts"] = version.generated_artifacts.all()
     return render(request, "reports/version_detail.html", context)
+
+
+@login_required
+def artifact_generate(request, version_id, artifact_type):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    version = get_object_or_404(ReportVersion, pk=version_id)
+    if artifact_type not in GeneratedArtifact.Type.values:
+        raise Http404
+    try:
+        generate_artifact(
+            version=version,
+            artifact_type=artifact_type,
+            is_draft=request.POST.get("is_draft") == "on",
+            created_by=request.user,
+        )
+        messages.success(request, f"Файл {artifact_type.upper()} сформирован.")
+    except ExportBlocked as exc:
+        messages.error(request, str(exc))
+    except Exception:
+        messages.error(request, "Не удалось сформировать файл; безопасный журнал сохранён.")
+    return redirect("reports:version-detail", version_id=version.id)
+
+
+@login_required
+def artifact_download(request, artifact_id):
+    artifact = get_object_or_404(GeneratedArtifact, pk=artifact_id, status="ready")
+    expected = {
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pdf": "application/pdf",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    if artifact.mime_type != expected.get(artifact.artifact_type) or not artifact.filename.endswith(
+        "." + artifact.artifact_type
+    ):
+        raise Http404
+    return FileResponse(
+        artifact.file.open("rb"),
+        as_attachment=True,
+        filename=artifact.filename,
+        content_type=artifact.mime_type,
+    )
 
 
 def _updated_preview(request, version):
