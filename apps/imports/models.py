@@ -35,6 +35,9 @@ class ImportBatch(models.Model):
     snapshot_date = models.DateField()
     search_engine = models.CharField(max_length=16, choices=SearchEngine.choices)
     region = models.CharField(max_length=120)
+    ranking_depth = models.PositiveSmallIntegerField(
+        "Глубина проверки", choices=[(x, f"ТОП-{x}") for x in (10, 20, 30, 50, 100)], default=100
+    )
     total_rows = models.PositiveIntegerField(default=0)
     valid_rows = models.PositiveIntegerField(default=0)
     error_rows = models.PositiveIntegerField(default=0)
@@ -64,6 +67,7 @@ class ImportBatch(models.Model):
                     "snapshot_date",
                     "search_engine",
                     "region",
+                    "ranking_depth",
                 ],
                 name="unique_position_import_input",
             )
