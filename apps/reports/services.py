@@ -75,7 +75,13 @@ def build_position_facts(*, project, report_month):
         )
         distribution = calculate_position_distribution(
             (
-                PositionItem(row.normalized_query, row.frequency, row.position_value)
+                PositionItem(
+                    row.normalized_query,
+                    row.frequency,
+                    row.position_value,
+                    row.group_name,
+                    row.normalized_target_url,
+                )
                 for row in report_rows
             ),
             ranking_depth=report_snapshot.ranking_depth if report_snapshot else 100,
@@ -150,7 +156,13 @@ def build_position_facts(*, project, report_month):
                 ),
                 "top_11_20": top_11_20_rows(
                     (
-                        PositionItem(row.normalized_query, row.frequency, row.position_value)
+                        PositionItem(
+                            row.normalized_query,
+                            row.frequency,
+                            row.position_value,
+                            row.group_name,
+                            row.normalized_target_url,
+                        )
                         for row in report_rows
                     ),
                     depth=report_snapshot.ranking_depth if report_snapshot else 0,
