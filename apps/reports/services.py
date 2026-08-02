@@ -12,6 +12,7 @@ from .calculations import (
     calculate_source_shares,
     check_ctr,
     compare_semantics,
+    depth_comment,
     normalize_count_per_day,
     shift_month,
 )
@@ -49,9 +50,17 @@ def build_position_facts(*, project, report_month):
         previous_snapshot = values.get(periods.previous.start)
         report_rows = tuple(report_snapshot.positions.all()) if report_snapshot else ()
         previous_rows = tuple(previous_snapshot.positions.all()) if previous_snapshot else ()
+        comparison_depth = (
+            min(report_snapshot.ranking_depth, previous_snapshot.ranking_depth)
+            if report_snapshot and previous_snapshot
+            else None
+        )
         distribution = calculate_position_distribution(
-            PositionItem(row.normalized_query, row.frequency, row.position_value)
-            for row in report_rows
+            (
+                PositionItem(row.normalized_query, row.frequency, row.position_value)
+                for row in report_rows
+            ),
+            ranking_depth=report_snapshot.ranking_depth if report_snapshot else 100,
         )
         monthly_series = []
         for month in months:
@@ -62,9 +71,13 @@ def build_position_facts(*, project, report_month):
                 {
                     "month": month,
                     "distribution": calculate_position_distribution(
-                        PositionItem(row.normalized_query, row.frequency, row.position_value)
-                        for row in snapshot.positions.all()
+                        (
+                            PositionItem(row.normalized_query, row.frequency, row.position_value)
+                            for row in snapshot.positions.all()
+                        ),
+                        ranking_depth=snapshot.ranking_depth,
                     ),
+                    "ranking_depth": snapshot.ranking_depth,
                 }
             )
         facts.append(
@@ -72,6 +85,41 @@ def build_position_facts(*, project, report_month):
                 "search_engine": engine,
                 "region": region,
                 "distribution": distribution,
+                "ranking_depth": report_snapshot.ranking_depth if report_snapshot else None,
+                "depth_comment": depth_comment(report_snapshot.ranking_depth)
+                if engine == "google" and report_snapshot
+                else None,
+                "comparison_depth": comparison_depth,
+                "comparison_distributions": {
+                    "previous": calculate_position_distribution(
+                        (
+                            PositionItem(row.normalized_query, row.frequency, row.position_value)
+                            for row in previous_rows
+                        ),
+                        ranking_depth=comparison_depth,
+                    ),
+                    "current": calculate_position_distribution(
+                        (
+                            PositionItem(row.normalized_query, row.frequency, row.position_value)
+                            for row in report_rows
+                        ),
+                        ranking_depth=comparison_depth,
+                    ),
+                }
+                if comparison_depth
+                else None,
+                "warnings": (
+                    {
+                        "code": "ranking_depth_changed",
+                        "previous_depth": previous_snapshot.ranking_depth,
+                        "current_depth": report_snapshot.ranking_depth,
+                        "visibility_comparable": False,
+                    },
+                )
+                if report_snapshot
+                and previous_snapshot
+                and report_snapshot.ranking_depth != previous_snapshot.ranking_depth
+                else (),
                 "three_month_series": tuple(monthly_series),
                 "semantics": compare_semantics(
                     (row.normalized_query for row in previous_rows),
