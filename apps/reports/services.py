@@ -43,9 +43,13 @@ DAILY_NORMALIZED_CODES = {
 def build_position_facts(*, project, report_month):
     """Build facts independently for every search-engine/region pair; device is absent by design."""
     periods = calculate_periods(report_month)
-    snapshots = RankingSnapshot.objects.filter(
-        project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
-    ).prefetch_related("positions")
+    snapshots = (
+        RankingSnapshot.objects.filter(
+            project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
+        )
+        .prefetch_related("positions")
+        .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
+    )
     grouped = defaultdict(dict)
     for snapshot in snapshots:
         month = snapshot.snapshot_date.replace(day=1)
@@ -259,9 +263,13 @@ def snapshot_checksum(payload):
 
 
 def _ranking_source_data(project, periods):
-    snapshots = RankingSnapshot.objects.filter(
-        project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
-    ).prefetch_related("positions")
+    snapshots = (
+        RankingSnapshot.objects.filter(
+            project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
+        )
+        .prefetch_related("positions")
+        .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
+    )
     result = []
     for item in snapshots:
         result.append(
@@ -285,7 +293,7 @@ def _ranking_source_data(project, periods):
                         "group": row.group_name,
                         "target_url": row.normalized_target_url,
                     }
-                    for row in item.positions.all()
+                    for row in item.positions.order_by("normalized_query", "group_name", "id")
                 ],
                 "provenance": {
                     "method": item.depth_source,
@@ -300,10 +308,14 @@ def _ranking_source_data(project, periods):
 
 
 def _external_source_data(project, periods):
-    rows = SourceSnapshot.objects.filter(
-        project=project,
-        period_start__range=(periods.three_months.start, periods.report.start),
-    ).prefetch_related("metrics")
+    rows = (
+        SourceSnapshot.objects.filter(
+            project=project,
+            period_start__range=(periods.three_months.start, periods.report.start),
+        )
+        .prefetch_related("metrics")
+        .order_by("source", "period_start", "period_end", "id")
+    )
     return [
         {
             "id": str(row.id),
@@ -318,7 +330,7 @@ def _external_source_data(project, periods):
                     "unit": point.unit,
                     "dimensions": point.dimensions,
                 }
-                for point in row.metrics.all()
+                for point in row.metrics.order_by("metric_code", "id")
             ],
             "provenance": {
                 "method": row.retrieval_method,
@@ -334,9 +346,13 @@ def _external_source_data(project, periods):
 def build_report_snapshot(*, report):
     project = report.project
     periods = calculate_periods(report.report_month)
-    works = WorkLogItem.objects.filter(
-        project=project, work_date__range=(periods.report.start, periods.report.end)
-    ).select_related("category")
+    works = (
+        WorkLogItem.objects.filter(
+            project=project, work_date__range=(periods.report.start, periods.report.end)
+        )
+        .select_related("category")
+        .order_by("work_date", "category__sort_order", "title", "id")
+    )
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "formula_version": FORMULA_VERSION,
@@ -349,7 +365,9 @@ def build_report_snapshot(*, report):
             "language": project.language,
             "top_11_20_mode": project.top_11_20_mode,
             "brand_rules": list(
-                project.brand_rules.values("kind", "pattern", "priority", "active")
+                project.brand_rules.order_by("kind", "pattern", "priority", "id").values(
+                    "kind", "pattern", "priority", "active"
+                )
             ),
             "url_groups": [
                 {
@@ -357,9 +375,15 @@ def build_report_snapshot(*, report):
                     "slug": group.slug,
                     "priority": group.priority,
                     "active": group.active,
-                    "rules": list(group.rules.values("type", "pattern", "priority", "active")),
+                    "rules": list(
+                        group.rules.order_by("type", "pattern", "priority", "id").values(
+                            "type", "pattern", "priority", "active"
+                        )
+                    ),
                 }
-                for group in project.url_groups.prefetch_related("rules")
+                for group in project.url_groups.prefetch_related("rules").order_by(
+                    "name", "slug", "priority", "id"
+                )
             ],
             "provenance": {"method": "project_database", "updated_at": project.updated_at},
         },

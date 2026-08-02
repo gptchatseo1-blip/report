@@ -9,6 +9,11 @@ class ReportAdmin(admin.ModelAdmin):
     list_filter = ["report_month"]
     search_fields = ["project__name", "project__domain"]
 
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.versions.exists():
+            return ["project", "report_month", "created_at"]
+        return ["created_at"]
+
     def has_delete_permission(self, request, obj=None):
         return False
 

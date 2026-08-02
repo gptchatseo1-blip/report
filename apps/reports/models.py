@@ -24,6 +24,15 @@ class Report(models.Model):
             raise ValidationError({"report_month": "Укажите первый день календарного месяца."})
 
     def save(self, *args, **kwargs):
+        if not self._state.adding:
+            original = type(self).objects.only("project_id", "report_month").get(pk=self.pk)
+            changed = {}
+            if original.project_id != self.project_id:
+                changed["project"] = "Нельзя изменить проект отчёта после создания версии."
+            if original.report_month != self.report_month:
+                changed["report_month"] = "Нельзя изменить отчётный месяц после создания версии."
+            if changed and self.versions.exists():
+                raise ValidationError(changed)
         self.full_clean()
         return super().save(*args, **kwargs)
 
@@ -49,12 +58,24 @@ class ReportVersion(models.Model):
     def __str__(self):
         return f"{self.report}, версия {self.number}"
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            original = type(self).objects.only("report_id", "number").get(pk=self.pk)
+            changed = {}
+            if original.report_id != self.report_id:
+                changed["report"] = "Нельзя изменить отчёт существующей версии."
+            if original.number != self.number:
+                changed["number"] = "Нельзя изменить номер существующей версии."
+            if changed:
+                raise ValidationError(changed)
+        return super().save(*args, **kwargs)
+
 
 class ReportDatasetSnapshot(models.Model):
     """The durable boundary: application code may create, but never mutate, this row."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    version = models.OneToOneField(ReportVersion, on_delete=models.CASCADE, related_name="snapshot")
+    version = models.OneToOneField(ReportVersion, on_delete=models.PROTECT, related_name="snapshot")
     schema_version = models.CharField(max_length=32)
     formula_version = models.CharField(max_length=64)
     payload = models.JSONField()
