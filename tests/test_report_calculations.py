@@ -109,6 +109,12 @@ def test_source_service_normalizes_counts_and_builds_source_facts():
     assert facts["formula_version"] == "mvp1.1"
     assert metrika["normalized_changes"]["visits"].current is not None
     assert metrika["traffic_sources"].warning is None
+    assert [item["month"] for item in metrika["three_month_series"]["visits"]] == [
+        date(2026, 5, 1),
+        date(2026, 6, 1),
+        date(2026, 7, 1),
+    ]
+    assert all(item["value"] is not None for item in metrika["three_month_series"]["visits"])
     assert webmaster["ctr_check"].valid is True
     assert "indexed_pages" in webmaster["normalized_changes"]
     assert "quality_index" in webmaster["normalized_changes"]
@@ -156,6 +162,53 @@ def test_position_service_separates_search_engine_and_region(tmp_path, settings)
     ]
     assert facts["segments"][0]["distribution"].ranges["11-20"] == 1
     assert facts["segments"][1]["distribution"].ranges["1-3"] == 1
+
+
+@pytest.mark.django_db
+def test_position_service_includes_all_three_months(tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
+    project = Project.objects.create(name="Demo", domain="example.com")
+    for index, (month, position) in enumerate(
+        ((date(2026, 5, 31), 25), (date(2026, 6, 30), 9), (date(2026, 7, 31), 2))
+    ):
+        batch = ImportBatch.objects.create(
+            project=project,
+            original_filename=f"month-{index}.csv",
+            source_file=f"imports/month-{index}.csv",
+            file_checksum=str(index + 3) * 64,
+            status=ImportBatch.Status.IMPORTED,
+            snapshot_date=month,
+            search_engine="yandex",
+            region="Москва",
+        )
+        snapshot = RankingSnapshot.objects.create(
+            project=project,
+            import_batch=batch,
+            snapshot_date=month,
+            search_engine="yandex",
+            region="Москва",
+            tracked_keyword_count=1,
+        )
+        KeywordPosition.objects.create(
+            ranking_snapshot=snapshot,
+            query="Query",
+            normalized_query="query",
+            frequency=100,
+            position_raw=str(position),
+            position_value=position,
+            position_status=KeywordPosition.Status.RANKED,
+        )
+
+    facts = build_position_facts(project=project, report_month=date(2026, 7, 1))
+    series = facts["segments"][0]["three_month_series"]
+    assert [item["month"] for item in series] == [
+        date(2026, 5, 1),
+        date(2026, 6, 1),
+        date(2026, 7, 1),
+    ]
+    assert series[0]["distribution"].ranges["21-30"] == 1
+    assert series[1]["distribution"].ranges["4-10"] == 1
+    assert series[2]["distribution"].ranges["1-3"] == 1
 
 
 @pytest.mark.django_db

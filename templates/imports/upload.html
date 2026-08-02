@@ -4,7 +4,7 @@
 <div class="card">
     <h1>Загрузка позиций Topvisor</h1>
     <p>Обязательные столбцы: <strong>Запрос</strong>, <strong>Позиция</strong> и <strong>Частотность</strong>. Дополнительно можно передать Группу и URL.</p>
-    <p>Поддерживаются CSV в UTF-8/CP1251 и XLSX, не более 3000 строк.</p>
+    <p>Поддерживаются CSV в UTF-8/CP1251 и XLSX. Количество строк не ограничено.</p>
     <p><a href="{% url 'imports:template' %}">Скачать пустой CSV-шаблон</a></p>
     <form method="post" enctype="multipart/form-data">
         {% csrf_token %}

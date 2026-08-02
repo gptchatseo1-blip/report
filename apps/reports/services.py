@@ -13,6 +13,7 @@ from .calculations import (
     check_ctr,
     compare_semantics,
     normalize_count_per_day,
+    shift_month,
 )
 
 DAILY_NORMALIZED_CODES = {
@@ -28,32 +29,50 @@ def build_position_facts(*, project, report_month):
     """Build facts independently for every search-engine/region pair; device is absent by design."""
     periods = calculate_periods(report_month)
     snapshots = RankingSnapshot.objects.filter(
-        project=project, snapshot_date__range=(periods.previous.start, periods.report.end)
+        project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
     ).prefetch_related("positions")
     grouped = defaultdict(dict)
     for snapshot in snapshots:
-        period = (
-            "report"
-            if periods.report.start <= snapshot.snapshot_date <= periods.report.end
-            else "previous"
-        )
+        month = snapshot.snapshot_date.replace(day=1)
         # The latest snapshot inside a calendar month wins deterministically.
-        existing = grouped[(snapshot.search_engine, snapshot.region)].get(period)
-        if existing is None or snapshot.snapshot_date > existing.snapshot_date:
-            grouped[(snapshot.search_engine, snapshot.region)][period] = snapshot
+        existing = grouped[(snapshot.search_engine, snapshot.region)].get(month)
+        snapshot_key = (snapshot.snapshot_date, snapshot.created_at, str(snapshot.id))
+        existing_key = (
+            (existing.snapshot_date, existing.created_at, str(existing.id)) if existing else None
+        )
+        if existing_key is None or snapshot_key > existing_key:
+            grouped[(snapshot.search_engine, snapshot.region)][month] = snapshot
+    months = tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
     facts = []
     for (engine, region), values in sorted(grouped.items()):
-        report_rows = tuple(values["report"].positions.all()) if "report" in values else ()
-        previous_rows = tuple(values["previous"].positions.all()) if "previous" in values else ()
+        report_snapshot = values.get(periods.report.start)
+        previous_snapshot = values.get(periods.previous.start)
+        report_rows = tuple(report_snapshot.positions.all()) if report_snapshot else ()
+        previous_rows = tuple(previous_snapshot.positions.all()) if previous_snapshot else ()
         distribution = calculate_position_distribution(
             PositionItem(row.normalized_query, row.frequency, row.position_value)
             for row in report_rows
         )
+        monthly_series = []
+        for month in months:
+            snapshot = values.get(month)
+            if snapshot is None:
+                continue
+            monthly_series.append(
+                {
+                    "month": month,
+                    "distribution": calculate_position_distribution(
+                        PositionItem(row.normalized_query, row.frequency, row.position_value)
+                        for row in snapshot.positions.all()
+                    ),
+                }
+            )
         facts.append(
             {
                 "search_engine": engine,
                 "region": region,
                 "distribution": distribution,
+                "three_month_series": tuple(monthly_series),
                 "semantics": compare_semantics(
                     (row.normalized_query for row in previous_rows),
                     (row.normalized_query for row in report_rows),
@@ -66,17 +85,37 @@ def build_position_facts(*, project, report_month):
 def build_source_facts(*, project, report_month):
     periods = calculate_periods(report_month)
     snapshots = SourceSnapshot.objects.filter(
-        project=project, period_start__in=(periods.previous.start, periods.report.start)
+        project=project,
+        period_start__range=(periods.three_months.start, periods.report.start),
     ).prefetch_related("metrics")
     indexed = {(item.source, item.period_start): item for item in snapshots}
+    months = tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
     result = {}
     for source in (SourceSnapshot.Source.METRIKA, SourceSnapshot.Source.WEBMASTER):
-        monthly = {}
-        for label, period in (("previous", periods.previous), ("report", periods.report)):
-            snapshot = indexed.get((source, period.start))
-            monthly[label] = (
+        monthly_by_start = {}
+        for month in months:
+            snapshot = indexed.get((source, month))
+            monthly_by_start[month] = (
                 {point.metric_code: point for point in snapshot.metrics.all()} if snapshot else {}
             )
+        monthly = {
+            "previous": monthly_by_start[periods.previous.start],
+            "report": monthly_by_start[periods.report.start],
+        }
+        series_codes = sorted(
+            {code for month_metrics in monthly_by_start.values() for code in month_metrics}
+        )
+        three_month_series = {}
+        for code in series_codes:
+            values = []
+            for month in months:
+                point = monthly_by_start[month].get(code)
+                value = point.numeric_value if point else None
+                if code in DAILY_NORMALIZED_CODES or code.startswith("source_"):
+                    period = calculate_periods(month).report
+                    value = normalize_count_per_day(value, period)
+                values.append({"month": month, "value": value})
+            three_month_series[code] = tuple(values)
         codes = sorted(set(monthly["previous"]) | set(monthly["report"]))
         changes = {}
         for code in codes:
@@ -112,5 +151,9 @@ def build_source_facts(*, project, report_month):
                 else None,
                 current["search_ctr"].numeric_value if "search_ctr" in current else None,
             )
-        result[source] = {"normalized_changes": changes, **extra}
+        result[source] = {
+            "normalized_changes": changes,
+            "three_month_series": three_month_series,
+            **extra,
+        }
     return {"formula_version": FORMULA_VERSION, "periods": periods, "sources": result}
