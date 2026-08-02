@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.utils import timezone
 
 from .models import NarrativeBlock, Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
 
@@ -86,6 +87,16 @@ class NarrativeBlockAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+    def save_model(self, request, obj, form, change):
+        if obj.status == NarrativeBlock.Status.CONFIRMED:
+            if obj.confirmed_at is None:
+                obj.confirmed_by = request.user
+                obj.confirmed_at = timezone.now()
+        else:
+            obj.confirmed_by = None
+            obj.confirmed_at = None
+        super().save_model(request, obj, form, change)
 
     def has_delete_permission(self, request, obj=None):
         return False

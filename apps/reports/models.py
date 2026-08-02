@@ -134,9 +134,30 @@ class NarrativeBlock(models.Model):
             )
         ]
 
+    IMMUTABLE_FIELDS = (
+        "report_version_id",
+        "section_code",
+        "kind",
+        "generated_text",
+        "facts",
+        "sort_order",
+    )
+
     @property
     def effective_text(self):
         return self.edited_text if self.edited_text.strip() else self.generated_text
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            original = type(self).objects.get(pk=self.pk)
+            changed = {
+                field: "Сгенерированные данные narrative нельзя изменять после создания."
+                for field in self.IMMUTABLE_FIELDS
+                if getattr(original, field) != getattr(self, field)
+            }
+            if changed:
+                raise ValidationError(changed)
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.report_version}: {self.section_code} ({self.sort_order})"

@@ -189,3 +189,148 @@ def test_warning_allows_draft_and_services_read_only_snapshot(monkeypatch):
     ]
     readiness = get_publication_readiness(version)
     assert readiness.has_warnings and readiness.can_export_draft
+
+
+def _position_payload_with_segments(version, variants):
+    payload = version.snapshot.payload
+    original = payload["calculated"]["positions"]["segments"][0]
+    segments = []
+    for engine, region, depth, query, position in variants:
+        segment = {**original}
+        segment["search_engine"] = engine
+        segment["region"] = region
+        segment["ranking_depth"] = depth
+        segment["depth_comment"] = None
+        segment["distribution"] = {
+            "total": 1,
+            "ranges": {"1-3": 0, "4-10": 0, **({"11-20": 1} if depth >= 20 else {})},
+            "top_10": 0,
+            "top_30": 1 if depth >= 30 else None,
+        }
+        segment["top_11_20"] = (
+            [{"query": query, "frequency": 100, "position": position}] if depth >= 20 else []
+        )
+        segments.append(segment)
+    payload["calculated"]["positions"]["segments"] = segments
+    return payload
+
+
+def test_position_narratives_label_engines_regions_and_do_not_mix_top_11_20():
+    from apps.reports.narratives import build_narrative_specs
+
+    version = make_version()
+    payload = _position_payload_with_segments(
+        version,
+        (
+            ("google", "Москва", 20, "google query", 12),
+            ("yandex", "Москва", 20, "yandex query", 15),
+            ("google", "Санкт-Петербург", 20, "spb query", 18),
+        ),
+    )
+    blocks = {item["section"]: item["text"] for item in build_narrative_specs(payload)}
+    for section in ("visibility", "position_distribution", "top_10", "position_dynamics"):
+        assert "Google, Москва:" in blocks[section]
+        assert "Яндекс, Москва:" in blocks[section]
+        assert "Google, Санкт-Петербург:" in blocks[section]
+    top = blocks["top_11_20"]
+    assert "Google, Москва: в диапазоне TOP-11–20 находятся запросы: google query (12)." in top
+    assert "Яндекс, Москва: в диапазоне TOP-11–20 находятся запросы: yandex query (15)." in top
+    assert (
+        "Google, Санкт-Петербург: в диапазоне TOP-11–20 находятся запросы: spb query (18)." in top
+    )
+
+
+def test_different_google_depths_form_one_aggregate_safe_comment():
+    from apps.reports.narratives import build_narrative_specs
+
+    version = make_version(depth=20)
+    payload = _position_payload_with_segments(
+        version,
+        (("google", "Москва", 10, "first", 10), ("google", "Россия", 20, "second", 12)),
+    )
+    text = next(
+        item["text"]
+        for item in build_narrative_specs(payload)
+        if item["section"] == "position_distribution"
+    )
+    assert text.count("Глубина проверки позиций в Google") == 1
+    assert "Google, Москва — до TOP-10" in text
+    assert "Google, Россия — до TOP-20" in text
+    assert "TOP-30" not in text
+
+
+def test_missing_frequency_is_error_and_blocks_publication_without_prior_validation():
+    version = make_version()
+    payload = version.snapshot.payload
+    payload["ranking_sources"][0]["positions"][0]["frequency"] = None
+    ReportDatasetSnapshot.objects.filter(pk=version.snapshot.pk).update(
+        payload=payload, checksum=snapshot_checksum(payload)
+    )
+    assert not version.validation_issues.exists()
+    readiness = get_publication_readiness(version)
+    issue = version.validation_issues.get(code="frequency_missing")
+    assert issue.severity == "error"
+    assert readiness.has_errors and not readiness.can_publish
+
+
+def test_invalid_traffic_share_sum_is_error():
+    version = make_version()
+    payload = version.snapshot.payload
+    payload["calculated"]["sources"]["sources"]["yandex_metrika"] = {
+        "traffic_sources": {
+            "total": "100",
+            "shares": {"search": "40", "direct": "40"},
+            "warning": None,
+        }
+    }
+    ReportDatasetSnapshot.objects.filter(pk=version.snapshot.pk).update(
+        payload=payload, checksum=snapshot_checksum(payload)
+    )
+    issue = next(
+        issue
+        for issue in validate_report_version(version)
+        if issue.code == "traffic_shares_arithmetic"
+    )
+    assert issue.severity == "error" and issue.details["shares_sum"] == "80"
+
+
+def test_generated_narrative_fields_are_immutable_and_edit_survives_regeneration():
+    from django.core.exceptions import ValidationError
+
+    block = make_version().narrative_blocks.get(section_code="top_10")
+    original_text, original_facts = block.generated_text, block.facts
+    block.generated_text = "Подмена"
+    block.facts = {"value": 999}
+    with pytest.raises(ValidationError):
+        block.save()
+    block.refresh_from_db()
+    block.edited_text = "Пользовательский текст"
+    block.save()
+    generate_narratives(block.report_version)
+    block.refresh_from_db()
+    assert block.generated_text == original_text
+    assert block.facts == original_facts
+    assert block.edited_text == "Пользовательский текст"
+
+
+def test_admin_sets_and_clears_confirmation_metadata(django_user_model):
+    from django.contrib.admin.sites import AdminSite
+    from django.test import RequestFactory
+
+    from apps.reports.admin import NarrativeBlockAdmin
+
+    user = django_user_model.objects.create_user(username="editor", password="secret")
+    block = make_version().narrative_blocks.get(section_code="top_10")
+    request = RequestFactory().post("/admin/")
+    request.user = user
+    model_admin = NarrativeBlockAdmin(NarrativeBlock, AdminSite())
+
+    block.status = NarrativeBlock.Status.CONFIRMED
+    model_admin.save_model(request, block, form=None, change=True)
+    block.refresh_from_db()
+    assert block.confirmed_by == user and block.confirmed_at is not None
+
+    block.status = NarrativeBlock.Status.EDITED
+    model_admin.save_model(request, block, form=None, change=True)
+    block.refresh_from_db()
+    assert block.confirmed_by is None and block.confirmed_at is None

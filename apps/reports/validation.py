@@ -244,6 +244,17 @@ def _validate_sources(payload, issues):
     traffic = calculated.get("yandex_metrika", {}).get("traffic_sources") or {}
     shares = traffic.get("shares") or {}
     share_values = [_decimal(value) for value in shares.values()]
+    total = _decimal(traffic.get("total"))
+    shares_sum = (
+        sum(share_values, Decimal("0"))
+        if all(value is not None for value in share_values)
+        else None
+    )
+    invalid_sum = (
+        total is not None
+        and total > 0
+        and (shares_sum is None or abs(shares_sum - Decimal("100")) > Decimal("0.1"))
+    )
     if traffic.get("warning") == "missing_total":
         _issue(
             issues,
@@ -253,8 +264,10 @@ def _validate_sources(payload, issues):
             section="traffic_sources",
             details=traffic,
         )
-    elif traffic.get("warning") or any(
-        value is None or value < 0 or value > 100 for value in share_values
+    elif (
+        traffic.get("warning")
+        or invalid_sum
+        or any(value is None or value < 0 or value > 100 for value in share_values)
     ):
         _issue(
             issues,
@@ -262,7 +275,7 @@ def _validate_sources(payload, issues):
             "error",
             "Доли источников трафика арифметически некорректны.",
             section="traffic_sources",
-            details=traffic,
+            details={**traffic, "shares_sum": str(shares_sum) if shares_sum is not None else None},
         )
 
 
@@ -358,7 +371,7 @@ def _validate_provenance_and_urls(payload, issues):
                     _issue(
                         issues,
                         "frequency_missing",
-                        "warning",
+                        "error",
                         "Отсутствует обязательная частотность запроса.",
                         section="position_distribution",
                         details={"source_index": index, "value_index": value_index},
@@ -465,6 +478,9 @@ def validate_report_version(version):
 
 
 def get_publication_readiness(version):
+    # Readiness is never inferred from an empty/stale issue set: effective narratives and the
+    # frozen payload are validated immediately before the decision.
+    validate_report_version(version)
     severities = set(version.validation_issues.values_list("severity", flat=True))
     has_errors = ValidationIssue.Severity.ERROR in severities
     has_warnings = ValidationIssue.Severity.WARNING in severities

@@ -95,6 +95,33 @@ def _metric_block(payload, section, source, codes):
     return {"section": section, "text": text, "facts": {"changes": selected}}
 
 
+def _segment_name(segment):
+    engines = {"google": "Google", "yandex": "Яндекс"}
+    engine = engines.get(segment.get("search_engine"), segment.get("search_engine") or "Поиск")
+    region = segment.get("region") or "регион не указан"
+    return f"{engine}, {region}"
+
+
+def _google_depth_text(depth_notes):
+    if not depth_notes:
+        return None
+    depths = {item["ranking_depth"] for item in depth_notes}
+    if len(depths) == 1:
+        depth = next(iter(depths))
+        return (
+            f"Проверка позиций в Google выполнена до TOP-{depth}. Для запросов, по которым сайт "
+            "не найден в пределах этой глубины, точная позиция не определена."
+        )
+    configurations = "; ".join(
+        f"{_segment_name(item)} — до TOP-{item['ranking_depth']}" for item in depth_notes
+    )
+    return (
+        "Глубина проверки позиций в Google различается по конфигурациям: "
+        f"{configurations}. Для запросов вне указанной для конфигурации глубины точная позиция "
+        "не определена."
+    )
+
+
 def build_narrative_specs(payload):
     """Build Russian copy exclusively from the immutable JSON payload supplied by a snapshot."""
     specs = []
@@ -107,7 +134,7 @@ def build_narrative_specs(payload):
         distribution_facts = []
         top_facts = []
         dynamic_facts = []
-        top_11_rows = []
+        top_11_facts = []
         depth_notes = []
         for segment in segments:
             identity = {
@@ -134,69 +161,84 @@ def build_narrative_specs(payload):
                     "warnings": segment.get("warnings", []),
                 }
             )
-            top_11_rows.extend(segment.get("top_11_20", []))
-            if segment.get("depth_comment"):
-                depth_notes.append(
-                    {
-                        "ranking_depth": segment.get("ranking_depth"),
-                        "comment": segment["depth_comment"],
-                    }
-                )
+            rows = segment.get("top_11_20", [])
+            if rows:
+                top_11_facts.append({**identity, "rows": rows})
+            if segment.get("search_engine") == "google" and segment.get("ranking_depth"):
+                depth_notes.append(identity)
+
         visible = [fact for fact in visibility_facts if fact["change"]]
-        visibility_text = (
-            " ".join(_change_text("Видимость", item["change"]) for item in visible)
-            if visible
-            else "Данные раздела отсутствуют."
-        )
         specs.append(
-            {"section": "visibility", "text": visibility_text, "facts": {"segments": visible}}
+            {
+                "section": "visibility",
+                "text": " ".join(
+                    f"{_segment_name(item)}: {_change_text('видимость', item['change'])}"
+                    for item in visible
+                )
+                if visible
+                else "Данные раздела отсутствуют.",
+                "facts": {"segments": visible},
+            }
         )
-        phrases = []
+        distribution_text = []
         for item in distribution_facts:
             ranges = item["distribution"].get("ranges", {})
             rendered = ", ".join(f"{key}: {value}" for key, value in ranges.items())
-            phrases.append(f"Распределение запросов по диапазонам — {rendered}.")
-        # A checked-depth qualification belongs to the whole section and is emitted once.
-        if depth_notes:
-            phrases.append(depth_notes[0]["comment"] + ".")
+            distribution_text.append(
+                f"{_segment_name(item)}: распределение запросов по диапазонам — {rendered}."
+            )
+        depth_text = _google_depth_text(depth_notes)
+        if depth_text:
+            # Exactly one aggregate qualification is appended to the positional section.
+            distribution_text.append(depth_text)
         specs.append(
             {
                 "section": "position_distribution",
-                "text": " ".join(phrases) or "Данные раздела отсутствуют.",
-                "facts": {"segments": distribution_facts, "depth_notes": depth_notes[:1]},
+                "text": " ".join(distribution_text) or "Данные раздела отсутствуют.",
+                "facts": {"segments": distribution_facts, "depth_notes": depth_notes},
             }
         )
         specs.append(
             {
                 "section": "top_10",
                 "text": " ".join(
-                    f"В TOP-10 находится {item['top_10']} запросов." for item in top_facts
+                    f"{_segment_name(item)}: в TOP-10 находится {item['top_10']} запросов."
+                    for item in top_facts
                 ),
                 "facts": {"segments": top_facts, "range_start": 1, "range_end": 10},
             }
         )
-        if top_11_rows:
+        if top_11_facts:
             specs.append(
                 {
                     "section": "top_11_20",
-                    "text": "В диапазоне TOP-11–20 находятся запросы: "
-                    + ", ".join(f"{row['query']} ({row['position']})" for row in top_11_rows)
-                    + ".",
-                    "facts": {"rows": top_11_rows, "range_start": 11, "range_end": 20},
+                    "text": " ".join(
+                        f"{_segment_name(item)}: в диапазоне TOP-11–20 находятся запросы: "
+                        + ", ".join(f"{row['query']} ({row['position']})" for row in item["rows"])
+                        + "."
+                        for item in top_11_facts
+                    ),
+                    "facts": {"segments": top_11_facts, "range_start": 11, "range_end": 20},
                 }
             )
         dynamics_text = []
         for fact in dynamic_facts:
+            prefix = f"{_segment_name(fact)}: "
             if fact["comparison_distributions"] is None:
-                dynamics_text.append("Отсутствует предыдущий период или база сравнения.")
+                dynamics_text.append(prefix + "отсутствует предыдущий период или база сравнения.")
             elif fact["warnings"]:
                 dynamics_text.append(
-                    "Изменилась глубина проверки; динамика ограничена сопоставимой глубиной."
+                    prefix
+                    + "изменилась глубина проверки; динамика ограничена сопоставимой глубиной."
                 )
             else:
-                dynamics_text.append("Динамика позиций рассчитана на сопоставимой глубине.")
+                dynamics_text.append(
+                    prefix + "динамика позиций рассчитана на сопоставимой глубине."
+                )
             if fact.get("semantics", {}).get("warning"):
-                dynamics_text.append("Существенно изменился состав отслеживаемых запросов.")
+                dynamics_text.append(
+                    prefix + "существенно изменился состав отслеживаемых запросов."
+                )
         specs.append(
             {
                 "section": "position_dynamics",
@@ -268,10 +310,9 @@ def generate_narratives(version):
             block = NarrativeBlock(
                 report_version=version, section_code=spec["section"], sort_order=0
             )
-        # Regeneration preserves a user's edit while refreshing only deterministic source fields.
-        block.generated_text = spec["text"]
-        block.facts = spec["facts"]
-        block.kind = NarrativeBlock.Kind.DETERMINISTIC
-        block.save()
+            block.generated_text = spec["text"]
+            block.facts = spec["facts"]
+            block.kind = NarrativeBlock.Kind.DETERMINISTIC
+            block.save()
         result.append(block)
     return result
