@@ -1,6 +1,16 @@
+import hashlib
+import json
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
+
+from django.core.serializers.json import DjangoJSONEncoder
+from django.db import transaction
+from django.db.models import Max
 
 from apps.metrics.models import MetricPoint, RankingSnapshot, SourceSnapshot
+from apps.worklog.models import WorkLogItem
 
 from .calculations import (
     FORMULA_VERSION,
@@ -15,7 +25,11 @@ from .calculations import (
     depth_comment,
     normalize_count_per_day,
     shift_month,
+    top_11_20_rows,
 )
+from .models import Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
+
+SNAPSHOT_SCHEMA_VERSION = "mvp1.0"
 
 DAILY_NORMALIZED_CODES = {
     "visits",
@@ -125,6 +139,14 @@ def build_position_facts(*, project, report_month):
                     (row.normalized_query for row in previous_rows),
                     (row.normalized_query for row in report_rows),
                 ),
+                "top_11_20": top_11_20_rows(
+                    (
+                        PositionItem(row.normalized_query, row.frequency, row.position_value)
+                        for row in report_rows
+                    ),
+                    depth=report_snapshot.ranking_depth if report_snapshot else 0,
+                    mode=project.top_11_20_mode,
+                ),
             }
         )
     return {"formula_version": FORMULA_VERSION, "periods": periods, "segments": facts}
@@ -205,3 +227,204 @@ def build_source_facts(*, project, report_month):
             **extra,
         }
     return {"formula_version": FORMULA_VERSION, "periods": periods, "sources": result}
+
+
+def _json_value(value):
+    """Turn calculation dataclasses into a stable, JSON-compatible value."""
+    if is_dataclass(value):
+        value = asdict(value)
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, date | datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
+
+
+def canonical_json(payload):
+    return json.dumps(
+        _json_value(payload),
+        cls=DjangoJSONEncoder,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def snapshot_checksum(payload):
+    return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+
+
+def _ranking_source_data(project, periods):
+    snapshots = RankingSnapshot.objects.filter(
+        project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
+    ).prefetch_related("positions")
+    result = []
+    for item in snapshots:
+        result.append(
+            {
+                "id": str(item.id),
+                "date": item.snapshot_date,
+                "search_engine": item.search_engine,
+                "region": item.region,
+                "configuration_id": item.topvisor_configuration_id,
+                "ranking_depth": item.ranking_depth,
+                "depth_raw": item.depth_raw,
+                "visibility": item.visibility,
+                "visibility_raw": item.visibility_raw,
+                "positions": [
+                    {
+                        "query": row.query,
+                        "normalized_query": row.normalized_query,
+                        "frequency": row.frequency,
+                        "position": row.position_value,
+                        "status": row.position_status,
+                        "group": row.group_name,
+                        "target_url": row.normalized_target_url,
+                    }
+                    for row in item.positions.all()
+                ],
+                "provenance": {
+                    "method": item.depth_source,
+                    "retrieved_at": item.retrieved_at,
+                    "depth_retrieved_at": item.depth_retrieved_at,
+                    "response_checksum": item.response_checksum,
+                    "import_batch_id": str(item.import_batch_id) if item.import_batch_id else None,
+                },
+            }
+        )
+    return result
+
+
+def _external_source_data(project, periods):
+    rows = SourceSnapshot.objects.filter(
+        project=project,
+        period_start__range=(periods.three_months.start, periods.report.start),
+    ).prefetch_related("metrics")
+    return [
+        {
+            "id": str(row.id),
+            "source": row.source,
+            "period_start": row.period_start,
+            "period_end": row.period_end,
+            "payload": row.payload,
+            "metrics": [
+                {
+                    "code": point.metric_code,
+                    "value": point.numeric_value,
+                    "unit": point.unit,
+                    "dimensions": point.dimensions,
+                }
+                for point in row.metrics.all()
+            ],
+            "provenance": {
+                "method": row.retrieval_method,
+                "checksum": row.checksum,
+                "generated_at": row.generated_at,
+                "generated_by_id": row.generated_by_id,
+            },
+        }
+        for row in rows
+    ]
+
+
+def build_report_snapshot(*, report):
+    project = report.project
+    periods = calculate_periods(report.report_month)
+    works = WorkLogItem.objects.filter(
+        project=project, work_date__range=(periods.report.start, periods.report.end)
+    ).select_related("category")
+    payload = {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "formula_version": FORMULA_VERSION,
+        "project": {
+            "id": str(project.id),
+            "name": project.name,
+            "domain": project.domain,
+            "normalized_domain": project.normalized_domain,
+            "timezone": project.timezone,
+            "language": project.language,
+            "top_11_20_mode": project.top_11_20_mode,
+            "brand_rules": list(
+                project.brand_rules.values("kind", "pattern", "priority", "active")
+            ),
+            "url_groups": [
+                {
+                    "name": group.name,
+                    "slug": group.slug,
+                    "priority": group.priority,
+                    "active": group.active,
+                    "rules": list(group.rules.values("type", "pattern", "priority", "active")),
+                }
+                for group in project.url_groups.prefetch_related("rules")
+            ],
+            "provenance": {"method": "project_database", "updated_at": project.updated_at},
+        },
+        "periods": periods,
+        "ranking_sources": _ranking_source_data(project, periods),
+        "source_snapshots": _external_source_data(project, periods),
+        "calculated": {
+            "positions": build_position_facts(project=project, report_month=report.report_month),
+            "sources": build_source_facts(project=project, report_month=report.report_month),
+        },
+        "completed_work": [
+            {
+                "date": item.work_date,
+                "category": item.category.name,
+                "title": item.title,
+                "status": item.status,
+                "url": item.url,
+                "page_or_material_name": item.page_or_material_name,
+                "character_count": item.character_count,
+                "responsible": item.responsible,
+                "comment": item.comment,
+                "result_url": item.result_url,
+                "provenance": {
+                    "method": "worklog",
+                    "id": str(item.id),
+                    "updated_at": item.updated_at,
+                },
+            }
+            for item in works
+        ],
+    }
+    return _json_value(payload)
+
+
+@transaction.atomic
+def create_report_version(*, report, created_by=None):
+    """Explicitly freeze current source data; no version is made by reads or source updates."""
+    locked_report = Report.objects.select_for_update().select_related("project").get(pk=report.pk)
+    number = (locked_report.versions.aggregate(value=Max("number"))["value"] or 0) + 1
+    payload = build_report_snapshot(report=locked_report)
+    version = ReportVersion.objects.create(
+        report=locked_report, number=number, created_by=created_by
+    )
+    ReportDatasetSnapshot.objects.create(
+        version=version,
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        formula_version=FORMULA_VERSION,
+        payload=payload,
+        checksum=snapshot_checksum(payload),
+    )
+    issues = []
+    for segment in payload["calculated"]["positions"]["segments"]:
+        for warning in segment["warnings"]:
+            issues.append(
+                ValidationIssue(
+                    version=version,
+                    code=warning["code"],
+                    details=warning,
+                    message="Глубина проверки позиций изменилась относительно предыдущего месяца.",
+                )
+            )
+    ValidationIssue.objects.bulk_create(issues)
+    return version
+
+
+def get_report_version_data(version):
+    """Read only the frozen row: deliberately has no source adapter calls."""
+    return ReportDatasetSnapshot.objects.only("payload").get(version=version).payload
