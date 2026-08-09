@@ -52,11 +52,20 @@ def connection(request, project_id):
         )
         messages.success(request, "Topvisor подключён; конфигурации сохранены.")
         return redirect("topvisor:connection", project_id=project.id)
-    return render(request, "topvisor/connection.html", {
-        "project": project, "mapping": mapping, "configured": _configured(),
-        "safe_error": safe_error, "form": form, "selected_project": selected,
-        "sync_form": TopvisorSyncForm(), "runs": mapping.sync_runs.all()[:10] if mapping else (),
-    })
+    return render(
+        request,
+        "topvisor/connection.html",
+        {
+            "project": project,
+            "mapping": mapping,
+            "configured": _configured(),
+            "safe_error": safe_error,
+            "form": form,
+            "selected_project": selected,
+            "sync_form": TopvisorSyncForm(),
+            "runs": mapping.sync_runs.all()[:10] if mapping else (),
+        },
+    )
 
 
 @login_required

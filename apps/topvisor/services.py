@@ -4,6 +4,7 @@ from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -30,6 +31,13 @@ def configuration_id(configuration):
     if value is None:
         raise ValueError("Topvisor configuration has no stable identifier")
     return str(value)
+
+
+def configuration_segment(configuration):
+    """Return the report dimension, deliberately excluding the device."""
+    engine = str(configuration.get("search_engine", configuration.get("searcher", "")))
+    region = str(configuration.get("region_name", configuration.get("region", "")))
+    return engine.strip().casefold(), " ".join(region.split()).casefold()
 
 
 @transaction.atomic
@@ -125,9 +133,18 @@ def sync_positions(*, mapping, report_month, client=None):
     client = client or TopvisorClient()
     run = TopvisorSyncRun.objects.create(mapping=mapping, report_month=report_month)
     configurations = {configuration_id(item): item for item in mapping.selected_configurations}
-    loaded = 0
-    segments = {}
     try:
+        segments = {}
+        for configuration in configurations.values():
+            segment = configuration_segment(configuration)
+            if segment in segments:
+                raise TopvisorError(
+                    "Выбрано несколько конфигураций для одной поисковой системы и региона."
+                )
+            segments[segment] = configuration
+
+        # Network access and validation deliberately happen before any ranking rows are changed.
+        pending_snapshots = []
         for month in (_shift_month(report_month, -2), _shift_month(report_month, -1), report_month):
             snapshot_date = _month_end(month)
             for config_id, configuration in configurations.items():
@@ -143,35 +160,61 @@ def sync_positions(*, mapping, report_month, client=None):
                 if any(row.get("frequency", row.get("ws")) is None for row in rows):
                     raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
                 payload = {"positions": rows, "tracked_keyword_count": len(rows)}
+                # Validate depth before opening the write transaction as well.
+                normalize_depth(configuration.get("depth", configuration.get("check_depth")))
+                pending_snapshots.append((configuration, snapshot_date, payload))
+
+        with transaction.atomic():
+            for configuration, snapshot_date, payload in pending_snapshots:
                 store_snapshot(
                     mapping=mapping,
                     configuration=configuration,
                     snapshot_date=snapshot_date,
                     payload=payload,
                 )
-                loaded += len(rows)
-                key = (
-                    str(configuration.get("search_engine", configuration.get("searcher", ""))),
-                    str(configuration.get("region_name", configuration.get("region", ""))),
-                )
-                segments[key] = normalize_depth(
-                    configuration.get("depth", configuration.get("check_depth"))
-                )
+            mapping.last_checked_at = timezone.now()
+            mapping.save(update_fields=["last_checked_at", "updated_at"])
+
         run.status = TopvisorSyncRun.Status.SUCCESS
-        run.loaded_keyword_count = loaded
-        run.segments = [
-            {"search_engine": engine, "region": region, "depth": depth}
-            for (engine, region), depth in sorted(segments.items())
-        ]
-        mapping.last_checked_at = timezone.now()
-        mapping.save(update_fields=["last_checked_at", "updated_at"])
-    except (TopvisorError, TypeError, ValueError) as exc:
-        run.status = TopvisorSyncRun.Status.FAILED
-        run.error_message = (
-            str(exc)
-            if isinstance(exc, TopvisorError)
-            else "Topvisor вернул некорректные данные."
+        run.loaded_keyword_count = sum(
+            len(payload["positions"]) for _, _, payload in pending_snapshots
         )
+        run.segments = [
+            {
+                "search_engine": str(
+                    configuration.get("search_engine", configuration.get("searcher", ""))
+                ),
+                "region": str(configuration.get("region_name", configuration.get("region", ""))),
+                "depth": normalize_depth(
+                    configuration.get("depth", configuration.get("check_depth"))
+                ),
+            }
+            for configuration in segments.values()
+        ]
+    except Exception as exc:
+        run.status = TopvisorSyncRun.Status.FAILED
+        if isinstance(exc, TopvisorError):
+            message = str(exc)
+            credentials = getattr(client, "credentials", None)
+            for secret in (
+                getattr(credentials, "user_id", ""),
+                getattr(credentials, "api_key", ""),
+                settings.TOPVISOR_USER_ID,
+                settings.TOPVISOR_API_KEY,
+            ):
+                if secret:
+                    message = message.replace(secret, "[скрыто]")
+            run.error_message = message[:500]
+        else:
+            run.error_message = "Не удалось синхронизировать данные Topvisor."
     run.completed_at = timezone.now()
-    run.save()
+    run.save(
+        update_fields=[
+            "status",
+            "loaded_keyword_count",
+            "segments",
+            "error_message",
+            "completed_at",
+        ]
+    )
     return run

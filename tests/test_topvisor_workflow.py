@@ -33,6 +33,19 @@ class FakeClient:
         return iter([row])
 
 
+class FailingLaterClient(FakeClient):
+    def __init__(self, *, fail_at, secret=""):
+        super().__init__()
+        self.fail_at = fail_at
+        self.secret = secret
+
+    def get_positions(self, project_id, **filters):
+        self.calls.append((project_id, filters))
+        if len(self.calls) == self.fail_at:
+            raise TopvisorError(f"Ошибка провайдера {self.secret}")
+        return iter([{"query": "купить слона", "position": 7, "frequency": 120}])
+
+
 def mapping(project, depth=20, engine="google", region="Москва"):
     return TopvisorProjectMapping.objects.create(
         project=project,
@@ -113,6 +126,92 @@ def test_sync_is_idempotent_requires_frequency_and_keeps_depth_per_segment():
     )
     assert failed.status == failed.Status.FAILED
     assert "частотности" in failed.error_message
+
+
+def test_late_api_error_leaves_no_partial_snapshots_and_records_failed_run():
+    project = Project.objects.create(name="Atomic", domain="atomic.example")
+    selected = mapping(project)
+    run = sync_positions(
+        mapping=selected,
+        report_month=date(2026, 7, 1),
+        client=FailingLaterClient(fail_at=3),
+    )
+    assert run.status == run.Status.FAILED
+    assert run.completed_at is not None
+    assert RankingSnapshot.objects.filter(project=project).count() == 0
+
+
+def test_late_api_error_does_not_change_existing_snapshots():
+    project = Project.objects.create(name="Existing", domain="existing.example")
+    selected = mapping(project)
+    successful = sync_positions(
+        mapping=selected, report_month=date(2026, 7, 1), client=FakeClient()
+    )
+    assert successful.status == successful.Status.SUCCESS
+    before = list(
+        RankingSnapshot.objects.filter(project=project)
+        .order_by("snapshot_date")
+        .values_list("id", "response_checksum", "retrieved_at")
+    )
+    failed = sync_positions(
+        mapping=selected,
+        report_month=date(2026, 7, 1),
+        client=FailingLaterClient(fail_at=3),
+    )
+    after = list(
+        RankingSnapshot.objects.filter(project=project)
+        .order_by("snapshot_date")
+        .values_list("id", "response_checksum", "retrieved_at")
+    )
+    assert failed.status == failed.Status.FAILED
+    assert after == before
+
+
+def test_sync_error_redacts_client_credentials():
+    project = Project.objects.create(name="Secret", domain="secret.example")
+    selected = mapping(project)
+    fake = FailingLaterClient(fail_at=2, secret="api-secret")
+    fake.credentials = TopvisorCredentials("user-secret", "api-secret")
+    run = sync_positions(mapping=selected, report_month=date(2026, 7, 1), client=fake)
+    assert run.status == run.Status.FAILED
+    assert "api-secret" not in run.error_message
+    assert "[скрыто]" in run.error_message
+
+
+def test_duplicate_normalized_engine_region_pair_is_rejected(client, settings, monkeypatch):
+    settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY = "uid", "key"
+    user = get_user_model().objects.create_user("duplicate", password="password")
+    project = Project.objects.create(name="Duplicate", domain="duplicate.example")
+    client.force_login(user)
+    configurations = [
+        {
+            "id": 7,
+            "search_engine": "Google",
+            "region_name": "Москва",
+            "depth": 50,
+            "device": "desktop",
+        },
+        {
+            "id": 8,
+            "search_engine": " google ",
+            "region_name": "  МОСКВА ",
+            "depth": 50,
+            "device": "mobile",
+        },
+    ]
+    monkeypatch.setattr(
+        TopvisorClient, "iter_projects", lambda self: iter([{"id": 42, "name": "SEO"}])
+    )
+    monkeypatch.setattr(
+        TopvisorClient, "get_search_configurations", lambda self, _id: configurations
+    )
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"topvisor_project": "42", "configurations": ["7", "8"]},
+    )
+    assert response.status_code == 200
+    assert "устройство не является измерением" in response.content.decode()
+    assert not TopvisorProjectMapping.objects.filter(project=project).exists()
 
 
 def test_sync_version_and_docx_xlsx_export_do_not_need_live_api(settings, tmp_path):

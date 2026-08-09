@@ -4,7 +4,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("metrics", "0003_rankingsnapshot_depth_and_api"),
     ]
