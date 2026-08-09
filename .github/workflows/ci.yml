@@ -91,6 +91,24 @@ jobs:
       - name: Run tests against PostgreSQL
         run: docker compose exec -T web pytest
 
+      - name: Generate and smoke-test real report exports
+        run: |
+          docker compose exec -T web python manage.py export_smoke_demo --output /app/demo-artifacts
+          mkdir -p demo-artifacts
+          docker compose cp web:/app/demo-artifacts/. demo-artifacts/
+
+      - name: Upload visual export samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: anonymised-report-export-samples
+          path: |
+            demo-artifacts/seo-demo.docx
+            demo-artifacts/seo-demo.pdf
+            demo-artifacts/seo-demo.xlsx
+            demo-artifacts/seo-demo-page-*.png
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Show service logs
         if: always()
         run: docker compose logs --no-color
