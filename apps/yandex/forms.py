@@ -3,8 +3,6 @@ from django import forms
 
 class CounterForm(forms.Form):
     counter_id = forms.CharField(widget=forms.HiddenInput)
-    counter_name = forms.CharField(widget=forms.HiddenInput)
-    counter_domain = forms.CharField(widget=forms.HiddenInput)
     confirm_domain_mismatch = forms.BooleanField(
         required=False, label="Подтверждаю выбор счётчика другого домена"
     )

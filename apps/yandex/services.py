@@ -15,7 +15,6 @@ from .client import (
     GOAL_REACHES,
     LAST_SIGN_TRAFFIC_SOURCE,
     MetrikaClient,
-    YandexAPIError,
 )
 from .models import YandexMetrikaSyncRun
 
@@ -203,13 +202,9 @@ def sync_metrika(*, mapping, report_month, user=None, client=None):
             run.completed_at = now
             run.save(update_fields=["status", "completed_at"])
         return run
-    except Exception as exc:
+    except Exception:
         run.status = run.Status.FAILED
         run.completed_at = timezone.now()
-        run.error_message = (
-            str(exc)[:500]
-            if isinstance(exc, YandexAPIError | ValueError)
-            else "Не удалось синхронизировать данные Метрики."
-        )
+        run.error_message = "Не удалось синхронизировать данные Метрики."
         run.save(update_fields=["status", "completed_at", "error_message"])
         return run

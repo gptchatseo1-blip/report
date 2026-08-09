@@ -262,10 +262,12 @@ def _provenance_rows(payload, code, segment=None):
                     if source.get("period_start")
                     else source.get("date")
                 ),
-                provenance.get("retrieved_at")
+                source.get("retrieved_at")
+                or provenance.get("retrieved_at")
                 or provenance.get("generated_at")
                 or provenance.get("updated_at"),
-                provenance.get("response_checksum")
+                source.get("checksum")
+                or provenance.get("response_checksum")
                 or provenance.get("checksum")
                 or provenance.get("import_batch_id")
                 or source.get("id")

@@ -275,8 +275,8 @@ def _preview_context(version, *, form_overrides=None):
                 "source": item.get("source"),
                 "method": source.get("method"),
                 "period": f"{item.get('period_start')} — {item.get('period_end')}",
-                "retrieved_at": source.get("generated_at"),
-                "checksum": source.get("checksum"),
+                "retrieved_at": item.get("retrieved_at"),
+                "checksum": item.get("checksum"),
                 "identifier": item.get("id"),
             }
         )
