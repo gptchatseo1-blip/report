@@ -29,7 +29,7 @@ from .calculations import (
 )
 from .models import Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
 
-SNAPSHOT_SCHEMA_VERSION = "mvp1.0"
+SNAPSHOT_SCHEMA_VERSION = "mvp1.1"
 
 DAILY_NORMALIZED_CODES = {
     "visits",
@@ -94,6 +94,7 @@ def build_position_facts(*, project, report_month):
             monthly_series.append(
                 {
                     "month": month,
+                    "visibility": snapshot.visibility,
                     "distribution": calculate_position_distribution(
                         (
                             PositionItem(row.normalized_query, row.frequency, row.position_value)
@@ -234,6 +235,26 @@ def build_source_facts(*, project, report_month):
             extra["traffic_sources"] = calculate_source_shares(
                 current.get("visits").numeric_value if current.get("visits") else None, sources
             )
+            source_codes = sorted(
+                code
+                for month_metrics in monthly_by_start.values()
+                for code in month_metrics
+                if code.startswith("source_")
+            )
+            extra["traffic_source_series"] = {
+                code.removeprefix("source_").removesuffix("_visits"): [
+                    {
+                        "month": month,
+                        "value": (
+                            monthly_by_start[month][code].numeric_value
+                            if code in monthly_by_start[month]
+                            else None
+                        ),
+                    }
+                    for month in months
+                ]
+                for code in source_codes
+            }
         else:
             extra["ctr_check"] = check_ctr(
                 current["search_clicks"].numeric_value if "search_clicks" in current else None,
