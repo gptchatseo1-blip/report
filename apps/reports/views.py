@@ -33,7 +33,10 @@ SECTION_TITLES = {
 }
 ENGINE_LABELS = {"google": "Google", "yandex": "Яндекс"}
 METRIC_SECTIONS = {
-    "traffic": ("yandex_metrika", ("visits",)),
+    "traffic": (
+        "yandex_metrika",
+        ("visits", "users", "new_users", "bounce_rate", "page_depth", "avg_visit_duration_seconds"),
+    ),
     "clicks_impressions": ("yandex_webmaster", ("search_clicks", "search_impressions")),
     "ctr": ("yandex_webmaster", ("search_ctr",)),
     "indexing": ("yandex_webmaster", ("indexed_pages",)),
@@ -41,6 +44,11 @@ METRIC_SECTIONS = {
 }
 METRIC_LABELS = {
     "visits": "Визиты",
+    "users": "Посетители",
+    "new_users": "Новые посетители",
+    "bounce_rate": "Показатель отказов",
+    "page_depth": "Глубина просмотра",
+    "avg_visit_duration_seconds": "Средняя длительность визита",
     "search_clicks": "Клики",
     "search_impressions": "Показы",
     "search_ctr": "CTR",
@@ -182,6 +190,8 @@ def _metric_rows(payload, code):
     facts = payload.get("calculated", {}).get("sources", {}).get("sources", {}).get(source, {})
     changes = facts.get("normalized_changes", {})
     series = facts.get("three_month_series", {})
+    if code == "traffic":
+        codes = (*codes, *(key for key in sorted(series) if key.startswith("goal_")))
     return [
         {
             "code": metric_code,
@@ -265,8 +275,8 @@ def _preview_context(version, *, form_overrides=None):
                 "source": item.get("source"),
                 "method": source.get("method"),
                 "period": f"{item.get('period_start')} — {item.get('period_end')}",
-                "retrieved_at": source.get("generated_at"),
-                "checksum": source.get("checksum"),
+                "retrieved_at": item.get("retrieved_at"),
+                "checksum": item.get("checksum"),
                 "identifier": item.get("id"),
             }
         )

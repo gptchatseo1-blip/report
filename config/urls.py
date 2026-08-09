@@ -18,6 +18,7 @@ urlpatterns = [
     path("imports/", include("apps.imports.urls")),
     path("metrics/", include("apps.metrics.urls")),
     path("topvisor/", include("apps.topvisor.urls")),
+    path("yandex/", include("apps.yandex.urls")),
     path("worklog/", include("apps.worklog.urls")),
 ]
 

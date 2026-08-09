@@ -18,6 +18,7 @@ INSTALLED_APPS = [
     "apps.metrics",
     "apps.worklog",
     "apps.topvisor",
+    "apps.yandex",
     "apps.reports",
 ]
 MIDDLEWARE = [
@@ -92,3 +93,17 @@ TOPVISOR_API_KEY = os.getenv("TOPVISOR_API_KEY", "")
 TOPVISOR_API_BASE_URL = os.getenv("TOPVISOR_API_BASE_URL", "https://api.topvisor.com/v2/json")
 TOPVISOR_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TOPVISOR_REQUEST_TIMEOUT_SECONDS", "15"))
 TOPVISOR_MAX_RETRIES = int(os.getenv("TOPVISOR_MAX_RETRIES", "3"))
+
+YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID", "")
+YANDEX_CLIENT_SECRET = os.getenv("YANDEX_CLIENT_SECRET", "")
+YANDEX_REDIRECT_URI = os.getenv("YANDEX_REDIRECT_URI", "")
+YANDEX_OAUTH_AUTHORIZE_URL = os.getenv(
+    "YANDEX_OAUTH_AUTHORIZE_URL", "https://oauth.yandex.ru/authorize"
+)
+YANDEX_OAUTH_TOKEN_URL = os.getenv("YANDEX_OAUTH_TOKEN_URL", "https://oauth.yandex.ru/token")
+YANDEX_METRIKA_API_BASE_URL = os.getenv(
+    "YANDEX_METRIKA_API_BASE_URL", "https://api-metrika.yandex.net"
+)
+YANDEX_REQUEST_TIMEOUT_SECONDS = float(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "15"))
+YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
+CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")

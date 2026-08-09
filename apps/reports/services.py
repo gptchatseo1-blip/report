@@ -391,12 +391,12 @@ def _external_source_data(project, periods):
                 }
                 for point in row.metrics.order_by("metric_code", "id")
             ],
-            "provenance": {
-                "method": row.retrieval_method,
-                "checksum": row.checksum,
-                "generated_at": row.generated_at,
-                "generated_by_id": row.generated_by_id,
-            },
+            "retrieval_method": row.retrieval_method,
+            "checksum": row.checksum,
+            "retrieved_at": row.retrieved_at,
+            "provenance": row.provenance,
+            "sampling": row.sampling,
+            "contains_sensitive_data": row.contains_sensitive_data,
         }
         for row in rows
     ]

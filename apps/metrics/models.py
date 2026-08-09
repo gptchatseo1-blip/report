@@ -107,6 +107,7 @@ class SourceSnapshot(models.Model):
 
     class RetrievalMethod(models.TextChoices):
         SYNTHETIC = "synthetic", "Синтетические данные"
+        YANDEX_API = "yandex_api", "API Яндекс Метрики"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="source_snapshots")
@@ -126,6 +127,10 @@ class SourceSnapshot(models.Model):
         related_name="generated_source_snapshots",
     )
     generated_at = models.DateTimeField(auto_now_add=True)
+    retrieved_at = models.DateTimeField(null=True, blank=True)
+    provenance = models.JSONField(default=dict, blank=True)
+    sampling = models.JSONField(default=dict, blank=True)
+    contains_sensitive_data = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-period_start", "source"]

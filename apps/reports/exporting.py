@@ -70,7 +70,11 @@ SOURCE_LABELS = {
 }
 METRIC_LABELS = {
     "visits": "Визиты",
-    "users": "Пользователи",
+    "users": "Посетители",
+    "new_users": "Новые посетители",
+    "bounce_rate": "Показатель отказов",
+    "page_depth": "Глубина просмотра",
+    "avg_visit_duration_seconds": "Средняя длительность визита",
     "search_clicks": "Клики",
     "search_impressions": "Показы",
     "search_ctr": "CTR",
@@ -258,10 +262,12 @@ def _provenance_rows(payload, code, segment=None):
                     if source.get("period_start")
                     else source.get("date")
                 ),
-                provenance.get("retrieved_at")
+                source.get("retrieved_at")
+                or provenance.get("retrieved_at")
                 or provenance.get("generated_at")
                 or provenance.get("updated_at"),
-                provenance.get("response_checksum")
+                source.get("checksum")
+                or provenance.get("response_checksum")
                 or provenance.get("checksum")
                 or provenance.get("import_batch_id")
                 or source.get("id")
@@ -587,7 +593,19 @@ def _change_rows(payload, source, codes):
 
 def _render_metrics(doc, payload, code, narrative):
     configs = {
-        "traffic": ("yandex_metrika", ("visits", "users"), "Визиты и пользователи", "Количество"),
+        "traffic": (
+            "yandex_metrika",
+            (
+                "visits",
+                "users",
+                "new_users",
+                "bounce_rate",
+                "page_depth",
+                "avg_visit_duration_seconds",
+            ),
+            "Основные показатели и цели Метрики",
+            "Значение",
+        ),
         "clicks_impressions": (
             "yandex_webmaster",
             ("search_impressions", "search_clicks"),
@@ -599,6 +617,9 @@ def _render_metrics(doc, payload, code, narrative):
         "iks": ("yandex_webmaster", ("iks", "quality_index"), "ИКС", "Значение"),
     }
     source, codes, title, ylabel = configs[code]
+    if code == "traffic":
+        available = _metric_source(payload, source).get("three_month_series", {})
+        codes = (*codes, *(key for key in sorted(available) if key.startswith("goal_")))
     series = _metric_series(payload, source, codes)
     if code == "iks" and not any(points for _, points in series[:1]):
         series = series[1:]
