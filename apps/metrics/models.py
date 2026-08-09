@@ -37,6 +37,7 @@ class RankingSnapshot(models.Model):
     visibility_raw = models.JSONField(null=True, blank=True)
     response_checksum = models.CharField(max_length=64, blank=True)
     retrieved_at = models.DateTimeField(null=True, blank=True)
+    provenance = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -22,3 +22,27 @@ class TopvisorProjectMapping(models.Model):
 
     def __str__(self):
         return f"{self.project} → {self.topvisor_project_name or self.topvisor_project_id}"
+
+
+class TopvisorSyncRun(models.Model):
+    class Status(models.TextChoices):
+        RUNNING = "running", "Выполняется"
+        SUCCESS = "success", "Завершена"
+        FAILED = "failed", "Ошибка"
+
+    mapping = models.ForeignKey(
+        TopvisorProjectMapping, on_delete=models.CASCADE, related_name="sync_runs"
+    )
+    report_month = models.DateField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    loaded_keyword_count = models.PositiveIntegerField(default=0)
+    segments = models.JSONField(default=list, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self):
+        return f"{self.mapping} — {self.report_month:%m.%Y}: {self.status}"
