@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from apps.metrics.models import MetricPoint, SourceSnapshot
 from apps.projects.models import Project
+from apps.reports.exporting import generate_artifact
 from apps.reports.models import Report
 from apps.reports.services import create_report_version
 from apps.yandex.client import MetrikaClient, YandexAPIError
@@ -323,20 +324,35 @@ def test_pagination_and_retry_429_5xx(identity, yandex_settings):
     assert len(calls) == 3
 
 
-def test_pagination_loads_next_page(identity, yandex_settings):
+def test_counter_pagination_advances_offset_by_received_rows(identity, yandex_settings):
     connection = make_connection(identity[0])
-    pages = []
+    offsets = []
     api = MetrikaClient(connection)
 
     def request(path, params, **kwargs):
-        pages.append(params["page"])
+        offsets.append(params["offset"])
         return (
-            {"counters": [{"id": i} for i in range(2)]} if params["page"] == 1 else {"counters": []}
+            {"counters": [{"id": i} for i in range(2)]}
+            if params["offset"] == 1
+            else {"counters": []}
         )
 
     api._request = request
     assert len(list(api._pages("x", "counters", page_size=2))) == 2
-    assert pages == [1, 2]
+    assert offsets == [1, 3]
+
+
+def test_goals_uses_single_request_without_pagination(identity, yandex_settings):
+    api = MetrikaClient(make_connection(identity[0]))
+    calls = []
+
+    def request(path, params=None, **kwargs):
+        calls.append((path, params))
+        return {"goals": [{"id": 7, "name": "Order"}]}
+
+    api._request = request
+    assert api.goals("42") == [{"id": 7, "name": "Order"}]
+    assert calls == [("management/v1/counter/42/goals", None)]
 
 
 def test_401_refreshes_only_once(identity, yandex_settings, monkeypatch):
@@ -362,3 +378,22 @@ def test_admin_and_html_never_render_tokens(client, identity, yandex_settings, m
 
     assert "access_token_encrypted" in YandexConnectionAdmin.exclude
     assert "refresh_token_encrypted" in YandexConnectionAdmin.exclude
+
+
+def test_version_docx_xlsx_exports_never_call_live_metrika(
+    identity, yandex_settings, settings, tmp_path, monkeypatch
+):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
+    report = Report.objects.create(project=mapping.project, report_month=date(2026, 3, 1))
+    version = create_report_version(report=report, created_by=identity[0])
+    settings.MEDIA_ROOT = tmp_path
+
+    def live_api_forbidden(*args, **kwargs):
+        raise AssertionError("export attempted to call live Metrika API")
+
+    monkeypatch.setattr(MetrikaClient, "_request", live_api_forbidden)
+    docx = generate_artifact(version=version, artifact_type="docx", is_draft=True)
+    xlsx = generate_artifact(version=version, artifact_type="xlsx", is_draft=True)
+    assert docx.file.size > 0
+    assert xlsx.file.size > 0

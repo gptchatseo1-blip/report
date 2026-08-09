@@ -131,14 +131,16 @@ class MetrikaClient:
                 raise YandexAPIError("Не удалось получить корректный ответ Метрики.") from None
 
     def _pages(self, path, key, params=None, page_size=1000):
-        page = 1
+        offset = 1
         while True:
-            result = self._request(path, {**(params or {}), "per_page": page_size, "page": page})
+            result = self._request(
+                path, {**(params or {}), "per_page": page_size, "offset": offset}
+            )
             rows = result.get(key, [])
             yield from rows
             if len(rows) < page_size:
                 break
-            page += 1
+            offset += len(rows)
 
     def counters(self):
         return self._pages("management/v1/counters", "counters")
@@ -147,7 +149,7 @@ class MetrikaClient:
         return self._request(f"management/v1/counter/{counter_id}").get("counter", {})
 
     def goals(self, counter_id):
-        return self._pages(f"management/v1/counter/{counter_id}/goals", "goals")
+        return self._request(f"management/v1/counter/{counter_id}/goals").get("goals", [])
 
     def stat(self, **params):
         return self._request("stat/v1/data", params)
