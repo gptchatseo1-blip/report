@@ -98,7 +98,10 @@ class TopvisorClient:
         return self.iter_pages("get/projects_2/projects", {"fields": ["id", "name", "site"]})
 
     def get_search_configurations(self, project_id):
-        return self._request("get/projects_2/searchers", {"project_id": project_id})
+        payload = self._request("get/projects_2/searchers", {"project_id": project_id})
+        if isinstance(payload, dict):
+            return payload.get("rows", payload.get("items", []))
+        return payload
 
     def get_positions(self, project_id, **filters):
         return self.iter_pages("get/positions_2/history", {"project_id": project_id, **filters})
