@@ -5,7 +5,6 @@ import io
 import re
 import subprocess
 import tempfile
-from collections import defaultdict
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -199,20 +198,22 @@ def _add_chart(doc, chart, narrative):
     return True
 
 
+def _chart_narrative(text):
+    sentences = re.split(r"(?<=[.!?])\s+", _clean(text))
+    filtered = [
+        sentence
+        for sentence in sentences
+        if "Проверка позиций в Google" not in sentence
+        and "Глубина проверки позиций в Google" not in sentence
+    ]
+    return " ".join(filtered).strip() or "Данные представлены на графике."
+
+
 def _segment_title(segment):
     engine = ENGINE_LABELS.get(
         segment.get("search_engine"), segment.get("search_engine") or "Поиск"
     )
     return f"{engine} · {segment.get('region') or 'регион не указан'}"
-
-
-def _position_sources(payload):
-    result = defaultdict(list)
-    for source in payload.get("ranking_sources", []):
-        result[(source.get("search_engine"), source.get("region"))].append(source)
-    for rows in result.values():
-        rows.sort(key=lambda item: (item.get("date") or "", item.get("id") or ""))
-    return result
 
 
 def _metric_source(payload, source_name):
@@ -321,25 +322,27 @@ def _position_rows(source, start=None, end=None):
     return rows
 
 
-def _add_landscape_table(doc, headers, rows, widths):
+def _start_landscape(doc):
     section = doc.add_section()
     section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width, section.page_height = section.page_height, section.page_width
-    table = _table(doc, headers, rows, widths)
+    section.page_width, section.page_height = Cm(29.7), Cm(21)
+
+
+def _return_to_portrait(doc):
     portrait = doc.add_section()
     portrait.orientation = WD_ORIENT.PORTRAIT
     portrait.page_width, portrait.page_height = Cm(21), Cm(29.7)
-    return table
 
 
 def _render_visibility(doc, payload, segments, narrative):
-    sources = _position_sources(payload)
     if not segments:
         doc.add_paragraph("Данные недоступны.", style="Data Missing")
     for segment in segments:
         doc.add_heading(_segment_title(segment), level=2)
-        rows = sources.get((segment.get("search_engine"), segment.get("region")), [])
-        points = [(row.get("date"), row.get("visibility")) for row in rows]
+        points = [
+            (row.get("month"), row.get("visibility"))
+            for row in segment.get("three_month_series", [])
+        ]
         _add_chart(
             doc,
             _chart(
@@ -347,7 +350,7 @@ def _render_visibility(doc, payload, segments, narrative):
                 title=f"Динамика видимости · {_segment_title(segment)}",
                 ylabel="%",
             ),
-            narrative,
+            _chart_narrative(narrative),
         )
         current = points[-1][1] if points else None
         doc.add_paragraph(f"Текущая видимость: {_number(current, '%')}", style="KPI")
@@ -378,7 +381,7 @@ def _render_distribution(doc, payload, segments, narrative):
             ylabel="Количество",
             kind="bar",
         )
-        _add_chart(doc, chart, narrative)
+        _add_chart(doc, chart, _chart_narrative(narrative))
         _table(
             doc,
             ("Диапазон", "Количество", "Доля, %"),
@@ -429,7 +432,7 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
                     title=f"Динамика TOP · {_segment_title(segment)}",
                     ylabel="Количество запросов",
                 ),
-                narrative,
+                _chart_narrative(narrative),
             )
             distribution = segment.get("distribution") or {}
             kpi = f"TOP-10: {_number(distribution.get('top_10'))}"
@@ -437,11 +440,11 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
                 kpi += f" · TOP-30: {_number(distribution.get('top_30'))}"
             doc.add_paragraph(kpi, style="KPI")
         if rows:
-            _add_landscape_table(
+            _table(
                 doc,
                 ("Запрос", "Частотность", "Позиция", "Группа", "Релевантный URL"),
                 rows,
-                [7.0, 2.7, 2.2, 5.0, 9.0],
+                [5.0, 2.3, 2.0, 3.0, 4.0],
             )
         else:
             doc.add_paragraph("Запросы в диапазоне отсутствуют.", style="Data Missing")
@@ -488,7 +491,7 @@ def _render_position_dynamics(doc, payload, segments, narrative):
                 ylabel="Количество",
                 kind="line",
             ),
-            narrative,
+            _chart_narrative(narrative),
         )
         history_rows = []
         for row in series:
@@ -505,17 +508,20 @@ def _render_position_dynamics(doc, payload, segments, narrative):
                     top_30,
                 )
             )
-        _table(
-            doc,
-            ("Период", "Глубина", "Подтверждённые диапазоны", "TOP-10", "TOP-30"),
-            history_rows,
-            [2.7, 2.2, 6.1, 2.5, 2.5],
-        )
+        headers = ["Период", "Глубина", "Подтверждённые диапазоны", "TOP-10"]
+        widths = [3.0, 2.3, 7.7, 3.0]
+        if (segment.get("ranking_depth") or 0) >= 30:
+            headers.append("TOP-30")
+            widths = [2.7, 2.2, 6.1, 2.5, 2.5]
+        else:
+            history_rows = [row[:-1] for row in history_rows]
+        _table(doc, headers, history_rows, widths)
         source = _current_position_source(payload, segment)
         all_rows = _position_rows(source)
+        _start_landscape(doc)
         doc.add_heading("Все запросы отчётного периода", level=3)
         if all_rows:
-            _add_landscape_table(
+            _table(
                 doc,
                 ("Запрос", "Частотность", "Позиция", "Группа", "Релевантный URL"),
                 all_rows,
@@ -523,6 +529,7 @@ def _render_position_dynamics(doc, payload, segments, narrative):
             )
         else:
             doc.add_paragraph("Данные недоступны.", style="Data Missing")
+        _return_to_portrait(doc)
         _add_provenance(doc, payload, "position_dynamics", segment)
     google = [s for s in segments if s.get("search_engine") == "google" and s.get("ranking_depth")]
     if google:
@@ -612,55 +619,29 @@ def _render_metrics(doc, payload, code, narrative):
     _add_provenance(doc, payload, code)
 
 
-def _traffic_source_facts(payload):
-    snapshots = [
-        s for s in payload.get("source_snapshots", []) if s.get("source") == "yandex_metrika"
-    ]
-    snapshots.sort(key=lambda item: item.get("period_start") or "")
-    result = defaultdict(list)
-    for source in snapshots:
-        total = next(
-            (m.get("value") for m in source.get("metrics", []) if m.get("code") == "visits"), None
-        )
-        for metric in source.get("metrics", []):
-            code = metric.get("code") or ""
-            if code.startswith("source_") and code.endswith("_visits"):
-                name = code.removeprefix("source_").removesuffix("_visits")
-                value = metric.get("value")
-                share = (
-                    Decimal(str(value)) * 100 / Decimal(str(total))
-                    if value is not None and total not in (None, 0, "0")
-                    else None
-                )
-                result[name].append((source.get("period_start"), value, share))
-    return result
-
-
 def _render_traffic_sources(doc, payload, narrative):
-    facts = _traffic_source_facts(payload)
+    facts = _metric_source(payload, "yandex_metrika").get("traffic_source_dynamics", {})
     series = [
-        (name, [(month, value) for month, value, _ in points]) for name, points in facts.items()
+        (
+            name,
+            [(point.get("month"), point.get("value")) for point in fact.get("series", [])],
+        )
+        for name, fact in facts.items()
     ]
     _add_chart(
         doc, _chart(series, title="Структура источников трафика", ylabel="Визиты"), narrative
     )
     rows = []
-    for name, points in facts.items():
-        previous = points[-2][1] if len(points) > 1 else None
-        current = points[-1][1] if points else None
-        share = points[-1][2] if points else None
-        absolute = (
-            Decimal(str(current)) - Decimal(str(previous))
-            if current is not None and previous is not None
-            else None
-        )
-        relative = (
-            absolute * 100 / Decimal(str(previous))
-            if absolute is not None and previous not in (0, "0")
-            else None
-        )
+    for name, fact in facts.items():
+        change = fact.get("change") or {}
         rows.append(
-            (name, _number(current), _number(share, "%"), _number(absolute), _number(relative, "%"))
+            (
+                name,
+                _number(change.get("current")),
+                _number(fact.get("share_percent"), "%"),
+                _number(change.get("absolute")),
+                _number(change.get("relative_percent"), "%"),
+            )
         )
     if rows:
         _table(
@@ -690,7 +671,9 @@ def _render_work(doc, payload, narrative):
         for w in payload.get("completed_work", [])
     ]
     if rows:
-        _add_landscape_table(
+        _start_landscape(doc)
+        doc.add_heading("Таблица выполненных работ", level=3)
+        _table(
             doc,
             (
                 "Дата",
@@ -706,6 +689,7 @@ def _render_work(doc, payload, narrative):
             rows,
             [2.2, 3.0, 4.5, 2.5, 4.2, 2.0, 3.2, 4.2, 4.2],
         )
+        _return_to_portrait(doc)
     else:
         doc.add_paragraph("Выполненные работы отсутствуют.", style="Data Missing")
     doc.add_paragraph(_clean(narrative))
@@ -714,6 +698,8 @@ def _render_work(doc, payload, narrative):
 
 def _configure_document(doc, domain, period, version_number):
     section = doc.sections[0]
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.page_width, section.page_height = Cm(21), Cm(29.7)
     section.top_margin = Cm(1.8)
     section.bottom_margin = Cm(1.8)
     section.left_margin = Cm(2)
@@ -724,6 +710,8 @@ def _configure_document(doc, domain, period, version_number):
         style._element.rPr.rFonts.set(qn("w:eastAsia"), "Carlito")
         style.font.color.rgb = RGBColor.from_string("263746")
     doc.styles["Normal"].font.size = Pt(10.5)
+    for name in ("Heading 1", "Heading 2", "Heading 3"):
+        doc.styles[name].paragraph_format.keep_with_next = True
     for style_name, size, italic in (
         ("Chart Caption", 9, True),
         ("Data Missing", 10, True),
@@ -901,6 +889,20 @@ def _xlsx(snapshot, draft):
                         metric.get("unit"),
                         (source.get("provenance") or {}).get("method"),
                     )
+                )
+            )
+    traffic_facts = _metric_source(payload, "yandex_metrika").get("traffic_source_dynamics", {})
+    for name, fact in traffic_facts.items():
+        for point in fact.get("series", []):
+            metrics.append(
+                (
+                    "yandex_metrika",
+                    date.fromisoformat(point["month"]),
+                    date.fromisoformat(point["month"]),
+                    f"traffic_source_{_excel_safe(name)}_normalized_per_day",
+                    float(point["value"]) if point.get("value") is not None else None,
+                    "count_per_day",
+                    "calculated snapshot fact",
                 )
             )
     work = workbook.create_sheet("Выполненные работы")

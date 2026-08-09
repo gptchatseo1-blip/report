@@ -246,7 +246,10 @@ def build_source_facts(*, project, report_month):
                     {
                         "month": month,
                         "value": (
-                            monthly_by_start[month][code].numeric_value
+                            normalize_count_per_day(
+                                monthly_by_start[month][code].numeric_value,
+                                calculate_periods(month).report,
+                            )
                             if code in monthly_by_start[month]
                             else None
                         ),
@@ -255,6 +258,24 @@ def build_source_facts(*, project, report_month):
                 ]
                 for code in source_codes
             }
+            extra["traffic_source_dynamics"] = {}
+            for name, series in extra["traffic_source_series"].items():
+                previous_value = series[-2]["value"] if len(series) > 1 else None
+                current_value = series[-1]["value"] if series else None
+                current_raw = sources.get(name)
+                total_raw = current.get("visits").numeric_value if current.get("visits") else None
+                share = (
+                    current_raw * Decimal("100") / total_raw
+                    if current_raw is not None and total_raw not in (None, 0)
+                    else None
+                )
+                extra["traffic_source_dynamics"][name] = {
+                    "series": series,
+                    "share_percent": share,
+                    "change": calculate_change(
+                        current_value, previous_value, kind=ChangeKind.VALUE
+                    ),
+                }
         else:
             extra["ctr_check"] = check_ctr(
                 current["search_clicks"].numeric_value if "search_clicks" in current else None,

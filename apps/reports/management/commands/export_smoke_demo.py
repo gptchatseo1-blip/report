@@ -77,6 +77,18 @@ class Command(BaseCommand):
         reader = PdfReader(generated["pdf"])
         if not reader.pages:
             raise CommandError("PDF has no pages")
+        a4_sizes = ((595.28, 841.89), (841.89, 595.28))
+        invalid_sizes = []
+        for number, page in enumerate(reader.pages, start=1):
+            width = float(page.mediabox.width)
+            height = float(page.mediabox.height)
+            if not any(
+                abs(width - expected_width) <= 3 and abs(height - expected_height) <= 3
+                for expected_width, expected_height in a4_sizes
+            ):
+                invalid_sizes.append((number, round(width, 2), round(height, 2)))
+        if invalid_sizes:
+            raise CommandError(f"PDF contains non-A4 pages: {invalid_sizes}")
         sparse_pages = [
             number
             for number, page in enumerate(reader.pages, start=1)
@@ -87,19 +99,18 @@ class Command(BaseCommand):
         subprocess.run(
             [
                 "pdftoppm",
-                "-f",
-                "1",
-                "-singlefile",
                 "-png",
                 str(generated["pdf"]),
-                str(output / "seo-demo"),
+                str(output / "seo-demo-page"),
             ],
             check=True,
             timeout=120,
         )
-        png = output / "seo-demo.png"
-        if not png.exists() or png.stat().st_size == 0:
-            raise CommandError("PDF raster preview was not created")
+        png_files = sorted(output.glob("seo-demo-page-*.png"))
+        if len(png_files) != len(reader.pages) or any(
+            path.stat().st_size == 0 for path in png_files
+        ):
+            raise CommandError("PDF raster previews were not created for every page")
         document = Document(generated["docx"])
         if not document.inline_shapes:
             raise CommandError("DOCX has no charts")

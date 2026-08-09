@@ -2,6 +2,7 @@ import io
 import shutil
 import zipfile
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -14,7 +15,7 @@ from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.metrics.synthetic import sync_synthetic_metrics
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
-from apps.reports.models import Report
+from apps.reports.models import Report, ReportDatasetSnapshot
 from apps.reports.narratives import SECTION_ORDER
 from apps.reports.services import create_report_version
 
@@ -107,6 +108,9 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
     assert document.sections[0].footer.paragraphs[0].text.startswith("demo.example")
     assert any(section.orientation == WD_ORIENT.LANDSCAPE for section in document.sections)
     assert document.sections[-1].orientation == WD_ORIENT.PORTRAIT
+    for section in document.sections:
+        dimensions = (round(section.page_width.cm, 1), round(section.page_height.cm, 1))
+        assert dimensions in {(21.0, 29.7), (29.7, 21.0)}
     with zipfile.ZipFile(io.BytesIO(data)) as package:
         images = [name for name in package.namelist() if name.startswith("word/media/")]
         assert len(images) >= 10
@@ -154,8 +158,32 @@ def test_google_depth_note_is_single_and_top_30_not_rendered_for_top_20(settings
         )
     )
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    text += "\n" + "\n".join(
+        cell.text for table in document.tables for row in table.rows for cell in row.cells
+    )
     assert text.count("Глубина проверки Google:") == 1
-    assert "TOP-30 находится" not in text
+    assert "TOP-30" not in text
+
+
+@pytest.mark.parametrize("depth", [30, 50, 100])
+def test_top_30_is_rendered_only_when_confirmed(depth, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    project = Project.objects.create(name=f"Confirmed {depth}", domain=f"confirmed-{depth}.example")
+    for month in (date(2026, 5, 31), date(2026, 6, 30), date(2026, 7, 31)):
+        _ranking(project, month, depth=depth, count=depth)
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(generate_artifact(version=version, artifact_type="docx", is_draft=True))
+        )
+    )
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    text += "\n" + "\n".join(
+        cell.text for table in document.tables for row in table.rows for cell in row.cells
+    )
+    assert "TOP-30" in text
 
 
 @pytest.mark.parametrize(
@@ -247,6 +275,37 @@ def test_repeat_export_does_not_query_live_metric_sources(
     assert list(first_book["Позиции"].values) == list(second_book["Позиции"].values)
 
 
+def test_visibility_and_traffic_render_only_precalculated_series(rich_version, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    payload = rich_version.snapshot.payload
+    segment = payload["calculated"]["positions"]["segments"][0]
+    assert len(segment["three_month_series"]) == 3
+    # Extra raw rows must not become chart/table points during export.
+    payload["ranking_sources"].append(
+        {**payload["ranking_sources"][-1], "id": "duplicate", "visibility": "999"}
+    )
+    traffic = payload["calculated"]["sources"]["sources"]["yandex_metrika"][
+        "traffic_source_dynamics"
+    ]
+    expected_current = next(iter(traffic.values()))["change"]["current"]
+    for source in payload["source_snapshots"]:
+        if source.get("source") == "yandex_metrika":
+            source["metrics"] = []
+    ReportDatasetSnapshot.objects.filter(pk=rich_version.snapshot.pk).update(payload=payload)
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(
+                generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
+            )
+        )
+    )
+    table_values = [
+        cell.text for table in document.tables for row in table.rows for cell in row.cells
+    ]
+    assert "999" not in table_values
+    assert _number_text(expected_current) in table_values
+
+
 def test_download_requires_login_and_generation_get_is_rejected(client, version):
     response = client.get(f"/versions/{version.id}/export/docx/")
     assert response.status_code == 302
@@ -264,4 +323,20 @@ def test_real_pdf_conversion_smoke(rich_version, settings, tmp_path):
     artifact = generate_artifact(version=rich_version, artifact_type="pdf", is_draft=True)
     data = _artifact_bytes(artifact)
     assert data.startswith(b"%PDF-")
-    assert len(PdfReader(io.BytesIO(data)).pages) > 0
+    pages = PdfReader(io.BytesIO(data)).pages
+    assert len(pages) > 0
+    allowed = ((595.28, 841.89), (841.89, 595.28))
+    for page in pages:
+        size = (float(page.mediabox.width), float(page.mediabox.height))
+        assert any(
+            abs(size[0] - width) <= 3 and abs(size[1] - height) <= 3 for width, height in allowed
+        )
+        assert len((page.extract_text() or "").strip()) >= 20 or list(page.images)
+    texts = [page.extract_text() or "" for page in pages]
+    for heading in ("TOP-11–20", "Все запросы отчётного периода"):
+        page_text = next(text for text in texts if heading in text)
+        assert "Запрос" in page_text and "Частотность" in page_text
+
+
+def _number_text(value):
+    return format(Decimal(str(value)).normalize(), "f").replace(".", ",")
