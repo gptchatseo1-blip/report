@@ -105,6 +105,9 @@ jobs:
             demo-artifacts/seo-demo.docx
             demo-artifacts/seo-demo.pdf
             demo-artifacts/seo-demo.xlsx
+            demo-artifacts/seo-demo-repeat.docx
+            demo-artifacts/seo-demo-repeat.pdf
+            demo-artifacts/seo-demo-repeat.xlsx
             demo-artifacts/seo-demo-page-*.png
           if-no-files-found: error
           retention-days: 14

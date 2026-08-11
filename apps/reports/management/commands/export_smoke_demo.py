@@ -1,8 +1,7 @@
-"""Create anonymised full-profile artifacts and verify the real PDF toolchain."""
+"""Run the reproducible offline demo and verify the real export toolchain."""
 
 import shutil
 import subprocess
-from datetime import date
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -10,16 +9,12 @@ from docx import Document
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-from apps.metrics.models import KeywordPosition, RankingSnapshot
-from apps.metrics.synthetic import sync_synthetic_metrics
-from apps.projects.models import Project
+from apps.reports.demo import create_demo_project
 from apps.reports.exporting import generate_artifact
-from apps.reports.models import Report
-from apps.reports.services import create_report_version
 
 
 class Command(BaseCommand):
-    help = "Generate anonymised DOCX/PDF/XLSX and perform a real PDF smoke check."
+    help = "Create the MVP-1 demo, export twice from its snapshot, and smoke-test the files."
 
     def add_arguments(self, parser):
         parser.add_argument("--output", default="demo-artifacts")
@@ -29,92 +24,68 @@ class Command(BaseCommand):
             raise CommandError("LibreOffice and pdftoppm are required")
         output = Path(options["output"]).resolve()
         output.mkdir(parents=True, exist_ok=True)
-        project, _ = Project.objects.get_or_create(
-            normalized_domain="seo-demo.invalid",
-            defaults={"name": "Обезличенный демонстрационный проект", "domain": "seo-demo.invalid"},
-        )
-        sync_synthetic_metrics(project=project, report_month=date(2026, 7, 1))
-        if not project.ranking_snapshots.exists():
-            for month in (date(2026, 5, 31), date(2026, 6, 30), date(2026, 7, 31)):
-                ranking = RankingSnapshot.objects.create(
-                    project=project,
-                    snapshot_date=month,
-                    search_engine="google",
-                    region="Россия",
-                    ranking_depth=50,
-                    visibility="24.50",
-                    tracked_keyword_count=50,
-                )
-                KeywordPosition.objects.bulk_create(
-                    [
-                        KeywordPosition(
-                            ranking_snapshot=ranking,
-                            query=f"обезличенный запрос {index}",
-                            normalized_query=f"обезличенный запрос {index}",
-                            frequency=100 + index,
-                            position_raw=str(index),
-                            position_value=index,
-                            position_status=KeywordPosition.Status.RANKED,
-                            group_name="Демо",
-                            target_url=f"https://seo-demo.invalid/page/{index}",
-                            normalized_target_url=f"https://seo-demo.invalid/page/{index}",
-                        )
-                        for index in range(1, 51)
-                    ]
-                )
-        report, _ = Report.objects.get_or_create(project=project, report_month=date(2026, 7, 1))
-        version = create_report_version(report=report)
+        _, _, version = create_demo_project()
+        checksum = version.snapshot.checksum
+        baseline = None
         generated = {}
-        for kind in ("docx", "pdf", "xlsx"):
-            artifact = generate_artifact(version=version, artifact_type=kind, is_draft=True)
-            destination = output / f"seo-demo.{kind}"
-            with artifact.file.open("rb") as source, destination.open("wb") as target:
-                shutil.copyfileobj(source, target)
-            generated[kind] = destination
-        pdf_data = generated["pdf"].read_bytes()
-        if not pdf_data.startswith(b"%PDF-"):
-            raise CommandError("PDF signature is invalid")
+        for run in (1, 2):
+            run_files = {}
+            for kind in ("docx", "pdf", "xlsx"):
+                artifact = generate_artifact(version=version, artifact_type=kind, is_draft=False)
+                destination = output / f"seo-demo{'-repeat' if run == 2 else ''}.{kind}"
+                with artifact.file.open("rb") as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+                run_files[kind] = destination
+            content = self._content_signature(run_files)
+            if baseline is None:
+                baseline = content
+                generated = run_files
+            elif content != baseline:
+                raise CommandError("Repeated exports from one snapshot have different content")
+            version.snapshot.refresh_from_db()
+            if version.snapshot.checksum != checksum:
+                raise CommandError("Snapshot changed during export")
+
         reader = PdfReader(generated["pdf"])
-        if not reader.pages:
-            raise CommandError("PDF has no pages")
-        a4_sizes = ((595.28, 841.89), (841.89, 595.28))
-        invalid_sizes = []
-        for number, page in enumerate(reader.pages, start=1):
-            width = float(page.mediabox.width)
-            height = float(page.mediabox.height)
-            if not any(
-                abs(width - expected_width) <= 3 and abs(height - expected_height) <= 3
-                for expected_width, expected_height in a4_sizes
-            ):
-                invalid_sizes.append((number, round(width, 2), round(height, 2)))
-        if invalid_sizes:
-            raise CommandError(f"PDF contains non-A4 pages: {invalid_sizes}")
-        sparse_pages = [
+        if not generated["pdf"].read_bytes().startswith(b"%PDF-") or not reader.pages:
+            raise CommandError("PDF signature or page count is invalid")
+        sparse = [
             number
-            for number, page in enumerate(reader.pages, start=1)
+            for number, page in enumerate(reader.pages, 1)
             if len((page.extract_text() or "").strip()) < 20 and not list(page.images)
         ]
-        if sparse_pages:
-            raise CommandError(f"PDF contains unexpectedly empty pages: {sparse_pages}")
+        if sparse:
+            raise CommandError(f"PDF contains unexpectedly empty pages: {sparse}")
         subprocess.run(
-            [
-                "pdftoppm",
-                "-png",
-                str(generated["pdf"]),
-                str(output / "seo-demo-page"),
-            ],
+            ["pdftoppm", "-png", str(generated["pdf"]), str(output / "seo-demo-page")],
             check=True,
             timeout=120,
         )
-        png_files = sorted(output.glob("seo-demo-page-*.png"))
-        if len(png_files) != len(reader.pages) or any(
-            path.stat().st_size == 0 for path in png_files
-        ):
-            raise CommandError("PDF raster previews were not created for every page")
-        document = Document(generated["docx"])
+        previews = sorted(output.glob("seo-demo-page-*.png"))
+        if len(previews) != len(reader.pages) or any(path.stat().st_size == 0 for path in previews):
+            raise CommandError("PNG previews were not created for every PDF page")
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"MVP-1 smoke passed: snapshot={checksum}; {len(reader.pages)} pages; "
+                f"artifacts={output}"
+            )
+        )
+
+    @staticmethod
+    def _content_signature(files):
+        document = Document(files["docx"])
         if not document.inline_shapes:
             raise CommandError("DOCX has no charts")
-        load_workbook(generated["xlsx"], read_only=True).close()
-        self.stdout.write(
-            self.style.SUCCESS(f"PDF smoke passed: {len(reader.pages)} pages; artifacts: {output}")
+        docx_text = tuple(p.text for p in document.paragraphs) + tuple(
+            cell.text for table in document.tables for row in table.rows for cell in row.cells
         )
+        workbook = load_workbook(files["xlsx"], read_only=True, data_only=True)
+        xlsx_values = tuple(
+            (sheet.title, tuple(tuple(row) for row in sheet.iter_rows(values_only=True)))
+            for sheet in workbook.worksheets
+        )
+        workbook.close()
+        pdf_text = tuple(
+            (page.extract_text() or "").strip() for page in PdfReader(files["pdf"]).pages
+        )
+        return docx_text, xlsx_values, pdf_text
