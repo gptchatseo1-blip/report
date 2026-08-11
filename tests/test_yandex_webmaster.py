@@ -1,6 +1,4 @@
-import io
 import json
-import urllib.error
 from datetime import date
 
 import pytest
@@ -41,9 +39,17 @@ class FakeWebmaster:
         return {"user_id": 7}
 
     def hosts(self, user_id):
-        return iter(
-            [{"host_id": "https:site.example:443", "ascii_host_url": "https://site.example"}]
-        )
+        return [
+            {
+                "host_id": "https:site.example:443",
+                "ascii_host_url": "https://site.example",
+                "verified": True,
+                "main_mirror": {
+                    "ascii_host_url": "https://www.site.example",
+                    "unicode_host_url": "https://www.site.example",
+                },
+            }
+        ]
 
     def host(self, user_id, host_id):
         return {"host_id": host_id, "verification": "VERIFIED"}
@@ -52,32 +58,56 @@ class FakeWebmaster:
         return {
             "searchable_pages_count": 25,
             "excluded_pages_count": 3,
-            "problems": [{"type": "FATAL"}],
+            "site_problems": {"FATAL": 1, "CRITICAL": 2, "POSSIBLE_PROBLEM": 3},
         }
 
     def search_query_history(self, *args, **kwargs):
         assert kwargs["device_type_indicator"] == "ALL"
+        prefix = kwargs["date_from"][:8]
         return {
             "indicators": {
-                "TOTAL_SHOWS": [{"date": "2026-01-01", "value": 100}],
-                "TOTAL_CLICKS": [{"date": "2026-01-01", "value": 5}],
-                "AVG_SHOW_POSITION": [{"date": "2026-01-01", "value": 4}],
+                "TOTAL_SHOWS": [
+                    {"date": f"{prefix}10", "value": 100},
+                    {"date": f"{prefix}11", "value": 300},
+                ],
+                "TOTAL_CLICKS": [
+                    {"date": f"{prefix}10", "value": 5},
+                    {"date": f"{prefix}11", "value": 15},
+                ],
+                "AVG_SHOW_POSITION": [
+                    {"date": f"{prefix}10", "value": 10},
+                    {"date": f"{prefix}11", "value": 2},
+                    {"date": f"{prefix}12", "value": 99},
+                ],
             }
         }
 
     def search_urls_history(self, *args, **kwargs):
-        return {"indicators": {"SEARCHABLE": [{"date": "2026-01-31", "value": 20}]}}
+        prefix = kwargs["date_from"][:8]
+        return {
+            "history": [
+                {"date": kwargs["date_to"], "value": 20},
+                {"date": f"{prefix}05", "value": 10},
+            ]
+        }
 
     def indexing_history(self, *args, **kwargs):
+        prefix = kwargs["date_from"][:8]
         return {
             "indicators": {
-                "APPEARED_IN_SEARCH": [{"value": 4}],
-                "REMOVED_FROM_SEARCH": [{"value": 2}],
+                "APPEARED_IN_SEARCH": [{"date": f"{prefix}20", "value": 4}],
+                "REMOVED_FROM_SEARCH": [{"date": f"{prefix}21", "value": 2}],
             }
         }
 
     def squ_history(self, *args, **kwargs):
-        return {"indicators": {"sqi": [{"date": "2026-01-31", "value": 80}]}}
+        prefix = kwargs["date_from"][:8]
+        return {
+            "points": [
+                {"date": f"{prefix}25", "value": 80},
+                {"date": f"{prefix}02", "value": 60},
+            ]
+        }
 
 
 def mapping(context):
@@ -108,8 +138,19 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
     march = snapshots.last()
     points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
     assert points["search_ctr"] == 5
+    assert points["average_position"] == 4
+    assert points["indexed_pages"] == 20
+    assert points["iks"] == 80
     assert points["searchable_pages_count"] == 25
-    assert march.payload["problems"] == [{"type": "FATAL"}]
+    assert march.payload["site_problems"] == {
+        "FATAL": 1,
+        "CRITICAL": 2,
+        "POSSIBLE_PROBLEM": 3,
+    }
+    assert march.payload["actual_period"] == {
+        "date_from": "2026-03-02",
+        "date_to": "2026-03-31",
+    }
     ids = list(snapshots.values_list("id", flat=True))
     sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=FakeWebmaster())
     assert (
@@ -125,7 +166,10 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
 def test_zero_impressions_does_not_invent_ctr(context):
     fake = FakeWebmaster()
     fake.search_query_history = lambda *a, **k: {
-        "indicators": {"TOTAL_SHOWS": [{"value": 0}], "TOTAL_CLICKS": [{"value": 0}]}
+        "indicators": {
+            "TOTAL_SHOWS": [{"date": "2026-03-01", "value": 0}],
+            "TOTAL_CLICKS": [{"date": "2026-03-01", "value": 0}],
+        }
     }
     sync_webmaster(mapping=mapping(context), report_month=date(2026, 3, 1), client=fake)
     codes = SourceSnapshot.objects.get(period_start=date(2026, 3, 1)).metrics.values_list(
@@ -153,16 +197,17 @@ def test_host_selection_uses_server_list_and_requires_mismatch_confirmation(
     monkeypatch.setattr(
         WebmasterClient,
         "hosts",
-        lambda self, uid: iter(
-            [
-                {
-                    "host_id": "allowed",
-                    "ascii_host_url": "https://other.example",
-                    "verification": "VERIFIED",
-                    "main_mirror": "https://www.other.example",
-                }
-            ]
-        ),
+        lambda self, uid: [
+            {
+                "host_id": "allowed",
+                "ascii_host_url": "https://other.example",
+                "verified": True,
+                "main_mirror": {
+                    "ascii_host_url": "https://www.other.example",
+                    "unicode_host_url": "https://другой.example",
+                },
+            }
+        ],
     )
     url = reverse("yandex:select-host", args=[project.id])
     client.post(
@@ -176,6 +221,8 @@ def test_host_selection_uses_server_list_and_requires_mismatch_confirmation(
     )
     saved = project.yandex_webmaster_mapping
     assert saved.host_id == "allowed" and saved.domain_mismatch_confirmed
+    assert saved.verification_status == "VERIFIED"
+    assert saved.main_mirror == "https://www.other.example"
 
 
 def test_missing_scope_requires_reauthorization(client, context):
@@ -192,7 +239,7 @@ def test_missing_scope_requires_reauthorization(client, context):
     assert not YandexWebmasterProjectMapping.objects.exists()
 
 
-def test_hosts_pagination_and_retry(context):
+def test_hosts_make_one_request_without_query_parameters(context):
     connection = context[2]
     calls = []
 
@@ -211,16 +258,11 @@ def test_hosts_pagination_and_retry(context):
 
     def opener(request, timeout):
         calls.append(request.full_url)
-        if len(calls) == 1:
-            raise urllib.error.HTTPError(
-                request.full_url, 429, "limited", {"Retry-After": "0"}, io.BytesIO()
-            )
-        offset = int(request.full_url.split("offset=")[1].split("&")[0])
-        return Response({"hosts": [{"host_id": str(offset)}] if offset < 2 else []})
+        return Response({"hosts": [{"host_id": "first"}, {"host_id": "second"}]})
 
     api = WebmasterClient(connection, opener=opener, sleep=lambda _: None)
-    assert [row["host_id"] for row in api.hosts(7, page_size=1)] == ["0", "1"]
-    assert len(calls) == 4
+    assert [row["host_id"] for row in api.hosts(7)] == ["first", "second"]
+    assert calls == ["https://api.webmaster.yandex.net/v4/user/7/hosts"]
 
 
 def test_mutating_routes_reject_get(client, context):
@@ -250,3 +292,60 @@ def test_version_docx_xlsx_never_call_live_webmaster(context, settings, tmp_path
         artifact = generate_artifact(version=version, artifact_type=kind, is_draft=True)
         assert artifact.status == artifact.Status.READY
         assert artifact.size > 0
+
+
+def test_unverified_host_is_visible_but_cannot_be_selected(client, context, monkeypatch):
+    user, project, connection = context
+    client.force_login(user)
+    host = {
+        "host_id": "unverified",
+        "ascii_host_url": "https://site.example",
+        "verified": False,
+        "main_mirror": None,
+    }
+    monkeypatch.setattr(WebmasterClient, "user", lambda self: {"user_id": 7})
+    monkeypatch.setattr(WebmasterClient, "hosts", lambda self, uid: [host])
+    monkeypatch.setattr(WebmasterClient, "counters", lambda self: iter([]))
+    response = client.get(reverse("yandex:connection", args=[project.id]))
+    assert "unverified" in response.content.decode()
+    response = client.post(
+        reverse("yandex:select-host", args=[project.id]),
+        {"connection_id": connection.id, "host_id": "unverified"},
+        follow=True,
+    )
+    assert "не подтверждён" in response.content.decode()
+    assert not YandexWebmasterProjectMapping.objects.exists()
+
+
+def test_actual_period_uses_only_received_dates_and_empty_has_reason(context):
+    item = mapping(context)
+    fake = FakeWebmaster()
+    fake.search_query_history = lambda *a, **k: {
+        "indicators": {
+            "TOTAL_SHOWS": [{"date": "2026-03-14", "value": 10}],
+            "TOTAL_CLICKS": [{"date": "2026-03-14", "value": 1}],
+            "AVG_SHOW_POSITION": [{"date": "2026-03-14", "value": 7}],
+        }
+    }
+    fake.search_urls_history = lambda *a, **k: {"history": []}
+    fake.indexing_history = lambda *a, **k: {"indicators": {}}
+    fake.squ_history = lambda *a, **k: {"points": []}
+    sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=fake)
+    snapshot = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
+    assert snapshot.payload["actual_period"] == {
+        "date_from": "2026-03-14",
+        "date_to": "2026-03-14",
+    }
+    assert snapshot.payload["availability_reason"] is None
+
+    empty = FakeWebmaster()
+    empty.search_query_history = lambda *a, **k: {"indicators": {}}
+    empty.search_urls_history = lambda *a, **k: {"history": []}
+    empty.indexing_history = lambda *a, **k: {"indicators": {}}
+    empty.squ_history = lambda *a, **k: {"points": []}
+    sync_webmaster(mapping=item, report_month=date(2026, 4, 1), client=empty)
+    april = SourceSnapshot.objects.get(period_start=date(2026, 4, 1))
+    assert april.payload["actual_period"] is None
+    assert april.payload["availability_reason"] == "API не вернул данные за период."
+    codes = set(april.metrics.values_list("metric_code", flat=True))
+    assert codes == {"searchable_pages_count", "excluded_pages_count"}

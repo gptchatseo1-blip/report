@@ -265,6 +265,60 @@ def _response_values(response, names):
     return values
 
 
+def _series(response, name):
+    indicators = response.get("indicators", {}) if isinstance(response, dict) else {}
+    rows = indicators.get(name, []) if isinstance(indicators, dict) else []
+    return rows if isinstance(rows, list) else []
+
+
+def _valid_dated_values(rows, start=None, end=None):
+    values = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("date"):
+            continue
+        try:
+            row_date = date.fromisoformat(str(row["date"])[:10])
+        except ValueError:
+            continue
+        if (start and row_date < start) or (end and row_date > end):
+            continue
+        value = _number(row.get("value"))
+        if value is not None:
+            values.append((row_date, value))
+    return values
+
+
+def _last_dated_value(rows, start=None, end=None):
+    values = _valid_dated_values(rows, start, end)
+    return max(values, key=lambda item: item[0])[1] if values else None
+
+
+def _response_dates(response, start=None, end=None):
+    if not isinstance(response, dict):
+        return []
+    candidates = []
+    for key in ("history", "points", "data"):
+        if isinstance(response.get(key), list):
+            candidates.extend(response[key])
+    indicators = response.get("indicators")
+    if isinstance(indicators, dict):
+        for rows in indicators.values():
+            if isinstance(rows, list):
+                candidates.extend(rows)
+    dates = []
+    for row in candidates:
+        if not isinstance(row, dict) or not row.get("date"):
+            continue
+        try:
+            row_date = date.fromisoformat(str(row["date"])[:10])
+        except ValueError:
+            continue
+        if (start and row_date < start) or (end and row_date > end):
+            continue
+        dates.append(row_date)
+    return dates
+
+
 def _last_metric(rows, names):
     for row in reversed(rows):
         for name in names:
@@ -290,9 +344,12 @@ def _webmaster_month(
     pages = client.search_urls_history(user_id, mapping.host_id, **params)
     indexing = client.indexing_history(user_id, mapping.host_id, **params)
     sqi = client.squ_history(user_id, mapping.host_id, **params)
-    impressions_values = _response_values(queries, ("TOTAL_SHOWS", "shows", "impressions"))
-    click_values = _response_values(queries, ("TOTAL_CLICKS", "clicks"))
-    position_values = _response_values(queries, ("AVG_SHOW_POSITION", "avg_show_position"))
+    impressions_values = [
+        value for _, value in _valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end)
+    ]
+    click_values = [
+        value for _, value in _valid_dated_values(_series(queries, "TOTAL_CLICKS"), start, end)
+    ]
     impressions = sum(impressions_values, Decimal(0)) if impressions_values else None
     clicks = sum(click_values, Decimal(0)) if click_values else None
     metrics = {}
@@ -302,26 +359,41 @@ def _webmaster_month(
         metrics["search_clicks"] = (clicks, "count")
     if impressions not in (None, 0) and clicks is not None:
         metrics["search_ctr"] = (clicks * Decimal(100) / impressions, "percent")
-    if position_values:
+    shows_by_date = dict(_valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end))
+    positions_by_date = dict(_valid_dated_values(_series(queries, "AVG_SHOW_POSITION"), start, end))
+    weighted_days = [
+        (shows, positions_by_date[day])
+        for day, shows in shows_by_date.items()
+        if day in positions_by_date
+    ]
+    position_impressions = sum((shows for shows, _ in weighted_days), Decimal(0))
+    if position_impressions:
         metrics["average_position"] = (
-            sum(position_values, Decimal(0)) / len(position_values),
+            sum((shows * position for shows, position in weighted_days), Decimal(0))
+            / position_impressions,
             "number",
         )
     aliases = {
-        "indexed_pages": (pages, ("SEARCHABLE", "searchable_pages_count", "count")),
         "added_pages": (indexing, ("APPEARED_IN_SEARCH", "added", "appeared")),
         "excluded_pages": (indexing, ("REMOVED_FROM_SEARCH", "excluded", "removed")),
-        "iks": (sqi, ("sqi", "value", "quality_index")),
     }
     for code, (response, names) in aliases.items():
-        values = _response_values(response, names)
-        value = (
-            (values[-1] if values else None)
-            if code in ("indexed_pages", "iks")
-            else (sum(values, Decimal(0)) if values else None)
-        )
+        values = []
+        for name in names:
+            values = [
+                value for _, value in _valid_dated_values(_series(response, name), start, end)
+            ]
+            if values:
+                break
+        value = sum(values, Decimal(0)) if values else None
         if value is not None:
             metrics[code] = (value, "count" if code != "iks" else "number")
+    indexed_pages = _last_dated_value(pages.get("history", []), start, end)
+    if indexed_pages is not None:
+        metrics["indexed_pages"] = (indexed_pages, "count")
+    iks = _last_dated_value(sqi.get("points", []), start, end)
+    if iks is not None:
+        metrics["iks"] = (iks, "number")
     if include_current and summary:
         for code, names in {
             "searchable_pages_count": ("searchable_pages_count", "searchable_pages"),
@@ -330,13 +402,23 @@ def _webmaster_month(
             value = next((_number(summary.get(name)) for name in names if name in summary), None)
             if value is not None:
                 metrics[code] = (value, "count")
+    response_dates = [
+        item
+        for response in (queries, pages, indexing, sqi)
+        for item in _response_dates(response, start, end)
+    ]
+    actual_period = (
+        {"date_from": min(response_dates).isoformat(), "date_to": max(response_dates).isoformat()}
+        if response_dates
+        else None
+    )
     return {
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "metrics": metrics,
-        "problems": (summary or {}).get("problems", []),
-        "actual_period": queries.get("date_range", params) if isinstance(queries, dict) else params,
-        "availability_reason": None if metrics else "API не вернул данные за период.",
+        "site_problems": (summary or {}).get("site_problems", {}),
+        "actual_period": actual_period,
+        "availability_reason": None if response_dates else "API не вернул данные за период.",
         "raw": {"queries": queries, "pages": pages, "indexing": indexing, "sqi": sqi},
         "host": host or {},
     }
@@ -383,7 +465,7 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
                     "actual_period": data["actual_period"],
                     "retrieved_at": now.isoformat(),
                     "availability_reason": data["availability_reason"],
-                    "problems": data["problems"],
+                    "site_problems": data["site_problems"],
                     "metrics": {key: str(value[0]) for key, value in data["metrics"].items()},
                     "contains_sensitive_data": False,
                 }

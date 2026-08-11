@@ -207,18 +207,9 @@ class WebmasterClient(MetrikaClient):
     def user(self):
         return self._request("user")
 
-    def hosts(self, user_id, page_size=100):
-        offset = 0
-        while True:
-            response = self._request(
-                f"user/{urllib.parse.quote(str(user_id), safe='')}/hosts",
-                {"limit": page_size, "offset": offset},
-            )
-            rows = response.get("hosts", [])
-            yield from rows
-            if len(rows) < page_size:
-                break
-            offset += len(rows)
+    def hosts(self, user_id):
+        response = self._request(f"user/{urllib.parse.quote(str(user_id), safe='')}/hosts")
+        return response.get("hosts", [])
 
     def host(self, user_id, host_id):
         return self._request(self._host_path(user_id, host_id))

@@ -312,6 +312,12 @@ def select_host(request, project_id):
         host = available.get(form.cleaned_data["host_id"])
         if not host:
             raise YandexAPIError("Сайт недоступен.")
+        if host.get("verified") is not True:
+            messages.error(
+                request,
+                "Сайт не подтверждён в Яндекс Вебмастере. Его нельзя выбрать для синхронизации.",
+            )
+            return redirect("yandex:connection", project_id=project.id)
         host_url = str(host.get("ascii_host_url") or host.get("unicode_host_url") or "")
         host_domain = normalize_domain(host_url)
     except (YandexAPIError, CredentialConfigurationError, ValidationError, TypeError, ValueError):
@@ -327,8 +333,12 @@ def select_host(request, project_id):
             "connection": connection_obj,
             "host_id": str(host["host_id"]),
             "host_url": host_url,
-            "verification_status": str(host.get("verification", host.get("verified", ""))),
-            "main_mirror": str(host.get("main_mirror", host.get("main_mirror_url", "")) or ""),
+            "verification_status": "VERIFIED" if host.get("verified") is True else "UNVERIFIED",
+            "main_mirror": str(
+                (host.get("main_mirror") or {}).get("ascii_host_url")
+                or (host.get("main_mirror") or {}).get("unicode_host_url")
+                or ""
+            ),
             "domain_mismatch_confirmed": mismatch,
         },
     )
