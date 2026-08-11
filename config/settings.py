@@ -104,6 +104,9 @@ YANDEX_OAUTH_TOKEN_URL = os.getenv("YANDEX_OAUTH_TOKEN_URL", "https://oauth.yand
 YANDEX_METRIKA_API_BASE_URL = os.getenv(
     "YANDEX_METRIKA_API_BASE_URL", "https://api-metrika.yandex.net"
 )
+YANDEX_WEBMASTER_API_BASE_URL = os.getenv(
+    "YANDEX_WEBMASTER_API_BASE_URL", "https://api.webmaster.yandex.net/v4"
+)
 YANDEX_REQUEST_TIMEOUT_SECONDS = float(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "15"))
 YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
 CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")

@@ -14,11 +14,18 @@ from django.utils import timezone
 
 from apps.projects.models import Project, normalize_domain
 
-from .client import MetrikaClient, YandexAPIError, exchange_token
+from .client import MetrikaClient, WebmasterClient, YandexAPIError, exchange_token
 from .crypto import CredentialConfigurationError, encrypt_token
-from .forms import CounterForm, GoalsForm, SyncForm
-from .models import YandexConnection, YandexMetrikaProjectMapping, YandexOAuthState
-from .services import sync_metrika
+from .forms import CounterForm, GoalsForm, HostForm, SyncForm
+from .models import (
+    YandexConnection,
+    YandexMetrikaProjectMapping,
+    YandexOAuthState,
+    YandexWebmasterProjectMapping,
+)
+from .services import sync_metrika, sync_webmaster
+
+WEBMASTER_SCOPE = "webmaster:read"
 
 
 def _configured():
@@ -42,12 +49,23 @@ def connection(request, project_id):
         .select_related("connection")
         .first()
     )
-    counters = goals = []
+    webmaster_mapping = (
+        YandexWebmasterProjectMapping.objects.filter(
+            project=project, connection__user=request.user, connection__active=True
+        )
+        .select_related("connection")
+        .first()
+    )
+    counters = goals = hosts = []
     error = ""
     connection_obj = (
         mapping.connection
         if mapping
-        else YandexConnection.objects.filter(user=request.user, active=True).first()
+        else (
+            webmaster_mapping.connection
+            if webmaster_mapping
+            else YandexConnection.objects.filter(user=request.user, active=True).first()
+        )
     )
     if connection_obj:
         try:
@@ -57,6 +75,14 @@ def connection(request, project_id):
                 goals = list(client.goals(mapping.counter_id))
         except (YandexAPIError, CredentialConfigurationError):
             error = "Не удалось получить данные Яндекс Метрики."
+        if WEBMASTER_SCOPE in connection_obj.scopes:
+            try:
+                webmaster = WebmasterClient(connection_obj)
+                webmaster_user = webmaster.user()
+                webmaster_user_id = webmaster_user.get("user_id") or webmaster_user.get("id")
+                hosts = list(webmaster.hosts(webmaster_user_id)) if webmaster_user_id else []
+            except (YandexAPIError, CredentialConfigurationError):
+                error = "Не удалось получить данные Яндекс Вебмастера."
     return render(
         request,
         "yandex/connection.html",
@@ -66,9 +92,15 @@ def connection(request, project_id):
             "connection": connection_obj,
             "counters": counters,
             "goals": goals,
+            "hosts": hosts,
+            "webmaster_mapping": webmaster_mapping,
+            "webmaster_scope_missing": bool(
+                connection_obj and WEBMASTER_SCOPE not in connection_obj.scopes
+            ),
             "error": error,
             "configured": _configured(),
             "runs": mapping.sync_runs.all()[:10] if mapping else [],
+            "webmaster_runs": webmaster_mapping.sync_runs.all()[:10] if webmaster_mapping else [],
         },
     )
 
@@ -95,7 +127,8 @@ def oauth_start(request, project_id):
             "response_type": "code",
             "client_id": settings.YANDEX_CLIENT_ID,
             "redirect_uri": settings.YANDEX_REDIRECT_URI,
-            "scope": "metrika:read",
+            "scope": "metrika:read webmaster:read",
+            "force_confirm": "yes",
             "state": raw,
         }
     )
@@ -152,16 +185,26 @@ def oauth_callback(request):
             if token.get("expires_in")
             else None
         )
-        YandexConnection.objects.create(
-            user=request.user,
-            account_id=str(token.get("uid", "")),
-            account_login=str(token.get("login", "")),
-            access_token_encrypted=encrypt_token(token["access_token"]),
-            refresh_token_encrypted=(
+        raw_scopes = token.get("scope") or []
+        scopes = raw_scopes.split() if isinstance(raw_scopes, str) else list(raw_scopes)
+        defaults = {
+            "account_id": str(token.get("uid", "")),
+            "account_login": str(token.get("login", "")),
+            "access_token_encrypted": encrypt_token(token["access_token"]),
+            "refresh_token_encrypted": (
                 encrypt_token(token["refresh_token"]) if token.get("refresh_token") else None
             ),
-            expires_at=expires,
-        )
+            "expires_at": expires,
+            "scopes": scopes,
+            "active": True,
+        }
+        existing = YandexConnection.objects.filter(user=request.user, active=True).first()
+        if existing:
+            for field, value in defaults.items():
+                setattr(existing, field, value)
+            existing.save(update_fields=[*defaults, "updated_at"])
+        else:
+            YandexConnection.objects.create(user=request.user, **defaults)
     except (YandexAPIError, CredentialConfigurationError):
         messages.error(request, "Не удалось завершить OAuth-подключение Яндекса.")
         return redirect("yandex:connection", project_id=state.project_id)
@@ -248,6 +291,61 @@ def select_goals(request, project_id):
 
 
 @login_required
+def select_host(request, project_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    project = get_object_or_404(Project, pk=project_id)
+    connection_obj = get_object_or_404(
+        YandexConnection, pk=request.POST.get("connection_id"), user=request.user, active=True
+    )
+    if WEBMASTER_SCOPE not in connection_obj.scopes:
+        messages.error(request, "Требуется повторная авторизация с правом Вебмастера.")
+        return redirect("yandex:connection", project_id=project.id)
+    form = HostForm(request.POST)
+    if not form.is_valid():
+        return HttpResponseBadRequest("Некорректный сайт.")
+    try:
+        webmaster = WebmasterClient(connection_obj)
+        user_response = webmaster.user()
+        user_id = user_response.get("user_id") or user_response.get("id")
+        available = {str(item.get("host_id")): item for item in webmaster.hosts(user_id)}
+        host = available.get(form.cleaned_data["host_id"])
+        if not host:
+            raise YandexAPIError("Сайт недоступен.")
+        if host.get("verified") is not True:
+            messages.error(
+                request,
+                "Сайт не подтверждён в Яндекс Вебмастере. Его нельзя выбрать для синхронизации.",
+            )
+            return redirect("yandex:connection", project_id=project.id)
+        host_url = str(host.get("ascii_host_url") or host.get("unicode_host_url") or "")
+        host_domain = normalize_domain(host_url)
+    except (YandexAPIError, CredentialConfigurationError, ValidationError, TypeError, ValueError):
+        messages.error(request, "Не удалось проверить выбранный сайт Вебмастера.")
+        return redirect("yandex:connection", project_id=project.id)
+    mismatch = host_domain != project.normalized_domain
+    if mismatch and not form.cleaned_data["confirm_domain_mismatch"]:
+        messages.error(request, "Домен сайта отличается от домена проекта. Подтвердите выбор явно.")
+        return redirect("yandex:connection", project_id=project.id)
+    YandexWebmasterProjectMapping.objects.update_or_create(
+        project=project,
+        defaults={
+            "connection": connection_obj,
+            "host_id": str(host["host_id"]),
+            "host_url": host_url,
+            "verification_status": "VERIFIED" if host.get("verified") is True else "UNVERIFIED",
+            "main_mirror": str(
+                (host.get("main_mirror") or {}).get("ascii_host_url")
+                or (host.get("main_mirror") or {}).get("unicode_host_url")
+                or ""
+            ),
+            "domain_mismatch_confirmed": mismatch,
+        },
+    )
+    return redirect("yandex:connection", project_id=project.id)
+
+
+@login_required
 def sync(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
@@ -261,6 +359,33 @@ def sync(request, project_id):
     if not form.is_valid():
         return HttpResponseBadRequest("Некорректный месяц.")
     run = sync_metrika(mapping=mapping, report_month=form.cleaned_data["month"], user=request.user)
+    if run.status == run.Status.SUCCESS:
+        from apps.reports.models import Report
+
+        report, _ = Report.objects.get_or_create(
+            project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
+        )
+        return redirect("reports:report-detail", report_id=report.id)
+    messages.error(request, run.error_message)
+    return redirect("yandex:connection", project_id=project_id)
+
+
+@login_required
+def sync_webmaster_view(request, project_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    mapping = get_object_or_404(
+        YandexWebmasterProjectMapping,
+        project_id=project_id,
+        connection__user=request.user,
+        connection__active=True,
+    )
+    form = SyncForm(request.POST)
+    if not form.is_valid():
+        return HttpResponseBadRequest("Некорректный месяц.")
+    run = sync_webmaster(
+        mapping=mapping, report_month=form.cleaned_data["month"], user=request.user
+    )
     if run.status == run.Status.SUCCESS:
         from apps.reports.models import Report
 

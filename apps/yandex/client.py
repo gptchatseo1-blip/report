@@ -85,11 +85,17 @@ class MetrikaClient:
             if result.get("expires_in")
             else None
         )
+        if "scope" in result:
+            raw_scopes = result.get("scope") or []
+            self.connection.scopes = (
+                raw_scopes.split() if isinstance(raw_scopes, str) else list(raw_scopes)
+            )
         self.connection.save(
             update_fields=[
                 "access_token_encrypted",
                 "refresh_token_encrypted",
                 "expires_at",
+                "scopes",
                 "updated_at",
             ]
         )
@@ -153,3 +159,84 @@ class MetrikaClient:
 
     def stat(self, **params):
         return self._request("stat/v1/data", params)
+
+
+class WebmasterClient(MetrikaClient):
+    """Read-only client for the Yandex Webmaster API v4.1."""
+
+    def _request(self, path, params=None, *, refreshed=False):
+        query = urllib.parse.urlencode(params or {}, doseq=True)
+        url = f"{settings.YANDEX_WEBMASTER_API_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+        request = urllib.request.Request(
+            f"{url}?{query}" if query else url,
+            headers={
+                "Authorization": f"OAuth {decrypt_token(self.connection.access_token_encrypted)}"
+            },
+        )
+        for attempt in range(settings.YANDEX_MAX_RETRIES + 1):
+            try:
+                with self.opener(
+                    request, timeout=settings.YANDEX_REQUEST_TIMEOUT_SECONDS
+                ) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401 and not refreshed:
+                    self._refresh()
+                    return self._request(path, params, refreshed=True)
+                if (
+                    exc.code == 429 or 500 <= exc.code < 600
+                ) and attempt < settings.YANDEX_MAX_RETRIES:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    self.sleep(
+                        float(retry_after)
+                        if retry_after
+                        else 0.5 * 2**attempt + random.uniform(0, 0.25)
+                    )
+                    continue
+                if exc.code in (401, 403):
+                    raise YandexUnauthorized(
+                        "Подключение Яндекса требует повторной авторизации для Вебмастера."
+                    ) from None
+                raise YandexAPIError(f"Вебмастер временно недоступен (HTTP {exc.code}).") from None
+            except (urllib.error.URLError, TimeoutError, ValueError):
+                if attempt < settings.YANDEX_MAX_RETRIES:
+                    self.sleep(0.5 * 2**attempt + random.uniform(0, 0.25))
+                    continue
+                raise YandexAPIError("Не удалось получить корректный ответ Вебмастера.") from None
+
+    def user(self):
+        return self._request("user")
+
+    def hosts(self, user_id):
+        response = self._request(f"user/{urllib.parse.quote(str(user_id), safe='')}/hosts")
+        return response.get("hosts", [])
+
+    def host(self, user_id, host_id):
+        return self._request(self._host_path(user_id, host_id))
+
+    @staticmethod
+    def _host_path(user_id, host_id, suffix=""):
+        user = urllib.parse.quote(str(user_id), safe="")
+        host = urllib.parse.quote(str(host_id), safe="")
+        return f"user/{user}/hosts/{host}{suffix}"
+
+    def summary(self, user_id, host_id):
+        return self._request(self._host_path(user_id, host_id, "/summary"))
+
+    def squ_history(self, user_id, host_id, **params):
+        return self._request(self._host_path(user_id, host_id, "/sqi-history"), params)
+
+    def search_urls_history(self, user_id, host_id, **params):
+        return self._request(
+            self._host_path(user_id, host_id, "/search-urls/in-search/history"), params
+        )
+
+    def indexing_history(self, user_id, host_id, **params):
+        return self._request(
+            self._host_path(user_id, host_id, "/search-urls/events/history"), params
+        )
+
+    def search_query_history(self, user_id, host_id, **params):
+        return self._request(
+            self._host_path(user_id, host_id, "/search-queries/all/history"), params
+        )

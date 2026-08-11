@@ -24,3 +24,10 @@ class SyncForm(forms.Form):
     month = forms.DateField(
         input_formats=["%Y-%m"], widget=forms.DateInput(attrs={"type": "month"})
     )
+
+
+class HostForm(forms.Form):
+    host_id = forms.CharField(widget=forms.HiddenInput)
+    confirm_domain_mismatch = forms.BooleanField(
+        required=False, label="Подтверждаю выбор сайта другого домена"
+    )

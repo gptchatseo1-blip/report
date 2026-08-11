@@ -15,8 +15,9 @@ from .client import (
     GOAL_REACHES,
     LAST_SIGN_TRAFFIC_SOURCE,
     MetrikaClient,
+    WebmasterClient,
 )
-from .models import YandexMetrikaSyncRun
+from .models import YandexMetrikaSyncRun, YandexWebmasterSyncRun
 
 METRIC_CODES = (
     "visits",
@@ -206,5 +207,312 @@ def sync_metrika(*, mapping, report_month, user=None, client=None):
         run.status = run.Status.FAILED
         run.completed_at = timezone.now()
         run.error_message = "Не удалось синхронизировать данные Метрики."
+        run.save(update_fields=["status", "completed_at", "error_message"])
+        return run
+
+
+def _dated_rows(response):
+    """Return API history rows without inventing absent values."""
+    if isinstance(response, list):
+        return response
+    for key in ("history", "indicators", "data", "points"):
+        value = response.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _number(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def _sum_metric(rows, names):
+    values = []
+    for row in rows:
+        for name in names:
+            if name in row:
+                value = _number(row[name])
+                if value is not None:
+                    values.append(value)
+                break
+    return sum(values, Decimal(0)) if values else None
+
+
+def _response_values(response, names):
+    """Read both v4.1 indicator-series and row-oriented test/provider responses."""
+    indicators = response.get("indicators", {}) if isinstance(response, dict) else {}
+    if isinstance(indicators, dict):
+        for name in names:
+            series = indicators.get(name)
+            if isinstance(series, list):
+                values = [_number(item.get("value")) for item in series if isinstance(item, dict)]
+                return [value for value in values if value is not None]
+    rows = _dated_rows(response)
+    values = []
+    for row in rows:
+        nested = row.get("value", {}) if isinstance(row.get("value"), dict) else row
+        for name in names:
+            if name in nested:
+                value = _number(nested[name])
+                if value is not None:
+                    values.append(value)
+                break
+    return values
+
+
+def _series(response, name):
+    indicators = response.get("indicators", {}) if isinstance(response, dict) else {}
+    rows = indicators.get(name, []) if isinstance(indicators, dict) else []
+    return rows if isinstance(rows, list) else []
+
+
+def _valid_dated_values(rows, start=None, end=None):
+    values = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("date"):
+            continue
+        try:
+            row_date = date.fromisoformat(str(row["date"])[:10])
+        except ValueError:
+            continue
+        if (start and row_date < start) or (end and row_date > end):
+            continue
+        value = _number(row.get("value"))
+        if value is not None:
+            values.append((row_date, value))
+    return values
+
+
+def _last_dated_value(rows, start=None, end=None):
+    values = _valid_dated_values(rows, start, end)
+    return max(values, key=lambda item: item[0])[1] if values else None
+
+
+def _response_dates(response, start=None, end=None):
+    if not isinstance(response, dict):
+        return []
+    candidates = []
+    for key in ("history", "points", "data"):
+        if isinstance(response.get(key), list):
+            candidates.extend(response[key])
+    indicators = response.get("indicators")
+    if isinstance(indicators, dict):
+        for rows in indicators.values():
+            if isinstance(rows, list):
+                candidates.extend(rows)
+    dates = []
+    for row in candidates:
+        if not isinstance(row, dict) or not row.get("date"):
+            continue
+        try:
+            row_date = date.fromisoformat(str(row["date"])[:10])
+        except ValueError:
+            continue
+        if (start and row_date < start) or (end and row_date > end):
+            continue
+        dates.append(row_date)
+    return dates
+
+
+def _last_metric(rows, names):
+    for row in reversed(rows):
+        for name in names:
+            if name in row:
+                value = _number(row[name])
+                if value is not None:
+                    return value
+    return None
+
+
+def _webmaster_month(
+    client, mapping, user_id, month, *, host=None, summary=None, include_current=False
+):
+    start, end = month, month_end(month)
+    params = {"date_from": start.isoformat(), "date_to": end.isoformat()}
+    queries = client.search_query_history(
+        user_id,
+        mapping.host_id,
+        **params,
+        device_type_indicator="ALL",
+        query_indicator=["TOTAL_SHOWS", "TOTAL_CLICKS", "AVG_SHOW_POSITION"],
+    )
+    pages = client.search_urls_history(user_id, mapping.host_id, **params)
+    indexing = client.indexing_history(user_id, mapping.host_id, **params)
+    sqi = client.squ_history(user_id, mapping.host_id, **params)
+    impressions_values = [
+        value for _, value in _valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end)
+    ]
+    click_values = [
+        value for _, value in _valid_dated_values(_series(queries, "TOTAL_CLICKS"), start, end)
+    ]
+    impressions = sum(impressions_values, Decimal(0)) if impressions_values else None
+    clicks = sum(click_values, Decimal(0)) if click_values else None
+    metrics = {}
+    if impressions is not None:
+        metrics["search_impressions"] = (impressions, "count")
+    if clicks is not None:
+        metrics["search_clicks"] = (clicks, "count")
+    if impressions not in (None, 0) and clicks is not None:
+        metrics["search_ctr"] = (clicks * Decimal(100) / impressions, "percent")
+    shows_by_date = dict(_valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end))
+    positions_by_date = dict(_valid_dated_values(_series(queries, "AVG_SHOW_POSITION"), start, end))
+    weighted_days = [
+        (shows, positions_by_date[day])
+        for day, shows in shows_by_date.items()
+        if day in positions_by_date
+    ]
+    position_impressions = sum((shows for shows, _ in weighted_days), Decimal(0))
+    if position_impressions:
+        metrics["average_position"] = (
+            sum((shows * position for shows, position in weighted_days), Decimal(0))
+            / position_impressions,
+            "number",
+        )
+    aliases = {
+        "added_pages": (indexing, ("APPEARED_IN_SEARCH", "added", "appeared")),
+        "excluded_pages": (indexing, ("REMOVED_FROM_SEARCH", "excluded", "removed")),
+    }
+    for code, (response, names) in aliases.items():
+        values = []
+        for name in names:
+            values = [
+                value for _, value in _valid_dated_values(_series(response, name), start, end)
+            ]
+            if values:
+                break
+        value = sum(values, Decimal(0)) if values else None
+        if value is not None:
+            metrics[code] = (value, "count" if code != "iks" else "number")
+    indexed_pages = _last_dated_value(pages.get("history", []), start, end)
+    if indexed_pages is not None:
+        metrics["indexed_pages"] = (indexed_pages, "count")
+    iks = _last_dated_value(sqi.get("points", []), start, end)
+    if iks is not None:
+        metrics["iks"] = (iks, "number")
+    if include_current and summary:
+        for code, names in {
+            "searchable_pages_count": ("searchable_pages_count", "searchable_pages"),
+            "excluded_pages_count": ("excluded_pages_count", "excluded_pages"),
+        }.items():
+            value = next((_number(summary.get(name)) for name in names if name in summary), None)
+            if value is not None:
+                metrics[code] = (value, "count")
+    response_dates = [
+        item
+        for response in (queries, pages, indexing, sqi)
+        for item in _response_dates(response, start, end)
+    ]
+    actual_period = (
+        {"date_from": min(response_dates).isoformat(), "date_to": max(response_dates).isoformat()}
+        if response_dates
+        else None
+    )
+    return {
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "metrics": metrics,
+        "site_problems": (summary or {}).get("site_problems", {}),
+        "actual_period": actual_period,
+        "availability_reason": None if response_dates else "API не вернул данные за период.",
+        "raw": {"queries": queries, "pages": pages, "indexing": indexing, "sqi": sqi},
+        "host": host or {},
+    }
+
+
+def sync_webmaster(*, mapping, report_month, user=None, client=None):
+    """Fetch everything first, then atomically replace the three monthly snapshots."""
+    month = report_month.replace(day=1)
+    run = YandexWebmasterSyncRun.objects.create(mapping=mapping, report_month=month)
+    client = client or WebmasterClient(mapping.connection)
+    try:
+        user_response = client.user()
+        user_id = user_response.get("user_id") or user_response.get("id")
+        if not user_id:
+            raise ValueError("missing user id")
+        allowed = {str(item.get("host_id")): item for item in client.hosts(user_id)}
+        if mapping.host_id not in allowed:
+            raise ValueError("host is no longer available")
+        host = client.host(user_id, mapping.host_id)
+        summary = client.summary(user_id, mapping.host_id)
+        fetched = [
+            _webmaster_month(
+                client,
+                mapping,
+                user_id,
+                shift_month(month, offset),
+                host=host,
+                summary=summary,
+                include_current=offset == 0,
+            )
+            for offset in (-2, -1, 0)
+        ]
+        now = timezone.now()
+        with transaction.atomic():
+            for data in fetched:
+                payload = {
+                    "schema_version": 1,
+                    "source": "yandex_webmaster",
+                    "retrieval_method": "yandex_api",
+                    "host_id": mapping.host_id,
+                    "host_url": mapping.host_url,
+                    "period_start": data["period_start"],
+                    "period_end": data["period_end"],
+                    "actual_period": data["actual_period"],
+                    "retrieved_at": now.isoformat(),
+                    "availability_reason": data["availability_reason"],
+                    "site_problems": data["site_problems"],
+                    "metrics": {key: str(value[0]) for key, value in data["metrics"].items()},
+                    "contains_sensitive_data": False,
+                }
+                checksum = hashlib.sha256(
+                    json.dumps(
+                        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+                snapshot, _ = SourceSnapshot.objects.update_or_create(
+                    project=mapping.project,
+                    source=SourceSnapshot.Source.WEBMASTER,
+                    period_start=date.fromisoformat(data["period_start"]),
+                    period_end=date.fromisoformat(data["period_end"]),
+                    defaults={
+                        "retrieval_method": SourceSnapshot.RetrievalMethod.YANDEX_API,
+                        "payload": payload,
+                        "checksum": checksum,
+                        "generated_by": user,
+                        "retrieved_at": now,
+                        "provenance": {
+                            "method": "yandex_api",
+                            "resource": "webmaster_v4.1",
+                            "host_id": mapping.host_id,
+                            "actual_period": data["actual_period"],
+                            "retrieved_at": now.isoformat(),
+                        },
+                        "sampling": {},
+                        "contains_sensitive_data": False,
+                    },
+                )
+                snapshot.metrics.all().delete()
+                MetricPoint.objects.bulk_create(
+                    [
+                        MetricPoint(
+                            snapshot=snapshot, metric_code=code, numeric_value=value, unit=unit
+                        )
+                        for code, (value, unit) in data["metrics"].items()
+                    ]
+                )
+            mapping.last_successful_sync_at = now
+            mapping.save(update_fields=["last_successful_sync_at", "updated_at"])
+            run.status, run.completed_at = run.Status.SUCCESS, now
+            run.save(update_fields=["status", "completed_at"])
+        return run
+    except Exception:
+        run.status = run.Status.FAILED
+        run.completed_at = timezone.now()
+        run.error_message = "Не удалось синхронизировать данные Вебмастера. Повторите позже."
         run.save(update_fields=["status", "completed_at", "error_message"])
         return run
