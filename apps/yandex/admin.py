@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import YandexConnection, YandexMetrikaProjectMapping, YandexMetrikaSyncRun
+from .models import (
+    YandexConnection,
+    YandexMetrikaProjectMapping,
+    YandexMetrikaSyncRun,
+    YandexWebmasterProjectMapping,
+    YandexWebmasterSyncRun,
+)
 
 
 @admin.register(YandexConnection)
@@ -12,6 +18,7 @@ class YandexConnectionAdmin(admin.ModelAdmin):
         "account_id",
         "account_login",
         "expires_at",
+        "scopes",
         "active",
         "created_at",
         "updated_at",
@@ -23,3 +30,5 @@ class YandexConnectionAdmin(admin.ModelAdmin):
 
 admin.site.register(YandexMetrikaProjectMapping)
 admin.site.register(YandexMetrikaSyncRun)
+admin.site.register(YandexWebmasterProjectMapping)
+admin.site.register(YandexWebmasterSyncRun)

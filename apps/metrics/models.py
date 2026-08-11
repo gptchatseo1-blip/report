@@ -107,7 +107,7 @@ class SourceSnapshot(models.Model):
 
     class RetrievalMethod(models.TextChoices):
         SYNTHETIC = "synthetic", "Синтетические данные"
-        YANDEX_API = "yandex_api", "API Яндекс Метрики"
+        YANDEX_API = "yandex_api", "API Яндекса"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="source_snapshots")

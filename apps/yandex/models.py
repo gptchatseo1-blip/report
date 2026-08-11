@@ -16,6 +16,7 @@ class YandexConnection(models.Model):
     access_token_encrypted = models.BinaryField(editable=False)
     refresh_token_encrypted = models.BinaryField(null=True, blank=True, editable=False)
     expires_at = models.DateTimeField(null=True, blank=True)
+    scopes = models.JSONField(default=list, blank=True)
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -67,6 +68,48 @@ class YandexMetrikaSyncRun(models.Model):
 
     mapping = models.ForeignKey(
         YandexMetrikaProjectMapping, on_delete=models.CASCADE, related_name="sync_runs"
+    )
+    report_month = models.DateField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    error_message = models.CharField(max_length=500, blank=True)
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self):
+        return f"{self.mapping} — {self.report_month:%m.%Y}: {self.status}"
+
+
+class YandexWebmasterProjectMapping(models.Model):
+    project = models.OneToOneField(
+        Project, on_delete=models.CASCADE, related_name="yandex_webmaster_mapping"
+    )
+    connection = models.ForeignKey(
+        YandexConnection, on_delete=models.PROTECT, related_name="webmaster_mappings"
+    )
+    host_id = models.CharField(max_length=512)
+    host_url = models.URLField(max_length=2000)
+    verification_status = models.CharField(max_length=64, blank=True)
+    main_mirror = models.URLField(max_length=2000, blank=True)
+    domain_mismatch_confirmed = models.BooleanField(default=False)
+    last_successful_sync_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.project} → {self.host_url}"
+
+
+class YandexWebmasterSyncRun(models.Model):
+    class Status(models.TextChoices):
+        RUNNING = "running", "Выполняется"
+        SUCCESS = "success", "Завершена"
+        FAILED = "failed", "Ошибка"
+
+    mapping = models.ForeignKey(
+        YandexWebmasterProjectMapping, on_delete=models.CASCADE, related_name="sync_runs"
     )
     report_month = models.DateField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
