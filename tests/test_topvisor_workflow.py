@@ -102,7 +102,7 @@ def test_search_configurations_use_projects_endpoint_and_flatten_real_response(m
             {
                 "show_searchers_and_regions": 2,
                 "limit": 1,
-                "filters": [{"name": "id", "operator": "EQUALS", "values": [22653133]}],
+                "filters": [{"name": "id", "operator": "EQUALS", "values": ["22653133"]}],
             },
         )
     ]

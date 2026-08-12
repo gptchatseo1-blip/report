@@ -149,7 +149,7 @@ class TopvisorClient:
             {
                 "show_searchers_and_regions": 2,
                 "limit": 1,
-                "filters": [{"name": "id", "operator": "EQUALS", "values": [project_id]}],
+                "filters": [{"name": "id", "operator": "EQUALS", "values": [str(project_id)]}],
             },
         )
         projects = (
