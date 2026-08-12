@@ -1,12 +1,14 @@
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db import transaction
 from django.http import HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from apps.projects.models import Project
 from apps.reports.models import Report
+from apps.yandex.crypto import CredentialConfigurationError
 
 from .client import TopvisorClient, TopvisorCredentials, TopvisorError, client_for_project
 from .forms import TopvisorCredentialsForm, TopvisorProjectForm, TopvisorSyncForm
@@ -26,39 +28,62 @@ def connection(request, project_id):
         "mapping" if request.POST.get("topvisor_project") else ""
     )
     mapping = TopvisorProjectMapping.objects.filter(project=project).first()
+    credential_error = ""
 
     if request.method == "POST" and action == "credentials":
         credential_form = TopvisorCredentialsForm(request.POST, has_key=bool(credential))
         if credential_form.is_valid():
-            api_key = credential_form.cleaned_data["api_key"]
-            if not api_key and credential:
-                api_key = credential.get_api_key()
-            candidate = TopvisorCredentials(credential_form.cleaned_data["user_id"], api_key)
+            submitted_key = credential_form.cleaned_data["api_key"]
             try:
-                projects = tuple(TopvisorClient(credentials=candidate).check_access())
+                existing_key = ""
+                existing_key_unreadable = False
+                if credential:
+                    try:
+                        existing_key = credential.get_api_key()
+                    except CredentialConfigurationError:
+                        if not submitted_key:
+                            raise
+                        existing_key_unreadable = True
+                api_key = submitted_key or existing_key
+                candidate = TopvisorCredentials(credential_form.cleaned_data["user_id"], api_key)
+                TopvisorClient(credentials=candidate).check_access()
+                credentials_changed = bool(
+                    not credential
+                    or credential.user_id != candidate.user_id
+                    or existing_key_unreadable
+                    or existing_key != candidate.api_key
+                )
+                replacement = TopvisorConnection(project=project, user_id=candidate.user_id)
+                replacement.set_api_key(candidate.api_key)
+                replacement.last_verified_at = timezone.now()
+                with transaction.atomic():
+                    if credential:
+                        credential.user_id = replacement.user_id
+                        credential.api_key_encrypted = replacement.api_key_encrypted
+                        credential.api_key_last_four = replacement.api_key_last_four
+                        credential.last_verified_at = replacement.last_verified_at
+                        credential.save()
+                    else:
+                        replacement.save()
+                        credential = replacement
+                    if credentials_changed:
+                        TopvisorProjectMapping.objects.filter(project=project).delete()
+            except CredentialConfigurationError:
+                credential_error = (
+                    "Не удалось прочитать сохранённые реквизиты. Проверьте ключ шифрования "
+                    "или сохраните подключение заново"
+                )
             except TopvisorError:
-                # Rebuild the form so the submitted secret cannot be echoed in HTML.
+                credential_error = "Не удалось проверить ID пользователя или API-ключ."
+            if credential_error:
+                # Rebuild the bound form so a submitted secret can never be echoed in HTML.
                 credential_form = TopvisorCredentialsForm(
                     {"user_id": credential_form.cleaned_data["user_id"], "api_key": ""},
                     has_key=True,
                 )
                 credential_form.is_valid()
-                credential_form.add_error(
-                    None, "Не удалось проверить ID пользователя или API-ключ."
-                )
+                credential_form.add_error(None, credential_error)
             else:
-                credential, _ = TopvisorConnection.objects.get_or_create(
-                    project=project,
-                    defaults={"user_id": candidate.user_id, "api_key_encrypted": b"pending"},
-                )
-                credential.user_id = candidate.user_id
-                if (
-                    credential_form.cleaned_data["api_key"]
-                    or credential.api_key_encrypted == b"pending"
-                ):
-                    credential.set_api_key(candidate.api_key)
-                credential.last_verified_at = timezone.now()
-                credential.save()
                 messages.success(request, "Реквизиты Topvisor сохранены и проверены.")
                 return redirect("topvisor:connection", project_id=project.id)
     else:
@@ -73,12 +98,17 @@ def connection(request, project_id):
     selected = request.POST.get("topvisor_project") or request.GET.get(
         "topvisor_project", mapping.topvisor_project_id if mapping else ""
     )
-    if verified:
-        client, _ = client_for_project(project)
+    if verified and not credential_error:
         try:
+            client, _ = client_for_project(project)
             projects = tuple(client.iter_projects())
             if selected:
                 configurations = tuple(client.get_search_configurations(selected))
+        except CredentialConfigurationError:
+            safe_error = (
+                "Не удалось прочитать сохранённые реквизиты. Проверьте ключ шифрования "
+                "или сохраните подключение заново"
+            )
         except TopvisorError:
             safe_error = "Не удалось получить проекты Topvisor. Проверьте подключение."
 
@@ -129,8 +159,10 @@ def delete_connection(request, project_id):
     project = get_object_or_404(Project, pk=project_id)
     credential = TopvisorConnection.objects.filter(project=project).first()
     if request.method == "POST":
-        if credential:
-            credential.delete()
+        with transaction.atomic():
+            TopvisorProjectMapping.objects.filter(project=project).delete()
+            if credential:
+                credential.delete()
         messages.success(request, "Подключение Topvisor удалено.")
         return redirect("topvisor:connection", project_id=project.id)
     return render(

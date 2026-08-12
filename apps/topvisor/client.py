@@ -1,8 +1,8 @@
 """Small read-only Topvisor API v2 client.
 
-Credentials deliberately live only in Django settings and are never included in an
-exception.  Endpoint names are kept at the adapter boundary so another credential
-provider can be introduced without changing persisted mappings.
+Credentials are supplied explicitly from a project-scoped encrypted connection. Global
+settings are used only as a temporary legacy fallback for projects without a connection.
+Credentials and provider response bodies are never included in safe exceptions.
 """
 
 import json
