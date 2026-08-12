@@ -9,6 +9,25 @@ class MonthInput(forms.DateInput):
     input_type = "month"
 
 
+class TopvisorCredentialsForm(forms.Form):
+    user_id = forms.CharField(label="ID пользователя Topvisor", max_length=255)
+    api_key = forms.CharField(
+        label="API-ключ Topvisor",
+        required=False,
+        widget=forms.PasswordInput(render_value=False),
+    )
+
+    def __init__(self, *args, has_key=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.has_key = has_key
+
+    def clean_api_key(self):
+        value = self.cleaned_data["api_key"]
+        if not value and not self.has_key:
+            raise forms.ValidationError("Введите API-ключ Topvisor.")
+        return value
+
+
 class TopvisorProjectForm(forms.Form):
     topvisor_project = forms.ChoiceField(label="Проект Topvisor")
     configurations = forms.MultipleChoiceField(

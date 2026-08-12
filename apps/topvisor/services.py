@@ -9,8 +9,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.metrics.models import KeywordPosition, RankingSnapshot
+from apps.yandex.crypto import CredentialConfigurationError
 
-from .client import TopvisorClient, TopvisorError
+from .client import TopvisorClient, TopvisorError, client_for_project
 from .models import TopvisorProjectMapping, TopvisorSyncRun
 
 
@@ -130,10 +131,10 @@ def _shift_month(value, offset):
 
 def sync_positions(*, mapping, report_month, client=None):
     """Fetch the three-month reporting window and persist an auditable, idempotent result."""
-    client = client or TopvisorClient()
     run = TopvisorSyncRun.objects.create(mapping=mapping, report_month=report_month)
     configurations = {configuration_id(item): item for item in mapping.selected_configurations}
     try:
+        client = client or client_for_project(mapping.project)[0]
         segments = {}
         for configuration in configurations.values():
             segment = configuration_segment(configuration)
@@ -193,7 +194,12 @@ def sync_positions(*, mapping, report_month, client=None):
         ]
     except Exception as exc:
         run.status = TopvisorSyncRun.Status.FAILED
-        if isinstance(exc, TopvisorError):
+        if isinstance(exc, CredentialConfigurationError):
+            run.error_message = (
+                "Не удалось прочитать сохранённые реквизиты. Проверьте ключ шифрования "
+                "или сохраните подключение заново"
+            )
+        elif isinstance(exc, TopvisorError):
             message = str(exc)
             credentials = getattr(client, "credentials", None)
             for secret in (

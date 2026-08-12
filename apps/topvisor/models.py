@@ -1,6 +1,39 @@
 from django.db import models
 
 from apps.projects.models import Project
+from apps.yandex.crypto import decrypt_token, encrypt_token
+
+
+class TopvisorConnection(models.Model):
+    """Project-scoped credentials; the API key is never persisted as plaintext."""
+
+    project = models.OneToOneField(
+        Project, on_delete=models.CASCADE, related_name="topvisor_connection"
+    )
+    user_id = models.CharField("ID пользователя Topvisor", max_length=255)
+    api_key_encrypted = models.BinaryField(editable=False)
+    api_key_last_four = models.CharField(max_length=4, blank=True, editable=False)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Подключение Topvisor"
+        verbose_name_plural = "Подключения Topvisor"
+
+    def __str__(self):
+        return f"Topvisor — {self.project}"
+
+    def set_api_key(self, api_key):
+        self.api_key_encrypted = encrypt_token(api_key)
+        self.api_key_last_four = api_key[-4:] if api_key else ""
+
+    def get_api_key(self):
+        return decrypt_token(self.api_key_encrypted)
+
+    @property
+    def masked_api_key(self):
+        return f"••••{self.api_key_last_four}" if self.api_key_last_four else "Ключ настроен"
 
 
 class TopvisorProjectMapping(models.Model):

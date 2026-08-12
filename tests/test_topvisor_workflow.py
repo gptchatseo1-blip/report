@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from docx import Document
 from openpyxl import load_workbook
 
@@ -71,7 +72,7 @@ def test_missing_credentials_has_clear_state(client, settings):
     response = client.get(reverse("topvisor:connection", args=[project.id]))
     assert response.status_code == 200
     assert "Не настроено" in response.content.decode()
-    assert "password" not in response.content.decode()
+    assert 'value="password"' not in response.content.decode()
 
 
 def test_connection_and_project_configuration_selection(client, settings, monkeypatch):
@@ -270,3 +271,232 @@ def test_invalid_credentials_error_never_contains_secret(monkeypatch):
     with pytest.raises(TopvisorError) as raised:
         client.check_access()
     assert "secret-key" not in str(raised.value)
+
+
+def test_project_credentials_are_encrypted_replaced_retained_and_deleted(
+    client, settings, monkeypatch
+):
+    from apps.topvisor.models import TopvisorConnection
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    settings.TOPVISOR_USER_ID = settings.TOPVISOR_API_KEY = ""
+    user = get_user_model().objects.create_user("credentials", password="login-secret")
+    project = Project.objects.create(name="Credentials", domain="credentials.example")
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ({"id": 42, "name": "SEO"},))
+    url = reverse("topvisor:connection", args=[project.id])
+
+    response = client.post(
+        url, {"action": "credentials", "user_id": "123", "api_key": "first-api-secret"}
+    )
+    assert response.status_code == 302
+    connection = TopvisorConnection.objects.get(project=project)
+    assert b"first-api-secret" not in bytes(connection.api_key_encrypted)
+    assert bytes(connection.api_key_encrypted) != b"pending"
+    assert connection.get_api_key() == "first-api-secret"
+    assert connection.last_verified_at
+    html = client.get(url).content.decode()
+    assert "first-api-secret" not in html
+    assert "Ключ настроен" in html
+
+    client.post(url, {"action": "credentials", "user_id": "456", "api_key": ""})
+    connection.refresh_from_db()
+    assert connection.user_id == "456"
+    assert connection.get_api_key() == "first-api-secret"
+    client.post(url, {"action": "credentials", "user_id": "456", "api_key": "second-secret"})
+    connection.refresh_from_db()
+    assert connection.get_api_key() == "second-secret"
+
+    delete_url = reverse("topvisor:delete-connection", args=[project.id])
+    assert client.get(delete_url).status_code == 200
+    assert client.post(delete_url).status_code == 302
+    assert not TopvisorConnection.objects.filter(project=project).exists()
+    assert Project.objects.filter(pk=project.pk).exists()
+
+
+def test_invalid_project_credentials_are_not_saved_or_echoed(client, settings, monkeypatch):
+    from apps.topvisor.models import TopvisorConnection
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    user = get_user_model().objects.create_user("invalid", password="login-secret")
+    project = Project.objects.create(name="Invalid", domain="invalid.example")
+    client.force_login(user)
+    monkeypatch.setattr(
+        TopvisorClient,
+        "check_access",
+        lambda self: (_ for _ in ()).throw(TopvisorError("response api-secret Authorization")),
+    )
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"action": "credentials", "user_id": "bad", "api_key": "api-secret"},
+    )
+    html = response.content.decode()
+    assert response.status_code == 200
+    assert "Не удалось проверить" in html
+    assert "api-secret" not in html
+    assert "Authorization" not in html
+    assert not TopvisorConnection.objects.filter(project=project).exists()
+
+
+def test_topvisor_mutations_require_login_post_and_csrf(client, django_user_model):
+    project = Project.objects.create(name="Protected", domain="protected.example")
+    connection_url = reverse("topvisor:connection", args=[project.id])
+    delete_url = reverse("topvisor:delete-connection", args=[project.id])
+    assert client.post(connection_url, {}).status_code == 302
+    assert client.post(delete_url).status_code == 302
+    user = django_user_model.objects.create_user("csrf", password="secret")
+    from django.test import Client
+
+    csrf_client = Client(enforce_csrf_checks=True)
+    csrf_client.force_login(user)
+    assert csrf_client.post(connection_url, {"action": "credentials"}).status_code == 403
+    assert csrf_client.post(delete_url).status_code == 403
+
+
+def _connection(project, settings, user_id="uid", api_key="project-secret"):
+    from apps.topvisor.models import TopvisorConnection
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    value = TopvisorConnection(project=project, user_id=user_id)
+    value.set_api_key(api_key)
+    value.last_verified_at = timezone.now()
+    value.save()
+    return value
+
+
+@pytest.mark.parametrize(
+    ("posted_user_id", "posted_api_key"),
+    [("changed-user", ""), ("uid", "changed-api-key")],
+)
+def test_changed_credentials_remove_existing_mapping(
+    client, settings, monkeypatch, posted_user_id, posted_api_key
+):
+    project = Project.objects.create(name="Changed", domain=f"{posted_user_id}.example")
+    _connection(project, settings)
+    selected = mapping(project)
+    user = get_user_model().objects.create_user(posted_user_id, password="secret")
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ())
+
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"action": "credentials", "user_id": posted_user_id, "api_key": posted_api_key},
+    )
+    assert response.status_code == 302
+    assert not TopvisorProjectMapping.objects.filter(pk=selected.pk).exists()
+
+
+def test_unchanged_credentials_keep_existing_mapping(client, settings, monkeypatch):
+    project = Project.objects.create(name="Unchanged", domain="unchanged.example")
+    _connection(project, settings)
+    selected = mapping(project)
+    user = get_user_model().objects.create_user("unchanged", password="secret")
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ())
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"action": "credentials", "user_id": "uid", "api_key": ""},
+    )
+    assert response.status_code == 302
+    assert TopvisorProjectMapping.objects.filter(pk=selected.pk).exists()
+
+
+def test_delete_credentials_removes_mapping_but_keeps_report_snapshot(client, settings):
+    project = Project.objects.create(name="Delete", domain="delete-safe.example")
+    _connection(project, settings)
+    selected = mapping(project)
+    report = Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    version = create_report_version(report=report)
+    snapshot_id = version.snapshot.pk
+    user = get_user_model().objects.create_user("delete-safe", password="secret")
+    client.force_login(user)
+    settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY = "legacy", "legacy-secret"
+
+    client.post(reverse("topvisor:delete-connection", args=[project.id]))
+    assert Project.objects.filter(pk=project.pk).exists()
+    assert Report.objects.filter(pk=report.pk).exists()
+    assert type(version).objects.filter(pk=version.pk).exists()
+    assert type(version.snapshot).objects.filter(pk=snapshot_id).exists()
+    assert not TopvisorProjectMapping.objects.filter(pk=selected.pk).exists()
+    html = client.get(reverse("topvisor:connection", args=[project.id])).content.decode()
+    assert "Временный fallback" in html
+    assert "Safe project" not in html
+
+
+def test_encryption_failure_never_creates_pending_connection(client, settings, monkeypatch):
+    from apps.topvisor.models import TopvisorConnection
+    from apps.yandex.crypto import CredentialConfigurationError
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    project = Project.objects.create(name="Encrypt fail", domain="encrypt-fail.example")
+    user = get_user_model().objects.create_user("encrypt-fail", password="secret")
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ())
+    monkeypatch.setattr(
+        TopvisorConnection,
+        "set_api_key",
+        lambda self, key: (_ for _ in ()).throw(CredentialConfigurationError("api-secret")),
+    )
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"action": "credentials", "user_id": "uid", "api_key": "api-secret"},
+    )
+    assert response.status_code == 200
+    assert "api-secret" not in response.content.decode()
+    assert not TopvisorConnection.objects.filter(project=project).exists()
+    assert not TopvisorConnection.objects.filter(api_key_encrypted=b"pending").exists()
+
+
+def test_unreadable_project_credentials_are_safe_on_page_and_sync(client, settings):
+    from apps.topvisor.models import TopvisorConnection, TopvisorSyncRun
+
+    project = Project.objects.create(name="Corrupt", domain="corrupt.example")
+    connection = _connection(project, settings, api_key="never-display-this-secret")
+    selected = mapping(project)
+    TopvisorConnection.objects.filter(pk=connection.pk).update(api_key_encrypted=b"corrupt")
+    settings.CREDENTIAL_ENCRYPTION_KEY = "different-encryption-key"
+    user = get_user_model().objects.create_user("corrupt", password="secret")
+    client.force_login(user)
+    url = reverse("topvisor:connection", args=[project.id])
+
+    response = client.get(url)
+    html = response.content.decode()
+    assert response.status_code == 200
+    assert "Не удалось прочитать сохранённые реквизиты" in html
+    assert "never-display-this-secret" not in html
+    response = client.post(reverse("topvisor:sync", args=[project.id]), {"month": "2026-07"})
+    assert response.status_code == 302
+    run = TopvisorSyncRun.objects.get(mapping=selected)
+    assert run.status == run.Status.FAILED
+    assert "Не удалось прочитать сохранённые реквизиты" in run.error_message
+    assert "corrupt" not in run.error_message
+
+
+def test_project_credentials_are_isolated_and_override_legacy(settings):
+    from apps.topvisor.client import credentials_for_project
+
+    settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY = "legacy-user", "legacy-key"
+    first = Project.objects.create(name="First credentials", domain="first-credentials.example")
+    second = Project.objects.create(name="Second credentials", domain="second-credentials.example")
+    legacy = Project.objects.create(name="Legacy credentials", domain="legacy-credentials.example")
+    _connection(first, settings, "first-user", "first-key")
+    _connection(second, settings, "second-user", "second-key")
+
+    first_credentials, first_legacy = credentials_for_project(first)
+    second_credentials, second_legacy = credentials_for_project(second)
+    legacy_credentials, is_legacy = credentials_for_project(legacy)
+    assert (first_credentials.user_id, first_credentials.api_key, first_legacy) == (
+        "first-user",
+        "first-key",
+        False,
+    )
+    assert (second_credentials.user_id, second_credentials.api_key, second_legacy) == (
+        "second-user",
+        "second-key",
+        False,
+    )
+    assert (legacy_credentials.user_id, legacy_credentials.api_key, is_legacy) == (
+        "legacy-user",
+        "legacy-key",
+        True,
+    )
