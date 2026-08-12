@@ -763,3 +763,137 @@ def test_project_credentials_are_isolated_and_override_legacy(settings):
         "legacy-key",
         True,
     )
+
+
+def test_history_rejects_request_without_dates_or_range():
+    api = TopvisorClient(credentials=TopvisorCredentials("user", "secret"))
+    with pytest.raises(ValueError, match="requires dates"):
+        next(api.get_position_history("22653133", fields=["name"], positions_fields=["position"]))
+
+
+class RealHistoryClient:
+    def __init__(self, *, frequency=0, omit_frequency=False, fail_last=False):
+        self.calls = []
+        self.frequency = frequency
+        self.omit_frequency = omit_frequency
+        self.fail_last = fail_last
+
+    def get_existing_position_dates(self, project_id, **params):
+        self.calls.append(("dates", project_id, params))
+        return ("2026-06-30", "2026-07-15", "2026-07-31")
+
+    def get_position_history(self, project_id, **params):
+        self.calls.append(("history", project_id, params))
+        dates = params["dates"]
+        volume = "volume:213:1:1"
+        keyword = {
+            "name": "seo",
+            "positionsData": {
+                f"{value}:{project_id}:2": {"position": "--" if value == dates[0] else 7}
+                for value in dates
+            },
+        }
+        if not self.omit_frequency:
+            keyword[volume] = self.frequency
+        yield {
+            "headers": {"dates": dates, "projects": [{"id": project_id}]},
+            "existsDates": dates,
+            "keywords": [keyword],
+        }
+        if self.fail_last:
+            raise TopvisorTemporaryError("safe")
+
+
+def history_mapping(project):
+    return TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="22653133",
+        selected_configurations=[
+            {
+                "id": "google:moscow",
+                "searcher_name": "Google",
+                "searcher_key": 1,
+                "region_name": "Москва",
+                "region_key": 213,
+                "region_index": 2,
+                "raw_depth": 2,
+                "normalized_depth": 20,
+            }
+        ],
+    )
+
+
+def test_history_sync_uses_dates_and_preserves_real_zero_and_missing_position():
+    project = Project.objects.create(name="History", domain="history.example")
+    api = RealHistoryClient(frequency=0)
+    run = sync_positions(mapping=history_mapping(project), client=api)
+    assert run.status == run.Status.SUCCESS
+    calls = [call for call in api.calls if call[0] == "history"]
+    assert calls and all(call[2].get("dates") for call in calls)
+    assert all(call[1] == "22653133" for call in calls)
+    assert all(call[2]["regions_indexes"] == ["2"] for call in calls)
+    assert RankingSnapshot.objects.count() == 3
+    assert set(KeywordPosition.objects.values_list("frequency", flat=True)) == {0}
+    missing = KeywordPosition.objects.get(ranking_snapshot__snapshot_date=date(2026, 6, 30))
+    assert missing.position_value is None
+    assert missing.position_raw == "--"
+
+
+def test_missing_frequency_and_last_page_failure_are_atomic():
+    project = Project.objects.create(name="Atomic history", domain="atomic-history.example")
+    selected = history_mapping(project)
+    missing = sync_positions(mapping=selected, client=RealHistoryClient(omit_frequency=True))
+    assert missing.status == missing.Status.FAILED
+    assert "частотности" in missing.error_message
+    assert not RankingSnapshot.objects.exists()
+    failed = sync_positions(mapping=selected, client=RealHistoryClient(fail_last=True))
+    assert failed.status == failed.Status.FAILED
+    assert not RankingSnapshot.objects.exists()
+
+
+def test_history_paginates_with_offset_and_keeps_required_parameters(monkeypatch):
+    api = TopvisorClient(credentials=TopvisorCredentials("user", "secret"))
+    calls = []
+
+    def request(method, params):
+        calls.append((method, params))
+        count = 2 if params["offset"] == 0 else 1
+        return {"keywords": [{"name": str(i)} for i in range(count)]}
+
+    monkeypatch.setattr(api, "_request", request)
+    pages = list(
+        api.get_position_history(
+            22653133,
+            page_size=2,
+            dates=["2026-07-01", "2026-07-02"],
+            regions_indexes=["2"],
+            fields=["name"],
+            positions_fields=["position"],
+        )
+    )
+    assert len(pages) == 2
+    assert [params["offset"] for _method, params in calls] == [0, 2]
+    for method, params in calls:
+        assert method == "get/positions_2/history"
+        assert params["project_id"] == "22653133"
+        assert params["dates"]
+        assert params["regions_indexes"] == ["2"]
+        assert params["fields"] and params["positions_fields"]
+        assert params["show_headers"] == params["show_exists_dates"] == 1
+        assert params["limit"] == 2
+
+
+def test_sync_batches_existing_dates():
+    project = Project.objects.create(name="Batches", domain="batches.example")
+    selected = history_mapping(project)
+
+    class BatchClient(RealHistoryClient):
+        def get_existing_position_dates(self, project_id, **params):
+            return tuple(f"2026-07-{day:02d}" for day in range(1, 22))
+
+    api = BatchClient(frequency=1)
+    run = sync_positions(mapping=selected, client=api)
+    assert run.status == run.Status.SUCCESS
+    batches = [params["dates"] for kind, _project, params in api.calls if kind == "history"]
+    assert [len(batch) for batch in batches] == [20, 1]
+    assert RankingSnapshot.objects.count() == 21

@@ -1,6 +1,9 @@
 from datetime import date
 
 from django import forms
+from django.db.models import Count
+
+from apps.topvisor.models import TopvisorProjectMapping
 
 from .models import NarrativeBlock
 
@@ -10,6 +13,7 @@ class MonthInput(forms.DateInput):
 
 
 class ReportCreateForm(forms.Form):
+    submission_token = forms.CharField(widget=forms.HiddenInput(), required=False)
     month = forms.DateField(required=False, input_formats=["%Y-%m"], widget=forms.HiddenInput())
     topvisor_dates = forms.MultipleChoiceField(
         label="Topvisor", required=False, widget=forms.CheckboxSelectMultiple
@@ -30,12 +34,26 @@ class ReportCreateForm(forms.Form):
             return
         from apps.metrics.models import RankingSnapshot, SourceSnapshot
 
-        dates = (
-            RankingSnapshot.objects.filter(project=project)
-            .values_list("snapshot_date", flat=True)
-            .distinct()
-            .order_by("-snapshot_date")
-        )
+        try:
+            mapping = project.topvisor_mapping
+            configuration_ids = {
+                str(item.get("id") or f"{item.get('searcher_id')}:{item.get('region_id', '')}")
+                for item in mapping.selected_configurations
+            }
+        except TopvisorProjectMapping.DoesNotExist:
+            configuration_ids = set()
+        dates = []
+        if configuration_ids:
+            candidates = (
+                RankingSnapshot.objects.filter(
+                    project=project, topvisor_configuration_id__in=configuration_ids
+                )
+                .values("snapshot_date")
+                .annotate(configuration_count=Count("topvisor_configuration_id", distinct=True))
+                .filter(configuration_count=len(configuration_ids))
+                .order_by("-snapshot_date")
+            )
+            dates = [item["snapshot_date"] for item in candidates]
         self.fields["topvisor_dates"].choices = [
             (d.isoformat(), d.strftime("%d.%m.%Y")) for d in dates
         ]

@@ -88,10 +88,13 @@ def report_list(request, project_id):
         report.ready = latest and not any(
             i.severity == ValidationIssue.Severity.ERROR for i in latest.validation_issues.all()
         )
+    token = secrets.token_urlsafe(24)
+    request.session[f"report_create_token:{project.id}"] = token
+    form = ReportCreateForm(project=project, initial={"submission_token": token})
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": ReportCreateForm(project=project)},
+        {"project": project, "reports": reports, "form": form},
     )
 
 
@@ -102,6 +105,11 @@ def report_create(request, project_id):
     project = get_object_or_404(Project, pk=project_id)
     form = ReportCreateForm(request.POST, project=project)
     if form.is_valid():
+        submitted_token = form.cleaned_data.get("submission_token")
+        token_key = f"report_create_token:{project.id}"
+        if submitted_token and submitted_token != request.session.pop(token_key, None):
+            messages.warning(request, "Запрос уже обработан. Новая версия не создана.")
+            return redirect("reports:report-list", project_id=project.id)
         selected_dates = form.cleaned_data["topvisor_dates"]
         selected_source_ids = (
             form.cleaned_data["metrika_snapshots"] + form.cleaned_data["webmaster_snapshots"]
@@ -116,21 +124,21 @@ def report_create(request, project_id):
         )
         month = form.cleaned_data.get("month") or endpoint.replace(day=1)
         report, created = Report.objects.get_or_create(project=project, report_month=month)
-        if created:
-            create_report_version(
-                report=report,
-                created_by=request.user,
-                selection={
-                    "topvisor_dates": selected_dates,
-                    "yandex_metrika": form.cleaned_data["metrika_snapshots"],
-                    "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
-                },
-            )
+        version = create_report_version(
+            report=report,
+            created_by=request.user,
+            selection={
+                "topvisor_dates": selected_dates,
+                "yandex_metrika": form.cleaned_data["metrika_snapshots"],
+                "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
+            },
+        )
+        validate_report_version(version)
         messages.info(
             request,
-            "Отчёт создан."
+            "Отчёт и версия созданы."
             if created
-            else "Отчёт за этот месяц уже существует; открыт существующий отчёт.",
+            else "Для существующего отчёта создана новая неизменяемая версия.",
         )
         return redirect("reports:report-detail", report_id=report.id)
     reports = project.reports.annotate(

@@ -126,7 +126,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
                 ranking_snapshot=snapshot,
                 query=query,
                 normalized_query=" ".join(query.casefold().split()),
-                frequency=int(row.get("frequency", row.get("ws")) or 0),
+                frequency=int(row.get("frequency", row.get("ws"))),
                 position_raw=str(raw_position or ""),
                 position_value=position,
                 position_status=KeywordPosition.Status.RANKED
@@ -172,7 +172,7 @@ def _history_rows(payload, configuration, project_id):
             result[value].append(
                 {
                     "query": keyword.get("name", keyword.get("query", "")),
-                    "frequency": keyword.get(volume_key, keyword.get("frequency", 0)),
+                    "frequency": keyword.get(volume_key),
                     "group": keyword.get("group_name", keyword.get("group", "")),
                     "position": position_data.get("position", position_data.get("pos", "")),
                     "url": position_data.get("relevant_url", position_data.get("url", "")),
@@ -205,21 +205,42 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 f"volume:{configuration.get('region_key')}:{configuration.get('searcher_key')}:1"
             )
             if hasattr(client, "get_position_history"):
-                pages = list(
-                    client.get_position_history(
-                        mapping.topvisor_project_id,
-                        regions_indexes=[str(configuration["region_index"])],
-                        fields=["name", "group_name", volume],
-                        positions_fields=["position", "relevant_url"],
-                    )
+                common = {
+                    "regions_indexes": [str(configuration["region_index"])],
+                    "fields": ["name", "group_name", volume],
+                    "positions_fields": ["position", "relevant_url"],
+                }
+                existing_dates = client.get_existing_position_dates(
+                    mapping.topvisor_project_id, **common
                 )
+                pages = []
+                for start in range(0, len(existing_dates), 20):
+                    date_batch = list(existing_dates[start : start + 20])
+                    pages.extend(
+                        client.get_position_history(
+                            mapping.topvisor_project_id,
+                            dates=date_batch,
+                            **common,
+                        )
+                    )
                 combined = {}
                 for page in pages:
                     for snapshot_date, rows in _history_rows(
                         page, configuration, str(mapping.topvisor_project_id)
                     ).items():
                         combined.setdefault(snapshot_date, []).extend(rows)
+                if set(combined) != set(existing_dates):
+                    raise TopvisorError("Не удалось полностью загрузить все даты Topvisor.")
                 for snapshot_date, rows in combined.items():
+                    if any(row.get("frequency") is None for row in rows):
+                        raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
+                    try:
+                        for row in rows:
+                            row["frequency"] = int(row["frequency"])
+                            if row["frequency"] < 0:
+                                raise ValueError
+                    except (TypeError, ValueError):
+                        raise TopvisorError("В ответе Topvisor недопустимая частотность.") from None
                     pending_snapshots.append(
                         (
                             configuration,

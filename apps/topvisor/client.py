@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from django.conf import settings
@@ -197,6 +198,8 @@ class TopvisorClient:
 
     def get_position_history(self, project_id, *, page_size=1000, **filters):
         """Return complete raw history pages using the endpoint's offset pagination."""
+        if not filters.get("dates") and not (filters.get("date1") and filters.get("date2")):
+            raise ValueError("Topvisor history requires dates or a date range")
         offset = 0
         while True:
             params = {
@@ -214,6 +217,23 @@ class TopvisorClient:
             if len(keywords) < page_size:
                 break
             offset += page_size
+
+    def get_existing_position_dates(self, project_id, *, regions_indexes, fields, positions_fields):
+        """Discover provider dates without starting a new position check."""
+        pages = self.get_position_history(
+            project_id,
+            regions_indexes=regions_indexes,
+            date1="2000-01-01",
+            date2=date.today().isoformat(),
+            fields=fields,
+            positions_fields=positions_fields,
+            page_size=1,
+        )
+        payload = next(pages)
+        values = payload.get("existsDates", []) if isinstance(payload, dict) else []
+        return tuple(
+            str(item.get("date", item)) if isinstance(item, dict) else str(item) for item in values
+        )
 
     def get_positions(self, project_id, **filters):
         """Compatibility iterator; synchronization uses ``get_position_history``."""
