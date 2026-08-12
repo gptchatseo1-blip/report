@@ -21,6 +21,26 @@ class TopvisorConnectionAdmin(admin.ModelAdmin):
     def key_status(self, obj):
         return "Ключ настроен" if obj.api_key_encrypted else "Не настроен"
 
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return request.method in {"GET", "HEAD", "OPTIONS"} and super().has_change_permission(
+            request, obj
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
+        extra_context = {
+            **(extra_context or {}),
+            "show_save": False,
+            "show_save_and_add_another": False,
+            "show_save_and_continue": False,
+        }
+        return super().changeform_view(request, object_id, form_url, extra_context)
+
 
 @admin.register(TopvisorProjectMapping)
 class TopvisorProjectMappingAdmin(admin.ModelAdmin):
