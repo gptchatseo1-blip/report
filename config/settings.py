@@ -1,10 +1,21 @@
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
-ALLOWED_HOSTS = [x.strip() for x in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost").split(",")]
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key")
+if not DEBUG and SECRET_KEY in {"", "unsafe-development-key", "replace-with-a-long-random-value"}:
+    raise ImproperlyConfigured("Set a strong DJANGO_SECRET_KEY when DJANGO_DEBUG=0.")
+
+
+def _csv_setting(name, default=""):
+    return [value.strip() for value in os.getenv(name, default).split(",") if value.strip()]
+
+
+ALLOWED_HOSTS = _csv_setting("DJANGO_ALLOWED_HOSTS", "localhost")
+CSRF_TRUSTED_ORIGINS = _csv_setting("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -81,7 +92,7 @@ STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", BASE_DIR / "media"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
 DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024
@@ -110,3 +121,14 @@ YANDEX_WEBMASTER_API_BASE_URL = os.getenv(
 YANDEX_REQUEST_TIMEOUT_SECONDS = float(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "15"))
 YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
 CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
+
+# TLS is normally terminated by the reverse proxy. Production deployments must enable
+# these switches explicitly after HTTPS and the forwarded-proto header are configured.
+SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", "0") == "1"
+SESSION_COOKIE_SECURE = os.getenv("DJANGO_SESSION_COOKIE_SECURE", "0") == "1"
+CSRF_COOKIE_SECURE = os.getenv("DJANGO_CSRF_COOKIE_SECURE", "0") == "1"
+SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", "0") == "1"
+SECURE_HSTS_PRELOAD = os.getenv("DJANGO_SECURE_HSTS_PRELOAD", "0") == "1"
+if os.getenv("DJANGO_TRUST_X_FORWARDED_PROTO", "0") == "1":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
