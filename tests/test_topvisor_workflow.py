@@ -1,4 +1,5 @@
 import io
+import logging
 import urllib.error
 from datetime import date
 
@@ -14,7 +15,12 @@ from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
 from apps.reports.models import Report
 from apps.reports.services import create_report_version
-from apps.topvisor.client import TopvisorClient, TopvisorCredentials, TopvisorError
+from apps.topvisor.client import (
+    TopvisorClient,
+    TopvisorCredentials,
+    TopvisorError,
+    TopvisorTemporaryError,
+)
 from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import sync_positions
 
@@ -264,6 +270,68 @@ def test_client_pagination_and_429_retry(monkeypatch):
     assert sleeps == [0.0]
 
 
+def test_client_retries_api_level_errors_after_an_earlier_success(monkeypatch):
+    payloads = [
+        b'{"result":{"rows":[{"id":1}]}}',
+        b'{"errors":[{"code":429,"message":"secret response body"}]}',
+        b'{"result":{"rows":[{"id":2}]}}',
+    ]
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return payloads.pop(0)
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: Response())
+    sleeps = []
+    api = TopvisorClient(
+        credentials=TopvisorCredentials("user-secret", "api-secret"),
+        max_retries=1,
+        sleep=sleeps.append,
+    )
+
+    assert list(api.iter_projects()) == [{"id": 1}]
+    assert list(api.iter_projects()) == [{"id": 2}]
+    assert len(sleeps) == 1
+
+
+def test_permanent_api_level_error_is_not_retried_or_leaked(monkeypatch, caplog):
+    calls = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{"errors":[{"code":401,"message":"api-secret Authorization"}]}'
+
+    def urlopen(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    api = TopvisorClient(
+        credentials=TopvisorCredentials("user-secret", "api-secret"), max_retries=3
+    )
+    with caplog.at_level(logging.DEBUG), pytest.raises(TopvisorError) as raised:
+        api.check_access()
+
+    exposed = str(raised.value) + caplog.text
+    assert calls == 1
+    assert "api-secret" not in exposed
+    assert "user-secret" not in exposed
+    assert "Authorization" not in exposed
+
+
 def test_invalid_credentials_error_never_contains_secret(monkeypatch):
     error = urllib.error.HTTPError("url", 401, "secret-key", {}, None)
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(error))
@@ -336,6 +404,89 @@ def test_invalid_project_credentials_are_not_saved_or_echoed(client, settings, m
     assert "api-secret" not in html
     assert "Authorization" not in html
     assert not TopvisorConnection.objects.filter(project=project).exists()
+
+
+def test_credentials_projects_and_configurations_reuse_checked_project_list(
+    client, settings, monkeypatch
+):
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    project = Project.objects.create(name="One request", domain="one-request.example")
+    user = get_user_model().objects.create_user("one-request", password="secret")
+    client.force_login(user)
+    calls = {"projects": 0, "configurations": 0}
+
+    def projects(api):
+        calls["projects"] += 1
+        return iter([{"id": 42, "name": "SEO"}])
+
+    def configurations(api, project_id):
+        calls["configurations"] += 1
+        assert project_id == "42"
+        return [{"id": 7, "search_engine": "google", "region_name": "Москва"}]
+
+    monkeypatch.setattr(TopvisorClient, "iter_projects", projects)
+    monkeypatch.setattr(TopvisorClient, "get_search_configurations", configurations)
+    url = reverse("topvisor:connection", args=[project.id])
+
+    assert client.post(
+        url, {"action": "credentials", "user_id": "uid", "api_key": "api-secret"}
+    ).status_code == 302
+    assert client.get(url).status_code == 200
+    response = client.get(url, {"topvisor_project": "42"})
+
+    assert response.status_code == 200
+    assert "Москва" in response.content.decode()
+    assert calls == {"projects": 1, "configurations": 1}
+    assert "api-secret" not in response.content.decode()
+
+
+def test_temporary_verification_error_preserves_connection_and_mapping(
+    client, settings, monkeypatch
+):
+    project = Project.objects.create(name="Temporary", domain="temporary.example")
+    connection = _connection(project, settings)
+    selected = mapping(project)
+    user = get_user_model().objects.create_user("temporary", password="secret")
+    client.force_login(user)
+    monkeypatch.setattr(
+        TopvisorClient,
+        "check_access",
+        lambda self: (_ for _ in ()).throw(TopvisorTemporaryError("safe")),
+    )
+
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"action": "credentials", "user_id": "replacement", "api_key": "new-secret"},
+    )
+
+    connection.refresh_from_db()
+    assert response.status_code == 200
+    assert "временно недоступен" in response.content.decode()
+    assert "new-secret" not in response.content.decode()
+    assert connection.user_id == "uid"
+    assert connection.get_api_key() == "project-secret"
+    assert TopvisorProjectMapping.objects.filter(pk=selected.pk).exists()
+
+
+def test_topvisor_connection_admin_is_read_only_and_has_no_add_button(
+    client, django_user_model, settings
+):
+    project = Project.objects.create(name="Admin", domain="admin.example")
+    connection = _connection(project, settings)
+    admin_user = django_user_model.objects.create_superuser("admin", "admin@example.com", "secret")
+    client.force_login(admin_user)
+
+    changelist = client.get(reverse("admin:topvisor_topvisorconnection_changelist"))
+    add_response = client.get(reverse("admin:topvisor_topvisorconnection_add"))
+    detail = client.get(
+        reverse("admin:topvisor_topvisorconnection_change", args=[connection.pk])
+    )
+
+    assert changelist.status_code == 200
+    assert "Добавить подключение Topvisor" not in changelist.content.decode()
+    assert add_response.status_code == 403
+    assert detail.status_code == 200
+    assert 'name="_save"' not in detail.content.decode()
 
 
 def test_topvisor_mutations_require_login_post_and_csrf(client, django_user_model):

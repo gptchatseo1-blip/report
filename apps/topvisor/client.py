@@ -20,6 +20,10 @@ class TopvisorError(Exception):
     """A safe error which never contains request headers or credentials."""
 
 
+class TopvisorTemporaryError(TopvisorError):
+    """A safe error raised after retryable provider failures are exhausted."""
+
+
 @dataclass(frozen=True)
 class TopvisorCredentials:
     user_id: str
@@ -37,6 +41,41 @@ class TopvisorClient:
         self.timeout = timeout if timeout is not None else settings.TOPVISOR_REQUEST_TIMEOUT_SECONDS
         self.max_retries = max_retries if max_retries is not None else settings.TOPVISOR_MAX_RETRIES
         self.sleep = sleep
+
+    @staticmethod
+    def _api_errors_are_retryable(errors):
+        """Treat known authentication/request errors as permanent and retry the rest.
+
+        Topvisor sometimes reports throttling and upstream failures in ``errors`` while
+        returning HTTP 200. Unknown provider errors are retried too, but only within the
+        client's strict attempt limit.
+        """
+        entries = errors if isinstance(errors, list) else [errors]
+        permanent_codes = {400, 401, 403, 404, 405, 422}
+        permanent_markers = (
+            "auth",
+            "credential",
+            "forbidden",
+            "invalid",
+            "permission",
+            "unauthor",
+        )
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            code = entry.get("code", entry.get("status"))
+            try:
+                if int(code) in permanent_codes:
+                    return False
+            except (TypeError, ValueError):
+                pass
+            machine_code = str(entry.get("type", entry.get("code", ""))).lower()
+            if any(marker in machine_code for marker in permanent_markers):
+                return False
+        return True
+
+    def _backoff(self, attempt):
+        self.sleep(0.5 * (2**attempt) + random.uniform(0, 0.25))
 
     def _request(self, method: str, params: dict[str, Any] | None = None):
         if not self.credentials.user_id or not self.credentials.api_key:
@@ -57,13 +96,23 @@ class TopvisorClient:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     payload = json.loads(response.read())
                 if isinstance(payload, dict) and payload.get("errors"):
-                    raise TopvisorError("Topvisor вернул ошибку API.")
+                    retryable = self._api_errors_are_retryable(payload["errors"])
+                    if not retryable:
+                        raise TopvisorError("Topvisor отклонил запрос. Проверьте реквизиты.")
+                    if attempt >= self.max_retries:
+                        raise TopvisorTemporaryError(
+                            "Topvisor временно недоступен. Повторите попытку позже."
+                        )
+                    self._backoff(attempt)
+                    continue
                 return payload.get("result", payload) if isinstance(payload, dict) else payload
             except urllib.error.HTTPError as exc:
                 retryable = exc.code == 429 or 500 <= exc.code < 600
-                if not retryable or attempt >= self.max_retries:
-                    raise TopvisorError(
-                        f"Topvisor временно недоступен (HTTP {exc.code})."
+                if not retryable:
+                    raise TopvisorError("Topvisor отклонил запрос. Проверьте реквизиты.") from None
+                if attempt >= self.max_retries:
+                    raise TopvisorTemporaryError(
+                        "Topvisor временно недоступен. Повторите попытку позже."
                     ) from None
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 delay = (
@@ -74,8 +123,10 @@ class TopvisorClient:
                 self.sleep(delay)
             except (urllib.error.URLError, TimeoutError, ValueError):
                 if attempt >= self.max_retries:
-                    raise TopvisorError("Не удалось получить корректный ответ Topvisor.") from None
-                self.sleep(0.5 * (2**attempt) + random.uniform(0, 0.25))
+                    raise TopvisorTemporaryError(
+                        "Topvisor временно недоступен. Повторите попытку позже."
+                    ) from None
+                self._backoff(attempt)
 
     def iter_pages(self, method, params=None, *, page_size=1000):
         page = 0
