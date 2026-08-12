@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from apps.metrics.models import KeywordPosition, RankingSnapshot
 
-from .client import TopvisorClient, TopvisorError
+from .client import TopvisorClient, TopvisorError, client_for_project
 from .models import TopvisorProjectMapping, TopvisorSyncRun
 
 
@@ -130,7 +130,7 @@ def _shift_month(value, offset):
 
 def sync_positions(*, mapping, report_month, client=None):
     """Fetch the three-month reporting window and persist an auditable, idempotent result."""
-    client = client or TopvisorClient()
+    client = client or client_for_project(mapping.project)[0]
     run = TopvisorSyncRun.objects.create(mapping=mapping, report_month=report_month)
     configurations = {configuration_id(item): item for item in mapping.selected_configurations}
     try:

@@ -71,7 +71,7 @@ def test_missing_credentials_has_clear_state(client, settings):
     response = client.get(reverse("topvisor:connection", args=[project.id]))
     assert response.status_code == 200
     assert "Не настроено" in response.content.decode()
-    assert "password" not in response.content.decode()
+    assert 'value="password"' not in response.content.decode()
 
 
 def test_connection_and_project_configuration_selection(client, settings, monkeypatch):
@@ -270,3 +270,82 @@ def test_invalid_credentials_error_never_contains_secret(monkeypatch):
     with pytest.raises(TopvisorError) as raised:
         client.check_access()
     assert "secret-key" not in str(raised.value)
+
+
+def test_project_credentials_are_encrypted_replaced_retained_and_deleted(
+    client, settings, monkeypatch
+):
+    from apps.topvisor.models import TopvisorConnection
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    settings.TOPVISOR_USER_ID = settings.TOPVISOR_API_KEY = ""
+    user = get_user_model().objects.create_user("credentials", password="login-secret")
+    project = Project.objects.create(name="Credentials", domain="credentials.example")
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ({"id": 42, "name": "SEO"},))
+    url = reverse("topvisor:connection", args=[project.id])
+
+    response = client.post(
+        url, {"action": "credentials", "user_id": "123", "api_key": "first-api-secret"}
+    )
+    assert response.status_code == 302
+    connection = TopvisorConnection.objects.get(project=project)
+    assert b"first-api-secret" not in bytes(connection.api_key_encrypted)
+    assert connection.get_api_key() == "first-api-secret"
+    assert connection.last_verified_at
+    html = client.get(url).content.decode()
+    assert "first-api-secret" not in html
+    assert "Ключ настроен" in html
+
+    client.post(url, {"action": "credentials", "user_id": "456", "api_key": ""})
+    connection.refresh_from_db()
+    assert connection.user_id == "456"
+    assert connection.get_api_key() == "first-api-secret"
+    client.post(url, {"action": "credentials", "user_id": "456", "api_key": "second-secret"})
+    connection.refresh_from_db()
+    assert connection.get_api_key() == "second-secret"
+
+    delete_url = reverse("topvisor:delete-connection", args=[project.id])
+    assert client.get(delete_url).status_code == 200
+    assert client.post(delete_url).status_code == 302
+    assert not TopvisorConnection.objects.filter(project=project).exists()
+    assert Project.objects.filter(pk=project.pk).exists()
+
+
+def test_invalid_project_credentials_are_not_saved_or_echoed(client, settings, monkeypatch):
+    from apps.topvisor.models import TopvisorConnection
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    user = get_user_model().objects.create_user("invalid", password="login-secret")
+    project = Project.objects.create(name="Invalid", domain="invalid.example")
+    client.force_login(user)
+    monkeypatch.setattr(
+        TopvisorClient,
+        "check_access",
+        lambda self: (_ for _ in ()).throw(TopvisorError("response api-secret Authorization")),
+    )
+    response = client.post(
+        reverse("topvisor:connection", args=[project.id]),
+        {"action": "credentials", "user_id": "bad", "api_key": "api-secret"},
+    )
+    html = response.content.decode()
+    assert response.status_code == 200
+    assert "Не удалось проверить" in html
+    assert "api-secret" not in html
+    assert "Authorization" not in html
+    assert not TopvisorConnection.objects.filter(project=project).exists()
+
+
+def test_topvisor_mutations_require_login_post_and_csrf(client, django_user_model):
+    project = Project.objects.create(name="Protected", domain="protected.example")
+    connection_url = reverse("topvisor:connection", args=[project.id])
+    delete_url = reverse("topvisor:delete-connection", args=[project.id])
+    assert client.post(connection_url, {}).status_code == 302
+    assert client.post(delete_url).status_code == 302
+    user = django_user_model.objects.create_user("csrf", password="secret")
+    from django.test import Client
+
+    csrf_client = Client(enforce_csrf_checks=True)
+    csrf_client.force_login(user)
+    assert csrf_client.post(connection_url, {"action": "credentials"}).status_code == 403
+    assert csrf_client.post(delete_url).status_code == 403

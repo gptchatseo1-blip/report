@@ -89,3 +89,23 @@ def test_health_check(client):
     response = client.get(reverse("health"))
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_project_timezone_is_internal_and_preserved_in_snapshot(client, django_user_model):
+    from datetime import date
+
+    from apps.reports.models import Report
+    from apps.reports.services import create_report_version
+
+    user = django_user_model.objects.create_user("timezone-ui", password="secret")
+    project = Project.objects.create(name="Moscow", domain="moscow.example")
+    client.force_login(user)
+    html = client.get(reverse("reports:projects")).content.decode()
+    assert "Europe/Moscow" not in html
+    project.refresh_from_db()
+    assert project.timezone == "Europe/Moscow"
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1)),
+        created_by=user,
+    )
+    assert version.snapshot.payload["project"]["timezone"] == "Europe/Moscow"

@@ -105,3 +105,19 @@ class TopvisorClient:
 
     def get_positions(self, project_id, **filters):
         return self.iter_pages("get/positions_2/history", {"project_id": project_id, **filters})
+
+
+def credentials_for_project(project):
+    """Resolve only this project's credentials, with an explicit legacy fallback."""
+    from .models import TopvisorConnection
+
+    connection = TopvisorConnection.objects.filter(project=project).first()
+    if connection:
+        return TopvisorCredentials(connection.user_id, connection.get_api_key()), False
+    credentials = TopvisorCredentials(settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY)
+    return credentials, bool(credentials.user_id and credentials.api_key)
+
+
+def client_for_project(project):
+    credentials, legacy = credentials_for_project(project)
+    return TopvisorClient(credentials=credentials), legacy
