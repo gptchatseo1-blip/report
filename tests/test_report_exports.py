@@ -107,7 +107,7 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
     assert document.styles["Normal"].font.name == "Carlito"
     assert document.sections[0].footer.paragraphs[0].text.startswith("demo.example")
     assert any(section.orientation == WD_ORIENT.LANDSCAPE for section in document.sections)
-    assert document.sections[-1].orientation == WD_ORIENT.PORTRAIT
+    assert document.sections[-1].orientation == WD_ORIENT.LANDSCAPE
     for section in document.sections:
         dimensions = (round(section.page_width.cm, 1), round(section.page_height.cm, 1))
         assert dimensions in {(21.0, 29.7), (29.7, 21.0)}
@@ -117,6 +117,7 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
         xml = package.read("word/document.xml")
         assert b"w:tblHeader" in xml
         assert b"w:cantSplit" in xml
+        assert b"w:keepNext" in xml
     table_text = "\n".join(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )

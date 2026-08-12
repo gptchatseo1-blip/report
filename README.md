@@ -210,10 +210,36 @@ DOCX полного профиля содержит отдельные граф�
 в старом snapshot, обозначаются как «Данные недоступны» и не восстанавливаются из живых таблиц.
 XLSX экранирует текст, начинающийся с `=`, `+`, `-` или `@`, от formula injection.
 
-Docker CI запускает `python manage.py export_smoke_demo`: создаёт обезличенный snapshot,
-генерирует DOCX/PDF/XLSX, конвертирует DOCX через настоящий LibreOffice, проверяет PDF через
-`pypdf`, рендерит первую страницу командой `pdftoppm` и публикует четыре демонстрационных файла
-(включая PNG) как GitHub Actions artifacts для ручной визуальной проверки.
+### Воспроизводимый демонстрационный проект MVP-1
+
+Демонстрационный набор не требует OAuth, API-ключей или сети. Он идемпотентно создаёт проект
+`seo-demo.invalid`, правила бренда и пересекающиеся приоритетные URL-группы, позиции Google
+до TOP-20 и Яндекса до TOP-100 за три месяца, Метрику, Вебмастер и журнал работ. Повторный
+запуск переиспользует отчёт, версию и неизменяемый snapshot, если содержимое не изменилось:
+
+```bash
+python manage.py create_demo_project
+python manage.py create_demo_project  # проверка идемпотентности
+```
+
+Полный автоматический E2E-тест (для PDF необходим LibreOffice) запускается командой:
+
+```bash
+pytest -q tests/test_demo_e2e.py
+```
+
+Настоящий smoke-сценарий создаёт версию, запускает валидатор, дважды формирует все три формата
+из одного snapshot, сравнивает их содержание, проверяет PDF и создаёт PNG каждой страницы:
+
+```bash
+python manage.py export_smoke_demo --output demo-artifacts
+```
+
+Результаты находятся в `demo-artifacts/`: `seo-demo.docx`, `seo-demo.pdf`, `seo-demo.xlsx`,
+повторные `seo-demo-repeat.docx`, `seo-demo-repeat.pdf`, `seo-demo-repeat.xlsx` и превью
+`seo-demo-page-*.png`. Docker CI выполняет конвертацию DOCX настоящим LibreOffice, проверяет
+DOCX/XLSX, сигнатуру, число и непустое содержание страниц PDF и загружает только эти
+обезличенные файлы в GitHub Actions artifact `anonymised-report-export-samples`.
 
 ## Яндекс Метрика через OAuth
 
