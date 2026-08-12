@@ -823,7 +823,7 @@ def history_mapping(project):
     )
 
 
-def test_history_sync_uses_dates_and_preserves_real_zero_and_missing_position():
+def test_history_sync_uses_dates_and_normalizes_zero_and_missing_position():
     project = Project.objects.create(name="History", domain="history.example")
     api = RealHistoryClient(frequency=0)
     run = sync_positions(mapping=history_mapping(project), client=api)
@@ -833,7 +833,7 @@ def test_history_sync_uses_dates_and_preserves_real_zero_and_missing_position():
     assert all(call[1] == "22653133" for call in calls)
     assert all(call[2]["regions_indexes"] == ["2"] for call in calls)
     assert RankingSnapshot.objects.count() == 3
-    assert set(KeywordPosition.objects.values_list("frequency", flat=True)) == {0}
+    assert set(KeywordPosition.objects.values_list("frequency", flat=True)) == {1}
     missing = KeywordPosition.objects.get(ranking_snapshot__snapshot_date=date(2026, 6, 30))
     assert missing.position_value is None
     assert missing.position_raw == "--"
@@ -848,6 +848,19 @@ def test_missing_frequency_and_last_page_failure_are_atomic():
     assert not RankingSnapshot.objects.exists()
     failed = sync_positions(mapping=selected, client=RealHistoryClient(fail_last=True))
     assert failed.status == failed.Status.FAILED
+    assert not RankingSnapshot.objects.exists()
+
+
+@pytest.mark.parametrize("frequency", ["", -1, "invalid"])
+def test_invalid_topvisor_frequency_is_atomic(frequency):
+    project = Project.objects.create(
+        name="Invalid frequency", domain=f"invalid-{str(frequency)}.example"
+    )
+    run = sync_positions(
+        mapping=history_mapping(project), client=RealHistoryClient(frequency=frequency)
+    )
+    assert run.status == run.Status.FAILED
+    assert "частотность" in run.error_message
     assert not RankingSnapshot.objects.exists()
 
 

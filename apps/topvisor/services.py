@@ -9,6 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.metrics.models import KeywordPosition, RankingSnapshot
+from apps.metrics.normalization import normalize_frequency
 from apps.yandex.crypto import CredentialConfigurationError
 
 from .client import TopvisorClient, TopvisorError, client_for_project
@@ -126,7 +127,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
                 ranking_snapshot=snapshot,
                 query=query,
                 normalized_query=" ".join(query.casefold().split()),
-                frequency=int(row.get("frequency", row.get("ws"))),
+                frequency=normalize_frequency(row.get("frequency", row.get("ws"))),
                 position_raw=str(raw_position or ""),
                 position_value=position,
                 position_status=KeywordPosition.Status.RANKED
@@ -236,9 +237,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                         raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
                     try:
                         for row in rows:
-                            row["frequency"] = int(row["frequency"])
-                            if row["frequency"] < 0:
-                                raise ValueError
+                            row["frequency"] = normalize_frequency(row["frequency"])
                     except (TypeError, ValueError):
                         raise TopvisorError("В ответе Topvisor недопустимая частотность.") from None
                     pending_snapshots.append(
@@ -263,6 +262,12 @@ def sync_positions(*, mapping, report_month=None, client=None):
                     )
                     if any(row.get("frequency", row.get("ws")) is None for row in rows):
                         raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
+                    try:
+                        for row in rows:
+                            key = "frequency" if "frequency" in row else "ws"
+                            row["frequency"] = normalize_frequency(row.get(key))
+                    except ValueError:
+                        raise TopvisorError("В ответе Topvisor недопустимая частотность.") from None
                     pending_snapshots.append(
                         (
                             configuration,
