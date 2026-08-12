@@ -26,6 +26,117 @@ from apps.topvisor.services import sync_positions
 
 pytestmark = pytest.mark.django_db
 
+REAL_SEARCH_CONFIGURATION_RESPONSE = [
+    {
+        "id": 22653133,
+        "searchers": [
+            {
+                "id": 15263163,
+                "project_id": 22653133,
+                "searcher": 0,
+                "enabled": 1,
+                "key": 0,
+                "name": "Yandex",
+                "regions": [
+                    {
+                        "id": 17054799,
+                        "key": 213,
+                        "lang": "ru",
+                        "device": 0,
+                        "depth": 1,
+                        "index": 1,
+                        "enabled": 1,
+                        "searcher_key": 0,
+                        "type": "CITY",
+                        "countryCode": "RU",
+                        "name": "Москва",
+                        "areaName": "Москва и Московская область",
+                        "domain": ".ru",
+                    }
+                ],
+            },
+            {
+                "id": 15263165,
+                "project_id": 22653133,
+                "searcher": 1,
+                "enabled": 1,
+                "key": 1,
+                "name": "Google",
+                "regions": [
+                    {
+                        "id": 17054801,
+                        "key": 213,
+                        "lang": "ru",
+                        "device": 0,
+                        "depth": 2,
+                        "index": 2,
+                        "enabled": 1,
+                        "searcher_key": 1,
+                        "type": "CITY",
+                        "countryCode": "RU",
+                        "name": "Москва",
+                        "areaName": "Москва и Московская область",
+                        "domain": ".ru",
+                    }
+                ],
+            },
+        ],
+    }
+]
+
+
+def test_search_configurations_use_projects_endpoint_and_flatten_real_response(monkeypatch):
+    api = TopvisorClient(credentials=TopvisorCredentials("user", "secret"))
+    calls = []
+
+    def request(method, params):
+        calls.append((method, params))
+        return REAL_SEARCH_CONFIGURATION_RESPONSE
+
+    monkeypatch.setattr(api, "_request", request)
+    configurations = api.get_search_configurations(22653133)
+
+    assert calls == [
+        (
+            "get/projects_2/projects",
+            {
+                "show_searchers_and_regions": 2,
+                "limit": 1,
+                "filters": [{"name": "id", "operator": "EQUALS", "values": ["22653133"]}],
+            },
+        )
+    ]
+    assert [
+        (item["searcher_name"], item["region_name"], item["normalized_depth"])
+        for item in configurations
+    ] == [
+        ("Yandex", "Москва", 10),
+        ("Google", "Москва", 20),
+    ]
+    assert [item["region_index"] for item in configurations] == [1, 2]
+    assert configurations[0] == {
+        "searcher_id": 15263163,
+        "searcher_key": 0,
+        "searcher_name": "Yandex",
+        "region_id": 17054799,
+        "region_key": 213,
+        "region_index": 1,
+        "region_name": "Москва",
+        "area_name": "Москва и Московская область",
+        "language": "ru",
+        "raw_depth": 1,
+        "normalized_depth": 10,
+        "device": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    "raw, normalized",
+    [(1, 10), (2, 20), (3, 30), (5, 50), (10, 100), (20, 20), (30, 30), (50, 50), (100, 100)],
+)
+def test_topvisor_depth_normalization(raw, normalized):
+    assert TopvisorClient._normalize_depth(raw) == normalized
+
 
 class FakeClient:
     def __init__(self, missing_frequency=False):

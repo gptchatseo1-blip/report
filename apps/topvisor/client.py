@@ -44,35 +44,30 @@ class TopvisorClient:
 
     @staticmethod
     def _api_errors_are_retryable(errors):
-        """Treat known authentication/request errors as permanent and retry the rest.
+        """Retry only API errors which Topvisor explicitly identifies as temporary.
 
         Topvisor sometimes reports throttling and upstream failures in ``errors`` while
-        returning HTTP 200. Unknown provider errors are retried too, but only within the
-        client's strict attempt limit.
+        returning HTTP 200. Unknown methods and invalid parameters are permanent.
         """
         entries = errors if isinstance(errors, list) else [errors]
-        permanent_codes = {400, 401, 403, 404, 405, 422}
-        permanent_markers = (
-            "auth",
-            "credential",
-            "forbidden",
-            "invalid",
-            "permission",
-            "unauthor",
-        )
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             code = entry.get("code", entry.get("status"))
             try:
-                if int(code) in permanent_codes:
-                    return False
+                if int(code) == 429 or 500 <= int(code) < 600:
+                    return True
             except (TypeError, ValueError):
                 pass
-            machine_code = str(entry.get("type", entry.get("code", ""))).lower()
-            if any(marker in machine_code for marker in permanent_markers):
-                return False
-        return True
+            machine_code = " ".join(
+                str(entry.get(key, "")) for key in ("type", "code", "status")
+            ).lower()
+            if any(
+                marker in machine_code
+                for marker in ("temporary", "timeout", "throttl", "rate_limit", "unavailable")
+            ):
+                return True
+        return False
 
     def _backoff(self, attempt):
         self.sleep(0.5 * (2**attempt) + random.uniform(0, 0.25))
@@ -149,10 +144,49 @@ class TopvisorClient:
         return self.iter_pages("get/projects_2/projects", {"fields": ["id", "name", "site"]})
 
     def get_search_configurations(self, project_id):
-        payload = self._request("get/projects_2/searchers", {"project_id": project_id})
-        if isinstance(payload, dict):
-            return payload.get("rows", payload.get("items", []))
-        return payload
+        payload = self._request(
+            "get/projects_2/projects",
+            {
+                "show_searchers_and_regions": 2,
+                "limit": 1,
+                "filters": [{"name": "id", "operator": "EQUALS", "values": [str(project_id)]}],
+            },
+        )
+        projects = (
+            payload.get("rows", payload.get("items", [])) if isinstance(payload, dict) else payload
+        )
+        configurations = []
+        for project in projects or []:
+            for searcher in project.get("searchers") or []:
+                for region in searcher.get("regions") or []:
+                    raw_depth = region.get("depth")
+                    configurations.append(
+                        {
+                            "searcher_id": searcher.get("id"),
+                            "searcher_key": searcher.get("key", searcher.get("searcher")),
+                            "searcher_name": searcher.get("name", ""),
+                            "region_id": region.get("id"),
+                            "region_key": region.get("key"),
+                            "region_index": region.get("index"),
+                            "region_name": region.get("name", ""),
+                            "area_name": region.get("areaName", ""),
+                            "language": region.get("lang", ""),
+                            "raw_depth": raw_depth,
+                            "normalized_depth": self._normalize_depth(raw_depth),
+                            "device": region.get("device"),
+                        }
+                    )
+        return configurations
+
+    @staticmethod
+    def _normalize_depth(raw_depth):
+        value = int(raw_depth)
+        mapping = {1: 10, 2: 20, 3: 30, 5: 50, 10: 100}
+        if value in (20, 30, 50, 100):
+            return value
+        if value in mapping:
+            return mapping[value]
+        raise TopvisorError("Topvisor вернул неподдерживаемую глубину проверки.")
 
     def get_positions(self, project_id, **filters):
         return self.iter_pages("get/positions_2/history", {"project_id": project_id, **filters})
