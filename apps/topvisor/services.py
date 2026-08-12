@@ -21,14 +21,20 @@ def response_checksum(value) -> str:
 
 
 def normalize_depth(raw) -> int:
-    from apps.reports.calculations import normalize_ranking_depth
-
-    return normalize_ranking_depth(raw)
+    value = int(raw)
+    if value in (10, 20, 30, 50, 100):
+        return value
+    try:
+        return {1: 10, 2: 20, 3: 30, 5: 50}[value]
+    except KeyError as exc:
+        raise ValueError("Unsupported ranking depth") from exc
 
 
 def configuration_id(configuration):
     """Keep Topvisor's concrete variant ID, rather than collapsing device variants."""
-    value = configuration.get("id") or configuration.get("searcher_id")
+    value = configuration.get("id")
+    if value is None and configuration.get("searcher_id") is not None:
+        value = f"{configuration['searcher_id']}:{configuration.get('region_id', '')}"
     if value is None:
         raise ValueError("Topvisor configuration has no stable identifier")
     return str(value)
@@ -36,7 +42,11 @@ def configuration_id(configuration):
 
 def configuration_segment(configuration):
     """Return the report dimension, deliberately excluding the device."""
-    engine = str(configuration.get("search_engine", configuration.get("searcher", "")))
+    engine = str(
+        configuration.get(
+            "searcher_name", configuration.get("search_engine", configuration.get("searcher", ""))
+        )
+    )
     region = str(configuration.get("region_name", configuration.get("region", "")))
     return engine.strip().casefold(), " ".join(region.split()).casefold()
 
@@ -45,13 +55,18 @@ def configuration_segment(configuration):
 def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_date: date, payload):
     """Idempotently replace a single immutable normalized API snapshot."""
     config_id = configuration_id(configuration)
-    depth_raw = configuration.get("depth", configuration.get("check_depth"))
-    depth = normalize_depth(depth_raw)
+    depth_raw = configuration.get(
+        "raw_depth", configuration.get("depth", configuration.get("check_depth"))
+    )
+    depth = configuration.get("normalized_depth") or normalize_depth(depth_raw)
     rows = payload.get("positions", payload.get("rows", []))
     retrieved_at = timezone.now()
     defaults = {
         "search_engine": str(
-            configuration.get("search_engine", configuration.get("searcher", ""))
+            configuration.get(
+                "searcher_name",
+                configuration.get("search_engine", configuration.get("searcher", "")),
+            )
         ).lower(),
         "region": str(configuration.get("region_name", configuration.get("region", ""))),
         "tracked_keyword_count": int(payload.get("tracked_keyword_count", len(rows))),
@@ -152,7 +167,10 @@ def sync_positions(*, mapping, report_month, client=None):
                 rows = list(
                     client.get_positions(
                         mapping.topvisor_project_id,
-                        searcher_id=config_id,
+                        searcher_id=configuration.get("searcher_id", config_id),
+                        regions_indexes=[configuration["region_index"]]
+                        if configuration.get("region_index") is not None
+                        else [],
                         date1=month.isoformat(),
                         date2=snapshot_date.isoformat(),
                         fields=["query", "position", "frequency", "group", "url"],
@@ -162,7 +180,12 @@ def sync_positions(*, mapping, report_month, client=None):
                     raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
                 payload = {"positions": rows, "tracked_keyword_count": len(rows)}
                 # Validate depth before opening the write transaction as well.
-                normalize_depth(configuration.get("depth", configuration.get("check_depth")))
+                normalize_depth(
+                    configuration.get(
+                        "normalized_depth",
+                        configuration.get("depth", configuration.get("check_depth")),
+                    )
+                )
                 pending_snapshots.append((configuration, snapshot_date, payload))
 
         with transaction.atomic():
@@ -183,11 +206,17 @@ def sync_positions(*, mapping, report_month, client=None):
         run.segments = [
             {
                 "search_engine": str(
-                    configuration.get("search_engine", configuration.get("searcher", ""))
+                    configuration.get(
+                        "searcher_name",
+                        configuration.get("search_engine", configuration.get("searcher", "")),
+                    )
                 ),
                 "region": str(configuration.get("region_name", configuration.get("region", ""))),
                 "depth": normalize_depth(
-                    configuration.get("depth", configuration.get("check_depth"))
+                    configuration.get(
+                        "normalized_depth",
+                        configuration.get("depth", configuration.get("check_depth")),
+                    )
                 ),
             }
             for configuration in segments.values()

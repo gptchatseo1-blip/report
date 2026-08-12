@@ -5,6 +5,13 @@ from django import forms
 from .services import configuration_id, configuration_segment
 
 
+def configuration_label(item):
+    searcher = item.get("searcher_name", item.get("search_engine", item.get("searcher", "Поиск")))
+    region = item.get("region_name", item.get("region", "без региона"))
+    depth = item.get("normalized_depth", item.get("depth", item.get("check_depth", 100)))
+    return f"{searcher} — {region} (TOP-{depth})"
+
+
 class MonthInput(forms.DateInput):
     input_type = "month"
 
@@ -44,10 +51,8 @@ class TopvisorProjectForm(forms.Form):
         ]
         self.fields["configurations"].choices = [
             (
-                str(item.get("id") or item.get("searcher_id")),
-                f"{item.get('search_engine', item.get('searcher', 'Поиск'))} — "
-                f"{item.get('region_name', item.get('region', 'без региона'))} "
-                f"(TOP-{item.get('depth', item.get('check_depth', 100))})",
+                configuration_id(item),
+                configuration_label(item),
             )
             for item in configurations
         ]
