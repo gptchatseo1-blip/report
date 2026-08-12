@@ -428,9 +428,12 @@ def test_credentials_projects_and_configurations_reuse_checked_project_list(
     monkeypatch.setattr(TopvisorClient, "get_search_configurations", configurations)
     url = reverse("topvisor:connection", args=[project.id])
 
-    assert client.post(
-        url, {"action": "credentials", "user_id": "uid", "api_key": "api-secret"}
-    ).status_code == 302
+    assert (
+        client.post(
+            url, {"action": "credentials", "user_id": "uid", "api_key": "api-secret"}
+        ).status_code
+        == 302
+    )
     assert client.get(url).status_code == 200
     response = client.get(url, {"topvisor_project": "42"})
 
@@ -478,9 +481,7 @@ def test_topvisor_connection_admin_is_read_only_and_has_no_add_button(
 
     changelist = client.get(reverse("admin:topvisor_topvisorconnection_changelist"))
     add_response = client.get(reverse("admin:topvisor_topvisorconnection_add"))
-    detail = client.get(
-        reverse("admin:topvisor_topvisorconnection_change", args=[connection.pk])
-    )
+    detail = client.get(reverse("admin:topvisor_topvisorconnection_change", args=[connection.pk]))
 
     assert changelist.status_code == 200
     assert "Добавить подключение Topvisor" not in changelist.content.decode()
