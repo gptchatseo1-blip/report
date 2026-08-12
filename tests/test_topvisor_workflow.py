@@ -110,7 +110,7 @@ def test_search_configurations_use_projects_endpoint_and_flatten_real_response(m
         (item["searcher_name"], item["region_name"], item["normalized_depth"])
         for item in configurations
     ] == [
-        ("Yandex", "Москва", 10),
+        ("Yandex", "Москва", 100),
         ("Google", "Москва", 20),
     ]
     assert [item["region_index"] for item in configurations] == [1, 2]
@@ -125,7 +125,7 @@ def test_search_configurations_use_projects_endpoint_and_flatten_real_response(m
         "area_name": "Москва и Московская область",
         "language": "ru",
         "raw_depth": 1,
-        "normalized_depth": 10,
+        "normalized_depth": 100,
         "device": 0,
     }
 

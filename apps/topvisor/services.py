@@ -20,12 +20,17 @@ def response_checksum(value) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def normalize_depth(raw) -> int:
+def normalize_depth(raw, searcher="google") -> int:
     value = int(raw)
-    if value in (10, 20, 30, 50, 100):
+    if value in (10, 20, 30, 50, 100, 200, 300, 500, 1000):
         return value
     try:
-        return {1: 10, 2: 20, 3: 30, 5: 50}[value]
+        mapping = (
+            {1: 100, 2: 200, 3: 300, 5: 500, 10: 1000}
+            if "yandex" in str(searcher).casefold() or "яндекс" in str(searcher).casefold()
+            else {1: 10, 2: 20, 3: 30, 5: 50, 10: 100}
+        )
+        return mapping[value]
     except KeyError as exc:
         raise ValueError("Unsupported ranking depth") from exc
 
@@ -58,7 +63,10 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
     depth_raw = configuration.get(
         "raw_depth", configuration.get("depth", configuration.get("check_depth"))
     )
-    depth = configuration.get("normalized_depth") or normalize_depth(depth_raw)
+    provider_depth = configuration.get("normalized_depth") or normalize_depth(
+        depth_raw, configuration.get("searcher_name", configuration.get("search_engine", ""))
+    )
+    depth = min(provider_depth, 100)
     rows = payload.get("positions", payload.get("rows", []))
     retrieved_at = timezone.now()
     defaults = {
@@ -84,6 +92,8 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
             "method": "topvisor_api",
             "topvisor_project_id": mapping.topvisor_project_id,
             "configuration_id": config_id,
+            "provider_depth": provider_depth,
+            "report_depth": depth,
             "retrieved_at": retrieved_at.isoformat(),
         },
     }
@@ -116,7 +126,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
                 ranking_snapshot=snapshot,
                 query=query,
                 normalized_query=" ".join(query.casefold().split()),
-                frequency=int(row.get("frequency", row.get("ws"))),
+                frequency=int(row.get("frequency", row.get("ws")) or 0),
                 position_raw=str(raw_position or ""),
                 position_value=position,
                 position_status=KeywordPosition.Status.RANKED
@@ -144,8 +154,37 @@ def _shift_month(value, offset):
     return date(index // 12, index % 12 + 1, 1)
 
 
-def sync_positions(*, mapping, report_month, client=None):
-    """Fetch the three-month reporting window and persist an auditable, idempotent result."""
+def _history_rows(payload, configuration, project_id):
+    """Normalize Topvisor's documented headers/positionsData history shape."""
+    dates = (payload.get("headers") or {}).get("dates") or payload.get("existsDates") or []
+    dates = [str(item.get("date", item)) if isinstance(item, dict) else str(item) for item in dates]
+    region_index = str(configuration.get("region_index", ""))
+    volume_key = f"volume:{configuration.get('region_key')}:{configuration.get('searcher_key')}:1"
+    result = {value: [] for value in dates}
+    for keyword in payload.get("keywords", []):
+        positions = keyword.get("positionsData") or {}
+        for value in dates:
+            position_data = positions.get(f"{value}:{project_id}:{region_index}")
+            if position_data is None:
+                position_data = {}
+            if not isinstance(position_data, dict):
+                position_data = {"position": position_data}
+            result[value].append(
+                {
+                    "query": keyword.get("name", keyword.get("query", "")),
+                    "frequency": keyword.get(volume_key, keyword.get("frequency", 0)),
+                    "group": keyword.get("group_name", keyword.get("group", "")),
+                    "position": position_data.get("position", position_data.get("pos", "")),
+                    "url": position_data.get("relevant_url", position_data.get("url", "")),
+                }
+            )
+    return result
+
+
+def sync_positions(*, mapping, report_month=None, client=None):
+    """Download existing checks only; this never starts a provider position check."""
+    explicit_report_month = report_month is not None
+    report_month = report_month or timezone.localdate().replace(day=1)
     run = TopvisorSyncRun.objects.create(mapping=mapping, report_month=report_month)
     configurations = {configuration_id(item): item for item in mapping.selected_configurations}
     try:
@@ -159,34 +198,57 @@ def sync_positions(*, mapping, report_month, client=None):
                 )
             segments[segment] = configuration
 
-        # Network access and validation deliberately happen before any ranking rows are changed.
+        # All pages are downloaded before opening the atomic write transaction.
         pending_snapshots = []
-        for month in (_shift_month(report_month, -2), _shift_month(report_month, -1), report_month):
-            snapshot_date = _month_end(month)
-            for config_id, configuration in configurations.items():
-                rows = list(
-                    client.get_positions(
+        for _config_id, configuration in configurations.items():
+            volume = (
+                f"volume:{configuration.get('region_key')}:{configuration.get('searcher_key')}:1"
+            )
+            if hasattr(client, "get_position_history"):
+                pages = list(
+                    client.get_position_history(
                         mapping.topvisor_project_id,
-                        searcher_id=configuration.get("searcher_id", config_id),
-                        regions_indexes=[configuration["region_index"]]
-                        if configuration.get("region_index") is not None
-                        else [],
-                        date1=month.isoformat(),
-                        date2=snapshot_date.isoformat(),
-                        fields=["query", "position", "frequency", "group", "url"],
+                        regions_indexes=[str(configuration["region_index"])],
+                        fields=["name", "group_name", volume],
+                        positions_fields=["position", "relevant_url"],
                     )
                 )
-                if any(row.get("frequency", row.get("ws")) is None for row in rows):
-                    raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
-                payload = {"positions": rows, "tracked_keyword_count": len(rows)}
-                # Validate depth before opening the write transaction as well.
-                normalize_depth(
-                    configuration.get(
-                        "normalized_depth",
-                        configuration.get("depth", configuration.get("check_depth")),
+                combined = {}
+                for page in pages:
+                    for snapshot_date, rows in _history_rows(
+                        page, configuration, str(mapping.topvisor_project_id)
+                    ).items():
+                        combined.setdefault(snapshot_date, []).extend(rows)
+                for snapshot_date, rows in combined.items():
+                    pending_snapshots.append(
+                        (
+                            configuration,
+                            date.fromisoformat(snapshot_date),
+                            {"positions": rows, "tracked_keyword_count": len(rows)},
+                        )
                     )
+            else:  # compatibility with older adapters
+                months = (
+                    (_shift_month(report_month, -2), _shift_month(report_month, -1), report_month)
+                    if explicit_report_month
+                    else (report_month,)
                 )
-                pending_snapshots.append((configuration, snapshot_date, payload))
+                for month in months:
+                    rows = list(
+                        client.get_positions(
+                            mapping.topvisor_project_id,
+                            regions_indexes=[str(configuration.get("region_index", ""))],
+                        )
+                    )
+                    if any(row.get("frequency", row.get("ws")) is None for row in rows):
+                        raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
+                    pending_snapshots.append(
+                        (
+                            configuration,
+                            _month_end(month),
+                            {"positions": rows, "tracked_keyword_count": len(rows)},
+                        )
+                    )
 
         with transaction.atomic():
             for configuration, snapshot_date, payload in pending_snapshots:
@@ -212,11 +274,15 @@ def sync_positions(*, mapping, report_month, client=None):
                     )
                 ),
                 "region": str(configuration.get("region_name", configuration.get("region", ""))),
-                "depth": normalize_depth(
-                    configuration.get(
-                        "normalized_depth",
-                        configuration.get("depth", configuration.get("check_depth")),
-                    )
+                "depth": min(
+                    normalize_depth(
+                        configuration.get(
+                            "normalized_depth",
+                            configuration.get("depth", configuration.get("check_depth")),
+                        ),
+                        configuration.get("searcher_name", configuration.get("search_engine", "")),
+                    ),
+                    100,
                 ),
             }
             for configuration in segments.values()

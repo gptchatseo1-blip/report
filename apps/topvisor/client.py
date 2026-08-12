@@ -172,24 +172,54 @@ class TopvisorClient:
                             "area_name": region.get("areaName", ""),
                             "language": region.get("lang", ""),
                             "raw_depth": raw_depth,
-                            "normalized_depth": self._normalize_depth(raw_depth),
+                            "normalized_depth": self._normalize_depth(
+                                raw_depth, searcher.get("name", "")
+                            ),
                             "device": region.get("device"),
                         }
                     )
         return configurations
 
     @staticmethod
-    def _normalize_depth(raw_depth):
+    def _normalize_depth(raw_depth, searcher="google"):
         value = int(raw_depth)
-        mapping = {1: 10, 2: 20, 3: 30, 5: 50, 10: 100}
-        if value in (20, 30, 50, 100):
+        is_yandex = "yandex" in str(searcher).casefold() or "яндекс" in str(searcher).casefold()
+        mapping = (
+            {1: 100, 2: 200, 3: 300, 5: 500, 10: 1000}
+            if is_yandex
+            else {1: 10, 2: 20, 3: 30, 5: 50, 10: 100}
+        )
+        if value in (20, 30, 50, 100, 200, 300, 500, 1000):
             return value
         if value in mapping:
             return mapping[value]
         raise TopvisorError("Topvisor вернул неподдерживаемую глубину проверки.")
 
+    def get_position_history(self, project_id, *, page_size=1000, **filters):
+        """Return complete raw history pages using the endpoint's offset pagination."""
+        offset = 0
+        while True:
+            params = {
+                "project_id": str(project_id),
+                **filters,
+                "show_headers": 1,
+                "show_exists_dates": 1,
+                "limit": page_size,
+                "offset": offset,
+            }
+            params.pop("searcher_id", None)  # history does not support this parameter
+            payload = self._request("get/positions_2/history", params)
+            yield payload
+            keywords = payload.get("keywords", []) if isinstance(payload, dict) else []
+            if len(keywords) < page_size:
+                break
+            offset += page_size
+
     def get_positions(self, project_id, **filters):
-        return self.iter_pages("get/positions_2/history", {"project_id": project_id, **filters})
+        """Compatibility iterator; synchronization uses ``get_position_history``."""
+        return self.iter_pages(
+            "get/positions_2/history", {"project_id": str(project_id), **filters}
+        )
 
 
 def credentials_for_project(project):

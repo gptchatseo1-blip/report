@@ -1,4 +1,5 @@
 import secrets
+from datetime import date
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -90,7 +91,7 @@ def report_list(request, project_id):
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": ReportCreateForm()},
+        {"project": project, "reports": reports, "form": ReportCreateForm(project=project)},
     )
 
 
@@ -99,11 +100,32 @@ def report_create(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
     project = get_object_or_404(Project, pk=project_id)
-    form = ReportCreateForm(request.POST)
+    form = ReportCreateForm(request.POST, project=project)
     if form.is_valid():
-        report, created = Report.objects.get_or_create(
-            project=project, report_month=form.cleaned_data["month"]
+        selected_dates = form.cleaned_data["topvisor_dates"]
+        selected_source_ids = (
+            form.cleaned_data["metrika_snapshots"] + form.cleaned_data["webmaster_snapshots"]
         )
+        from apps.metrics.models import SourceSnapshot
+
+        source_rows = SourceSnapshot.objects.filter(id__in=selected_source_ids)
+        endpoint = (
+            date.fromisoformat(selected_dates[-1])
+            if selected_dates
+            else max((item.period_end for item in source_rows), default=timezone.localdate())
+        )
+        month = form.cleaned_data.get("month") or endpoint.replace(day=1)
+        report, created = Report.objects.get_or_create(project=project, report_month=month)
+        if created:
+            create_report_version(
+                report=report,
+                created_by=request.user,
+                selection={
+                    "topvisor_dates": selected_dates,
+                    "yandex_metrika": form.cleaned_data["metrika_snapshots"],
+                    "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
+                },
+            )
         messages.info(
             request,
             "Отчёт создан."

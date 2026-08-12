@@ -2,13 +2,13 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
+from django.core.paginator import Paginator
 from django.db import transaction
 from django.http import HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from apps.projects.models import Project
-from apps.reports.models import Report
 from apps.yandex.crypto import CredentialConfigurationError
 
 from .client import (
@@ -19,7 +19,7 @@ from .client import (
     client_for_project,
 )
 from .forms import TopvisorCredentialsForm, TopvisorProjectForm, TopvisorSyncForm
-from .models import TopvisorConnection, TopvisorProjectMapping
+from .models import TopvisorConnection, TopvisorProjectMapping, TopvisorSyncRun
 from .services import configuration_id, sync_positions
 
 
@@ -150,6 +150,12 @@ def connection(request, project_id):
         request.POST if action == "mapping" else None,
         projects=projects,
         configurations=configurations,
+        initial={
+            "topvisor_project": selected,
+            "configurations": [configuration_id(item) for item in mapping.selected_configurations]
+            if mapping and str(mapping.topvisor_project_id) == str(selected)
+            else [],
+        },
     )
     if request.method == "POST" and action == "mapping":
         if form.is_valid() and not safe_error and verified:
@@ -183,7 +189,9 @@ def connection(request, project_id):
             "form": form,
             "selected_project": selected,
             "sync_form": TopvisorSyncForm(),
-            "runs": mapping.sync_runs.all()[:10] if mapping else (),
+            "runs": Paginator(mapping.sync_runs.all(), 10).get_page(request.GET.get("page"))
+            if mapping
+            else (),
         },
     )
 
@@ -218,12 +226,30 @@ def sync(request, project_id):
     if not credential and not _legacy_configured():
         messages.error(request, "Реквизиты Topvisor не настроены для проекта.")
     elif form.is_valid():
-        run = sync_positions(mapping=mapping, report_month=form.cleaned_data["month"])
+        run = sync_positions(mapping=mapping)
         if run.status == run.Status.SUCCESS:
-            report, _ = Report.objects.get_or_create(
-                project=project, report_month=form.cleaned_data["month"]
-            )
             messages.success(request, f"Загружено позиций: {run.loaded_keyword_count}.")
-            return redirect("reports:report-detail", report_id=report.id)
+            return redirect("topvisor:connection", project_id=project.id)
         messages.error(request, run.error_message)
     return redirect("topvisor:connection", project_id=project.id)
+
+
+@login_required
+def delete_run(request, project_id, run_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    run = get_object_or_404(TopvisorSyncRun, pk=run_id, mapping__project_id=project_id)
+    run.delete()
+    messages.success(request, "Запись журнала удалена. Снимки позиций не изменены.")
+    return redirect("topvisor:connection", project_id=project_id)
+
+
+@login_required
+def delete_failed_runs(request, project_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    TopvisorSyncRun.objects.filter(
+        mapping__project_id=project_id, status=TopvisorSyncRun.Status.FAILED
+    ).delete()
+    messages.success(request, "Неудачные запуски удалены из журнала.")
+    return redirect("topvisor:connection", project_id=project_id)
