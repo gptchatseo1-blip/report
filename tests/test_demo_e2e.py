@@ -7,6 +7,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from docx import Document
+from docx.enum.section import WD_ORIENT
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
@@ -35,6 +36,7 @@ def _docx_content(data):
     tables = "\n".join(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
+    assert document.sections[-1].orientation == WD_ORIENT.LANDSCAPE
     return headings, text, tables
 
 

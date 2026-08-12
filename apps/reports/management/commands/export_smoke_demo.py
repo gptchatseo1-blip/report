@@ -49,10 +49,23 @@ class Command(BaseCommand):
         reader = PdfReader(generated["pdf"])
         if not generated["pdf"].read_bytes().startswith(b"%PDF-") or not reader.pages:
             raise CommandError("PDF signature or page count is invalid")
+        a4_sizes = ((595.28, 841.89), (841.89, 595.28))
+        invalid_sizes = []
+        for number, page in enumerate(reader.pages, 1):
+            width, height = float(page.mediabox.width), float(page.mediabox.height)
+            if not any(
+                abs(width - expected_width) <= 3 and abs(height - expected_height) <= 3
+                for expected_width, expected_height in a4_sizes
+            ):
+                invalid_sizes.append((number, round(width, 2), round(height, 2)))
+        if invalid_sizes:
+            raise CommandError(f"PDF contains non-A4 pages: {invalid_sizes}")
         sparse = [
             number
             for number, page in enumerate(reader.pages, 1)
-            if len((page.extract_text() or "").strip()) < 20 and not list(page.images)
+            if number != 1
+            and len((page.extract_text() or "").strip()) < 120
+            and not list(page.images)
         ]
         if sparse:
             raise CommandError(f"PDF contains unexpectedly empty pages: {sparse}")
@@ -67,7 +80,7 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"MVP-1 smoke passed: snapshot={checksum}; {len(reader.pages)} pages; "
-                f"artifacts={output}"
+                f"almost-empty pages: none; artifacts={output}"
             )
         )
 

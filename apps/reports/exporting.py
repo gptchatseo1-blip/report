@@ -138,6 +138,16 @@ def _prevent_row_split(row):
     props.append(OxmlElement("w:cantSplit"))
 
 
+def _keep_small_table_together(table):
+    """Keep compact tables on one page instead of orphaning their final row."""
+    if len(table.rows) > 8:
+        return
+    for row in table.rows[:-1]:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.keep_with_next = True
+
+
 def _table(doc, headers, rows, widths=None):
     table = doc.add_table(rows=1, cols=len(headers))
     table.style = "Report Table"
@@ -156,6 +166,7 @@ def _table(doc, headers, rows, widths=None):
             cell.text = _clean(value if value is not None and value != "" else "—")
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
             _set_cell_width(cell, width)
+    _keep_small_table_together(table)
     return table
 
 
@@ -692,7 +703,6 @@ def _render_work(doc, payload, narrative):
         for w in payload.get("completed_work", [])
     ]
     if rows:
-        _start_landscape(doc)
         doc.add_heading("Таблица выполненных работ", level=3)
         _table(
             doc,
@@ -710,7 +720,6 @@ def _render_work(doc, payload, narrative):
             rows,
             [2.2, 3.0, 4.5, 2.5, 4.2, 2.0, 3.2, 4.2, 4.2],
         )
-        _return_to_portrait(doc)
     else:
         doc.add_paragraph("Выполненные работы отсутствуют.", style="Data Missing")
     doc.add_paragraph(_clean(narrative))
@@ -787,6 +796,10 @@ def _docx(snapshot, narratives, issues, draft):
             and not any(s.get("top_11_20") for s in segments)
         ):
             continue
+        if code == "completed_work":
+            # This is the final report section. Keep its heading, table, conclusion and
+            # provenance in one landscape section and do not create a trailing portrait page.
+            _start_landscape(doc)
         doc.add_heading(TITLES[code], level=1)
         if code == "visibility":
             _render_visibility(doc, payload, segments, narrative)
