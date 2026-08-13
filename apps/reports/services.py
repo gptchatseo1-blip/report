@@ -215,7 +215,8 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
             (snapshot, {point.metric_code: point for point in snapshot.metrics.all()})
             for snapshot in snapshots
         ]
-        first = points[0][1] if points else {}
+        # One point has no comparison period: do not manufacture a zero change.
+        first = points[0][1] if len(points) >= 2 else {}
         current = points[-1][1] if points else {}
 
         def normalized(point, snapshot):

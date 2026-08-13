@@ -26,6 +26,8 @@ class ReportCreateForm(forms.Form):
         super().__init__(*args, **kwargs)
         self.project = project
         self.connected_engines = set()
+        self.connected_sources = set()
+        self.source_availability = {}
         if project is None:
             for name in (
                 "yandex_dates",
@@ -36,6 +38,13 @@ class ReportCreateForm(forms.Form):
                 self.fields[name].choices = []
             return
         from apps.metrics.models import RankingSnapshot, SourceSnapshot
+
+        for source, relation in (
+            (SourceSnapshot.Source.METRIKA, "yandex_metrika_mapping"),
+            (SourceSnapshot.Source.WEBMASTER, "yandex_webmaster_mapping"),
+        ):
+            if hasattr(project, relation):
+                self.connected_sources.add(source)
 
         required = defaultdict(set)
         try:
@@ -77,17 +86,45 @@ class ReportCreateForm(forms.Form):
             self.fields[f"{engine}_dates"].choices = [
                 (d.isoformat(), d.strftime("%d.%m.%Y")) for d in available
             ]
+        latest_ranking = (
+            RankingSnapshot.objects.filter(project=project).order_by("-snapshot_date").first()
+        )
+        report_month = (
+            latest_ranking.snapshot_date.replace(day=1)
+            if latest_ranking
+            else date.today().replace(day=1)
+        )
+        month_indexes = {
+            report_month.year * 12 + report_month.month - 1 - offset for offset in range(3)
+        }
         for field, source in (
             ("metrika_snapshots", SourceSnapshot.Source.METRIKA),
             ("webmaster_snapshots", SourceSnapshot.Source.WEBMASTER),
         ):
-            rows = SourceSnapshot.objects.filter(project=project, source=source).order_by(
-                "-period_start"
+            rows = list(
+                SourceSnapshot.objects.filter(project=project, source=source).order_by(
+                    "-period_start", "-period_end", "id"
+                )
             )
             self.fields[field].choices = [
                 (str(row.id), f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}")
                 for row in rows
             ]
+            defaults = []
+            selected_months = set()
+            for row in rows:
+                row_month = row.period_start.year * 12 + row.period_start.month - 1
+                if row_month in month_indexes and row_month not in selected_months:
+                    defaults.append(str(row.id))
+                    selected_months.add(row_month)
+            self.source_availability[source] = {
+                "connected": source in self.connected_sources,
+                "count": len(rows),
+                "selected_count": len(defaults),
+            }
+            # Never overwrite submitted checkbox values on a bound form.
+            if not self.is_bound:
+                self.initial.setdefault(field, defaults)
 
     def clean_month(self):
         value = self.cleaned_data.get("month")
@@ -99,6 +136,19 @@ class ReportCreateForm(forms.Form):
             if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:
                 self.add_error(f"{engine}_dates", f"{label}: выберите минимум две доступные даты.")
             cleaned[f"{engine}_dates"] = sorted(cleaned.get(f"{engine}_dates", []))
+        for field, source, label in (
+            ("metrika_snapshots", "yandex_metrika", "Метрика"),
+            ("webmaster_snapshots", "yandex_webmaster", "Вебмастер"),
+        ):
+            selected = cleaned.get(field, [])
+            availability = self.source_availability.get(source, {})
+            if availability.get("connected") and availability.get("count") and not selected:
+                self.add_error(
+                    field,
+                    f"{label}: выберите хотя бы один синхронизированный период или "
+                    "синхронизируйте источник заново.",
+                )
+            cleaned[field] = sorted(selected)
         return cleaned
 
 

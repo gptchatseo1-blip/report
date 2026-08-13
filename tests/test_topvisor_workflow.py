@@ -2,6 +2,7 @@ import io
 import logging
 import urllib.error
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -22,9 +23,21 @@ from apps.topvisor.client import (
     TopvisorTemporaryError,
 )
 from apps.topvisor.models import TopvisorProjectMapping
-from apps.topvisor.services import sync_positions
+from apps.topvisor.services import calculate_visibility, sync_positions
 
 pytestmark = pytest.mark.django_db
+
+
+def test_visibility_uses_exact_official_topvisor_weights():
+    rows = [
+        {"position": 1, "frequency": 100},
+        {"position": 2, "frequency": 200},
+        {"position": 10, "frequency": 300},
+        {"position": 11, "frequency": 400},
+    ]
+    # (100*1 + 200*.85 + 300*.03) / 1000 * 100
+    assert calculate_visibility(rows) == Decimal("27.9000")
+
 
 REAL_SEARCH_CONFIGURATION_RESPONSE = [
     {
@@ -236,7 +249,11 @@ def test_sync_is_idempotent_requires_frequency_and_keeps_depth_per_segment():
         ("yandex", "Россия", 100),
     }
     assert all(
-        item.response_checksum and item.retrieved_at and item.provenance
+        item.response_checksum
+        and item.retrieved_at
+        and item.provenance
+        and item.visibility is not None
+        and item.visibility_raw["source"] == "calculated_from_positions_and_frequency"
         for item in RankingSnapshot.objects.all()
     )
     failed = sync_positions(
