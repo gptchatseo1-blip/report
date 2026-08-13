@@ -1,0 +1,12 @@
+<section class="date-calendar" data-calendar data-label="{{ label }}" data-engine="{{ engine }}">
+  <h3>{{ label }}</h3>{{ field.errors }}
+  {% if months %}
+    <div class="calendar-source" hidden>{{ field }}</div>
+    <div class="calendar-toolbar"><button type="button" class="calendar-arrow" data-prev aria-label="Предыдущий период">←</button><span class="calendar-period" data-period aria-live="polite">{{ period }}</span><button type="button" class="calendar-arrow" data-next aria-label="Следующий период">→</button></div>
+    <div class="calendar-months" data-months>
+      {% for month in months %}<section class="calendar-month" data-year="{{ month.year }}" data-month="{{ month.month }}"><h4>{{ month.title }}</h4><div class="calendar-week" aria-hidden="true"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div><div class="calendar-grid" role="grid">{% for week in month.weeks %}{% for day in week %}{% if day.in_month %}<button type="button" data-date="{{ day.iso }}" role="gridcell"{% if not day.available %} disabled{% endif %}{% if day.selected %} class="selected" aria-pressed="true"{% else %} aria-pressed="false"{% endif %} aria-label="{{ label }}, {{ day.number }}.{{ month.month }}.{{ month.year }}{% if not day.available %} — нет сохранённых позиций{% endif %}"><span>{{ day.number }}</span>{% if day.available %}<i aria-hidden="true"></i>{% endif %}</button>{% else %}<span class="outside" aria-hidden="true"></span>{% endif %}{% endfor %}{% endfor %}</div></section>{% endfor %}
+    </div>
+    <p class="calendar-legend"><i aria-hidden="true"></i> Есть съём позиций</p>
+    <p class="calendar-summary" data-summary aria-live="polite">{% if field.value|length >= 2 %}{{ label }} — выбрано дат: {{ field.value|length }}.{% elif field.field.choices|length == 1 %}Для сравнения нужна ещё минимум одна дата.{% else %}{{ label }} — выберите минимум две даты.{% endif %}</p>
+  {% else %}<p>Для {{ label }} нет доступных дат. Выполните синхронизацию позиций.</p>{% endif %}
+</section>
