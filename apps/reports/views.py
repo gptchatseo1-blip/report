@@ -115,12 +115,25 @@ def _calendar_months(field, count=3):
     return months
 
 
+def _calendar_period(months):
+    if not months:
+        return ""
+    first, last = months[0], months[-1]
+    first_name = first["title"].rsplit(" ", 1)[0]
+    if first["year"] == last["year"]:
+        return f"{first_name} — {last['title']}"
+    return f"{first['title']} — {last['title']}"
+
+
 def _calendar_fields(form):
-    return [
-        (engine, label, form[f"{engine}_dates"], _calendar_months(form[f"{engine}_dates"]))
-        for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
-        if engine in form.connected_engines
-    ]
+    fields = []
+    for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
+        if engine not in form.connected_engines:
+            continue
+        field = form[f"{engine}_dates"]
+        months = _calendar_months(field)
+        fields.append((engine, label, field, months, _calendar_period(months)))
+    return fields
 
 
 @login_required

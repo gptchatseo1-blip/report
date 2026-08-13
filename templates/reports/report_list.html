@@ -5,11 +5,11 @@
 <p><a class="button secondary" href="{% url 'topvisor:connection' project.id %}">Topvisor</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Метрика</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Вебмастер</a></p>
 <section class="card"><h2>Создать отчёт</h2><form method="post" action="{% url 'reports:report-create' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
 <h3>Выберите даты</h3>
-{% for engine,label,field,months in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months %}{% endfor %}
+{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}
 {% if not form.yandex_dates.field.choices and not form.google_dates.field.choices %}<p>Нет синхронизированных данных. <a href="{% url 'topvisor:connection' project.id %}">Перейти к синхронизации</a></p>{% endif %}
+<fieldset class="report-options"><legend>Параметры отчёта</legend><label class="url-option" for="{{ form.show_urls.id_for_label }}">{{ form.show_urls }} <span><strong>Выводить URL</strong><small>Добавить релевантные URL в предпросмотр и файлы отчёта.</small></span></label></fieldset>
 <h3>Яндекс.Метрика</h3>{% if form.metrika_snapshots.field.choices %}{{ form.metrika_snapshots }}{% else %}<p>Нет синхронизированных данных.</p>{% endif %}
 <h3>Яндекс.Вебмастер</h3>{% if form.webmaster_snapshots.field.choices %}{{ form.webmaster_snapshots }}{% else %}<p>Нет синхронизированных данных.</p>{% endif %}
-<fieldset class="report-options"><legend>Параметры отчёта</legend><label class="url-option" for="{{ form.show_urls.id_for_label }}">{{ form.show_urls }} <span><strong>Выводить URL</strong><small>Добавить релевантные URL в предпросмотр и файлы отчёта.</small></span></label></fieldset>
 <p><button{% if not can_create %} disabled aria-disabled="true" title="Для каждой подключённой поисковой системы нужны минимум две даты"{% endif %}>Создать отчёт</button></p></form></section>
 <section><h2>Отчётные месяцы</h2>{% if reports %}<div class="table-wrap"><table><thead><tr><th>Месяц</th><th>Версий</th><th>Последняя версия</th><th></th></tr></thead><tbody>{% for report in reports %}<tr><td>{{ report.report_month|date:'F Y' }}</td><td>{{ report.version_count }}</td><td>{{ report.latest_version_at|date:'d.m.Y H:i'|default:'—' }}</td><td><a class="button" href="{% url 'reports:report-detail' report.id %}">Открыть отчёт</a></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">Отчётов пока нет.</div>{% endif %}</section>
 {% endblock %}

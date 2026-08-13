@@ -310,3 +310,35 @@ application. A TLS reverse proxy (including Caddy) must proxy `/static/` to the 
 container just like every other request; do not configure a second `file_server` or
 a separately mounted static directory. This makes every deployment publish the CSS
 and JavaScript referenced by its templates without browser-cache cleanup.
+
+The production Caddy configuration is not stored in this repository, so changing
+the application alone cannot guarantee that a deployed proxy stops serving an old
+static volume. On the server, inspect the effective configuration and remove any
+`file_server`, `root`, or stale volume handling `/static/`:
+
+```sh
+docker exec report-caddy-1 caddy adapt --config /etc/caddy/Caddyfile --pretty
+docker exec report-caddy-1 cat /etc/caddy/Caddyfile
+docker inspect report-caddy-1 --format '{{json .Mounts}}'
+```
+
+If `/static/` currently has a separate handler, replace it with this rule (using
+the actual application service name if it is not `web`):
+
+```caddyfile
+handle /static/* {
+    reverse_proxy web:8000
+}
+```
+
+Keep the normal application `reverse_proxy` as the fallback, then rebuild the web
+image and reload Caddy. From `staticfiles/staticfiles.json`, obtain the deployed
+hashed names and verify both responses:
+
+```sh
+docker compose build --no-cache web
+docker compose up -d web
+docker exec report-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+curl -fsSI https://report.rendom.beget.tech/static/reports/app.<hash>.css
+curl -fsSI https://report.rendom.beget.tech/static/reports/calendar.<hash>.js
+```

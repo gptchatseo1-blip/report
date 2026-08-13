@@ -13,6 +13,7 @@
     let endMonth = monthIndex(latest);
     const monthsRoot = root.querySelector('[data-months]');
     const summary = root.querySelector('[data-summary]');
+    const period = root.querySelector('[data-period]');
     const label = root.dataset.label;
     const mobile = () => matchMedia('(max-width: 700px)').matches;
 
@@ -55,6 +56,13 @@
         }
         monthsRoot.append(section);
       }
+      const first = fromIndex(start);
+      const last = fromIndex(endMonth);
+      period.textContent = count === 1
+        ? `${monthNames[last.getMonth()]} ${last.getFullYear()}`
+        : first.getFullYear() === last.getFullYear()
+          ? `${monthNames[first.getMonth()]} — ${monthNames[last.getMonth()]} ${last.getFullYear()}`
+          : `${monthNames[first.getMonth()]} ${first.getFullYear()} — ${monthNames[last.getMonth()]} ${last.getFullYear()}`;
     }
     root.querySelector('[data-prev]').addEventListener('click', () => { endMonth -= mobile() ? 1 : 3; render(); });
     root.querySelector('[data-next]').addEventListener('click', () => { endMonth += mobile() ? 1 : 3; render(); });

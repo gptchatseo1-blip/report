@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.staticfiles.storage import staticfiles_storage
+from django.core.management import call_command
 from django.test import override_settings
 from django.urls import reverse
 
@@ -52,18 +53,39 @@ def test_template_uses_manifest_static_url_and_assets_are_served(client):
     assert b".date-calendar" in b"".join(css.streaming_content)
 
 
+def test_collectstatic_builds_manifest_from_empty_root(tmp_path, settings):
+    static_root = tmp_path / "empty-static-root"
+    settings.STATIC_ROOT = static_root
+    call_command("collectstatic", interactive=False, verbosity=0)
+    manifest = (static_root / "staticfiles.json").read_text()
+    assert '"reports/app.css": "reports/app.' in manifest
+    assert '"reports/calendar.js": "reports/calendar.' in manifest
+
+
 def test_server_html_contains_three_months_dates_and_disabled_days(client):
     html = _calendar_page(client).content.decode()
     assert html.count('class="calendar-month"') == 3
     assert "Май 2026" in html and "Июнь 2026" in html and "Июль 2026" in html
+    assert re.search(r"data-period[^>]*>Май — Июль 2026</span>", html)
     assert re.search(r'data-date="2026-07-14"[^>]*aria-pressed="false"', html)
     assert re.search(r'data-date="2026-07-13"[^>]*disabled', html)
     assert "Добавить релевантные URL в предпросмотр и файлы отчёта." in html
     checkbox = re.search(r'<input[^>]*id="id_show_urls"[^>]*>', html).group()
     assert 'type="checkbox"' in checkbox and "checked" not in checkbox
+    calendars_end = html.rindex("</section>", 0, html.index("Параметры отчёта"))
+    options = html.index("Параметры отчёта")
+    metrika = html.index("Яндекс.Метрика", options)
+    assert calendars_end < options < metrika
 
 
 def test_responsive_css_keeps_one_month_on_mobile():
     css = Path(staticfiles_storage.path("reports/app.css")).read_text()
     assert "grid-template-columns:repeat(3" in css
     assert ".calendar-month:not(:first-child){display:none}" in css
+
+
+def test_javascript_updates_period_during_every_render():
+    javascript = Path(staticfiles_storage.path("reports/calendar.js")).read_text()
+    render_body = javascript.split("function render()", 1)[1].split("root.querySelector", 1)[0]
+    assert "period.textContent" in render_body
+    assert "render();" in javascript
