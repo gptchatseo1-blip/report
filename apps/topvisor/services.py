@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from calendar import monthrange
 from datetime import date
 from decimal import Decimal
@@ -155,12 +156,54 @@ def _shift_month(value, offset):
     return date(index // 12, index % 12 + 1, 1)
 
 
-def _history_rows(payload, configuration, project_id):
+def _normalized_query(value):
+    return " ".join(str(value or "").casefold().split())
+
+
+def _volume_aliases(payload):
+    """Map response keyword keys to real volume fields declared by Topvisor headers."""
+    headers = payload.get("headers") or {}
+    fields = headers.get("fields", payload.get("fields", [])) or []
+    labels = headers.get("fieldsLabels", payload.get("fieldsLabels", {})) or {}
+    aliases = {}
+
+    def register(alias, field):
+        alias, field = str(alias), str(field)
+        if re.fullmatch(r"volume:[^:]+:[^:]+:1", field):
+            aliases[alias] = field
+
+    if isinstance(fields, dict):
+        for alias, field in fields.items():
+            register(alias, field)
+            register(field, alias)
+    else:
+        for field in fields:
+            if isinstance(field, dict):
+                canonical = field.get("name", field.get("field", field.get("code", "")))
+                register(field.get("alias", canonical), canonical)
+            else:
+                register(field, field)
+    if isinstance(labels, dict):
+        for alias, field in labels.items():
+            register(alias, field)
+            register(field, alias)
+    for keyword in payload.get("keywords", []):
+        for key in keyword:
+            register(key, key)
+    return aliases
+
+
+def _frequency_candidates(payload, yandex_volume_fields):
+    aliases = _volume_aliases(payload)
+    preferred = [alias for alias, field in aliases.items() if field in yandex_volume_fields]
+    return preferred + [alias for alias in aliases if alias not in preferred]
+
+
+def _history_rows(payload, configuration, project_id, frequency_map):
     """Normalize Topvisor's documented headers/positionsData history shape."""
     dates = (payload.get("headers") or {}).get("dates") or payload.get("existsDates") or []
     dates = [str(item.get("date", item)) if isinstance(item, dict) else str(item) for item in dates]
     region_index = str(configuration.get("region_index", ""))
-    volume_key = f"volume:{configuration.get('region_key')}:{configuration.get('searcher_key')}:1"
     result = {value: [] for value in dates}
     for keyword in payload.get("keywords", []):
         positions = keyword.get("positionsData") or {}
@@ -173,7 +216,9 @@ def _history_rows(payload, configuration, project_id):
             result[value].append(
                 {
                     "query": keyword.get("name", keyword.get("query", "")),
-                    "frequency": keyword.get(volume_key),
+                    "frequency": frequency_map.get(
+                        _normalized_query(keyword.get("name", keyword.get("query", "")))
+                    ),
                     "group": keyword.get("group_name", keyword.get("group", "")),
                     "position": position_data.get("position", position_data.get("pos", "")),
                     "url": position_data.get("relevant_url", position_data.get("url", "")),
@@ -199,16 +244,30 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 )
             segments[segment] = configuration
 
-        # All pages are downloaded before opening the atomic write transaction.
+        # Every response page is downloaded before validation and the atomic write.
         pending_snapshots = []
-        for _config_id, configuration in configurations.items():
-            volume = (
-                f"volume:{configuration.get('region_key')}:{configuration.get('searcher_key')}:1"
-            )
-            if hasattr(client, "get_position_history"):
+        if hasattr(client, "get_position_history"):
+            yandex_volumes = {
+                f"volume:{item.get('region_key')}:{item.get('searcher_key')}:1"
+                for item in configurations.values()
+                if "yandex"
+                in str(item.get("searcher_name", item.get("search_engine", ""))).casefold()
+                or "яндекс"
+                in str(item.get("searcher_name", item.get("search_engine", ""))).casefold()
+            }
+            fallback_volumes = [
+                f"volume:{item.get('region_key')}:{item.get('searcher_key')}:1"
+                for item in configurations.values()
+                if item.get("region_key") is not None and item.get("searcher_key") is not None
+            ]
+            # Frequency belongs to the keyword, not to every position segment. Asking
+            # Google-specific volume fields can make Topvisor reject an otherwise valid request.
+            requested_volumes = sorted(yandex_volumes) or fallback_volumes[:1]
+            downloaded = []
+            for configuration in configurations.values():
                 common = {
                     "regions_indexes": [str(configuration["region_index"])],
-                    "fields": ["name", "group_name", volume],
+                    "fields": ["name", "group_name", *requested_volumes],
                     "positions_fields": ["position", "relevant_url"],
                 }
                 existing_dates = client.get_existing_position_dates(
@@ -216,30 +275,52 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 )
                 pages = []
                 for start in range(0, len(existing_dates), 20):
-                    date_batch = list(existing_dates[start : start + 20])
                     pages.extend(
                         client.get_position_history(
                             mapping.topvisor_project_id,
-                            dates=date_batch,
+                            dates=list(existing_dates[start : start + 20]),
                             **common,
                         )
                     )
+                downloaded.append((configuration, tuple(existing_dates), pages))
+
+            frequency_map = {}
+            all_queries = set()
+            for _configuration, _dates, pages in downloaded:
+                for page in pages:
+                    candidates = _frequency_candidates(page, yandex_volumes)
+                    for keyword in page.get("keywords", []):
+                        query = _normalized_query(keyword.get("name", keyword.get("query", "")))
+                        all_queries.add(query)
+                        if query in frequency_map:
+                            continue
+                        for alias in candidates:
+                            value = keyword.get(alias)
+                            if value is None or str(value).strip() == "":
+                                continue
+                            try:
+                                frequency_map[query] = normalize_frequency(value)
+                            except ValueError:
+                                raise TopvisorError(
+                                    "В ответе Topvisor недопустимая частотность."
+                                ) from None
+                            break
+            missing_count = len(all_queries - frequency_map.keys())
+            if missing_count:
+                raise TopvisorError(
+                    f"В ответе Topvisor нет проверенной частотности запросов: {missing_count}."
+                )
+
+            for configuration, existing_dates, pages in downloaded:
                 combined = {}
                 for page in pages:
                     for snapshot_date, rows in _history_rows(
-                        page, configuration, str(mapping.topvisor_project_id)
+                        page, configuration, str(mapping.topvisor_project_id), frequency_map
                     ).items():
                         combined.setdefault(snapshot_date, []).extend(rows)
                 if set(combined) != set(existing_dates):
                     raise TopvisorError("Не удалось полностью загрузить все даты Topvisor.")
                 for snapshot_date, rows in combined.items():
-                    if any(row.get("frequency") is None for row in rows):
-                        raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
-                    try:
-                        for row in rows:
-                            row["frequency"] = normalize_frequency(row["frequency"])
-                    except (TypeError, ValueError):
-                        raise TopvisorError("В ответе Topvisor недопустимая частотность.") from None
                     pending_snapshots.append(
                         (
                             configuration,
@@ -247,7 +328,8 @@ def sync_positions(*, mapping, report_month=None, client=None):
                             {"positions": rows, "tracked_keyword_count": len(rows)},
                         )
                     )
-            else:  # compatibility with older adapters
+        else:  # compatibility with older adapters
+            for configuration in configurations.values():
                 months = (
                     (_shift_month(report_month, -2), _shift_month(report_month, -1), report_month)
                     if explicit_report_month

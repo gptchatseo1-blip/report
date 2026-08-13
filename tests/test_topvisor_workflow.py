@@ -860,7 +860,7 @@ def test_invalid_topvisor_frequency_is_atomic(frequency):
         mapping=history_mapping(project), client=RealHistoryClient(frequency=frequency)
     )
     assert run.status == run.Status.FAILED
-    assert "частотность" in run.error_message
+    assert "частотн" in run.error_message
     assert not RankingSnapshot.objects.exists()
 
 
@@ -910,3 +910,83 @@ def test_sync_batches_existing_dates():
     batches = [params["dates"] for kind, _project, params in api.calls if kind == "history"]
     assert [len(batch) for batch in batches] == [20, 1]
     assert RankingSnapshot.objects.count() == 21
+
+
+def test_yandex_frequency_alias_is_shared_with_google_and_missing_is_atomic():
+    project = Project.objects.create(name="Shared volume", domain="shared-volume.example")
+    selected = TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="22653133",
+        selected_configurations=[
+            {
+                "id": "yandex",
+                "searcher_name": "Yandex",
+                "searcher_key": 0,
+                "region_name": "Москва",
+                "region_key": 213,
+                "region_index": 1,
+                "raw_depth": 1,
+                "normalized_depth": 100,
+            },
+            {
+                "id": "google",
+                "searcher_name": "Google",
+                "searcher_key": 1,
+                "region_name": "Москва",
+                "region_key": 213,
+                "region_index": 2,
+                "raw_depth": 2,
+                "normalized_depth": 20,
+            },
+        ],
+    )
+
+    class SharedVolumeClient:
+        missing = False
+
+        def get_existing_position_dates(self, project_id, **params):
+            return ("2026-07-31",)
+
+        def get_position_history(self, project_id, **params):
+            region = params["regions_indexes"][0]
+            keywords = [
+                {
+                    "name": "zero query",
+                    "frequency_alias": 0,
+                    "positionsData": {f"2026-07-31:{project_id}:{region}": {"position": 3}},
+                },
+                {
+                    "name": "positive query",
+                    "frequency_alias": 42,
+                    "positionsData": {f"2026-07-31:{project_id}:{region}": {"position": 7}},
+                },
+            ]
+            if self.missing:
+                keywords[1].pop("frequency_alias")
+            yield {
+                "headers": {
+                    "dates": ["2026-07-31"],
+                    "fields": [{"name": "volume:213:0:1", "alias": "frequency_alias"}],
+                    "fieldsLabels": {"frequency_alias": "volume:213:0:1"},
+                },
+                "existsDates": ["2026-07-31"],
+                "keywords": keywords,
+            }
+
+    api = SharedVolumeClient()
+    run = sync_positions(mapping=selected, client=api)
+    assert run.status == run.Status.SUCCESS
+    assert RankingSnapshot.objects.count() == 2
+    for snapshot in RankingSnapshot.objects.all():
+        assert dict(snapshot.positions.values_list("normalized_query", "frequency")) == {
+            "zero query": 1,
+            "positive query": 42,
+        }
+
+    RankingSnapshot.objects.all().delete()
+    api.missing = True
+    failed = sync_positions(mapping=selected, client=api)
+    assert failed.status == failed.Status.FAILED
+    assert "1" in failed.error_message
+    assert "positive query" not in failed.error_message
+    assert not RankingSnapshot.objects.exists()
