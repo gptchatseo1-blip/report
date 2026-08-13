@@ -1,3 +1,0 @@
-{% extends 'reports/base.html' %}{% block title %}Удаление Topvisor{% endblock %}{% block content %}
-<section class="card"><h1>Удалить подключение Topvisor?</h1><p>Проект, отчёты, версии и снимки останутся без изменений. Зашифрованные реквизиты будут удалены.</p><form method="post">{% csrf_token %}<button>Подтвердить удаление</button> <a href="{% url 'topvisor:connection' project.id %}">Отмена</a></form></section>
-{% endblock %}

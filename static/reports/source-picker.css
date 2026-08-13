@@ -1,0 +1,27 @@
+.source-picker {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 720px;
+}
+
+.source-picker select {
+  max-width: none;
+}
+
+.domain-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.7rem;
+  border-radius: 6px;
+  background: #fff8dc;
+}
+
+.domain-confirm[hidden] {
+  display: none;
+}
+
+.domain-confirm input {
+  width: auto;
+  margin-top: 0.3rem;
+}

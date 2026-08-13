@@ -76,7 +76,8 @@ DJANGO_SECURE_HSTS_PRELOAD=0
 ### Интеграции и лимиты
 
 - `MAX_UPLOAD_SIZE_MB`;
-- `TOPVISOR_USER_ID`, `TOPVISOR_API_KEY`, опционально `TOPVISOR_API_BASE_URL`,
+- общие ID пользователя и API-ключ Topvisor вводятся через интерфейс; опционально
+  `TOPVISOR_API_BASE_URL`,
   `TOPVISOR_REQUEST_TIMEOUT_SECONDS`, `TOPVISOR_MAX_RETRIES`;
 - постоянный `CREDENTIAL_ENCRYPTION_KEY` (Fernet); потеря или смена ключа делает сохранённые
   OAuth-реквизиты и токены нечитаемыми;

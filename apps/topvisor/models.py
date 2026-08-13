@@ -4,12 +4,10 @@ from apps.projects.models import Project
 from apps.yandex.crypto import decrypt_token, encrypt_token
 
 
-class TopvisorConnection(models.Model):
-    """Project-scoped credentials; the API key is never persisted as plaintext."""
+class TopvisorCredential(models.Model):
+    """One encrypted Topvisor account shared by every project."""
 
-    project = models.OneToOneField(
-        Project, on_delete=models.CASCADE, related_name="topvisor_connection"
-    )
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     user_id = models.CharField("ID пользователя Topvisor", max_length=255)
     api_key_encrypted = models.BinaryField(editable=False)
     api_key_last_four = models.CharField(max_length=4, blank=True, editable=False)
@@ -18,11 +16,11 @@ class TopvisorConnection(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "Подключение Topvisor"
-        verbose_name_plural = "Подключения Topvisor"
+        verbose_name = "Реквизиты Topvisor"
+        verbose_name_plural = "Реквизиты Topvisor"
 
     def __str__(self):
-        return f"Topvisor — {self.project}"
+        return "Общие реквизиты Topvisor"
 
     def set_api_key(self, api_key):
         self.api_key_encrypted = encrypt_token(api_key)
