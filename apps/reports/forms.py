@@ -1,23 +1,20 @@
+from collections import defaultdict
 from datetime import date
 
 from django import forms
-from django.db.models import Count
 
 from apps.topvisor.models import TopvisorProjectMapping
+from apps.topvisor.services import configuration_id
 
 from .models import NarrativeBlock
-
-
-class MonthInput(forms.DateInput):
-    input_type = "month"
 
 
 class ReportCreateForm(forms.Form):
     submission_token = forms.CharField(widget=forms.HiddenInput(), required=False)
     month = forms.DateField(required=False, input_formats=["%Y-%m"], widget=forms.HiddenInput())
-    topvisor_dates = forms.MultipleChoiceField(
-        label="Topvisor", required=False, widget=forms.CheckboxSelectMultiple
-    )
+    yandex_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
+    google_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
+    show_urls = forms.BooleanField(label="Выводить URL", required=False, initial=False)
     metrika_snapshots = forms.MultipleChoiceField(
         label="Яндекс.Метрика", required=False, widget=forms.CheckboxSelectMultiple
     )
@@ -28,35 +25,58 @@ class ReportCreateForm(forms.Form):
     def __init__(self, *args, project=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.project = project
+        self.connected_engines = set()
         if project is None:
-            for name in ("topvisor_dates", "metrika_snapshots", "webmaster_snapshots"):
+            for name in (
+                "yandex_dates",
+                "google_dates",
+                "metrika_snapshots",
+                "webmaster_snapshots",
+            ):
                 self.fields[name].choices = []
             return
         from apps.metrics.models import RankingSnapshot, SourceSnapshot
 
+        required = defaultdict(set)
         try:
-            mapping = project.topvisor_mapping
-            configuration_ids = {
-                str(item.get("id") or f"{item.get('searcher_id')}:{item.get('region_id', '')}")
-                for item in mapping.selected_configurations
-            }
+            configurations = project.topvisor_mapping.selected_configurations
         except TopvisorProjectMapping.DoesNotExist:
-            configuration_ids = set()
-        dates = []
-        if configuration_ids:
-            candidates = (
-                RankingSnapshot.objects.filter(
-                    project=project, topvisor_configuration_id__in=configuration_ids
-                )
-                .values("snapshot_date")
-                .annotate(configuration_count=Count("topvisor_configuration_id", distinct=True))
-                .filter(configuration_count=len(configuration_ids))
-                .order_by("-snapshot_date")
+            configurations = []
+        for item in configurations:
+            raw = str(
+                item.get("search_engine")
+                or item.get("searcher_name")
+                or item.get("searcher")
+                or item.get("id", "")
+            ).casefold()
+            engine = (
+                "yandex"
+                if "yandex" in raw or "яндекс" in raw
+                else "google"
+                if "google" in raw
+                else ""
             )
-            dates = [item["snapshot_date"] for item in candidates]
-        self.fields["topvisor_dates"].choices = [
-            (d.isoformat(), d.strftime("%d.%m.%Y")) for d in dates
-        ]
+            if engine:
+                required[engine].add(configuration_id(item))
+        self.connected_engines = set(required)
+        for engine in ("yandex", "google"):
+            available = []
+            if required[engine]:
+                rows = RankingSnapshot.objects.filter(
+                    project=project,
+                    search_engine__iexact=engine,
+                    topvisor_configuration_id__in=required[engine],
+                ).values_list("snapshot_date", "topvisor_configuration_id")
+                by_date = defaultdict(set)
+                for day, config in rows:
+                    by_date[day].add(config)
+                available = sorted(
+                    (day for day, configs in by_date.items() if configs == required[engine]),
+                    reverse=True,
+                )
+            self.fields[f"{engine}_dates"].choices = [
+                (d.isoformat(), d.strftime("%d.%m.%Y")) for d in available
+            ]
         for field, source in (
             ("metrika_snapshots", SourceSnapshot.Source.METRIKA),
             ("webmaster_snapshots", SourceSnapshot.Source.WEBMASTER),
@@ -73,11 +93,13 @@ class ReportCreateForm(forms.Form):
         value = self.cleaned_data.get("month")
         return date(value.year, value.month, 1) if value else value
 
-    def clean_topvisor_dates(self):
-        values = sorted(self.cleaned_data["topvisor_dates"])
-        if self.fields["topvisor_dates"].choices and len(values) < 2:
-            raise forms.ValidationError("Выберите не менее двух фактических дат Topvisor.")
-        return values
+    def clean(self):
+        cleaned = super().clean()
+        for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
+            if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:
+                self.add_error(f"{engine}_dates", f"{label}: выберите минимум две доступные даты.")
+            cleaned[f"{engine}_dates"] = sorted(cleaned.get(f"{engine}_dates", []))
+        return cleaned
 
 
 class NarrativeEditForm(forms.ModelForm):

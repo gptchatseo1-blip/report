@@ -93,6 +93,27 @@ STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", BASE_DIR / "media"))
+
+
+def positive_int_setting(name, default):
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+REPORT_PDF_TIMEOUT_SECONDS = positive_int_setting("REPORT_PDF_TIMEOUT_SECONDS", 180)
+REPORT_ARTIFACT_STALE_SECONDS = positive_int_setting("REPORT_ARTIFACT_STALE_SECONDS", 360)
+GUNICORN_TIMEOUT_SECONDS = positive_int_setting("GUNICORN_TIMEOUT_SECONDS", 300)
+if GUNICORN_TIMEOUT_SECONDS < REPORT_PDF_TIMEOUT_SECONDS + 60:
+    raise ValueError(
+        "GUNICORN_TIMEOUT_SECONDS must allow REPORT_PDF_TIMEOUT_SECONDS plus at least "
+        "60 seconds for DOCX generation and artifact storage"
+    )
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
 DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024

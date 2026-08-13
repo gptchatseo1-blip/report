@@ -21,6 +21,7 @@ urlpatterns = [
     path(
         "artifacts/<uuid:artifact_id>/download/", views.artifact_download, name="artifact-download"
     ),
+    path("artifacts/<uuid:artifact_id>/delete/", views.artifact_delete, name="artifact-delete"),
     path("narratives/<uuid:block_id>/edit/", views.narrative_edit, name="narrative-edit"),
     path("narratives/<uuid:block_id>/reset/", views.narrative_reset, name="narrative-reset"),
     path("narratives/<uuid:block_id>/confirm/", views.narrative_confirm, name="narrative-confirm"),
