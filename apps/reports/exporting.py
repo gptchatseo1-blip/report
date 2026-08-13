@@ -304,12 +304,13 @@ def _add_provenance(doc, payload, code, segment=None):
 
 
 def _current_position_source(payload, segment):
+    configuration_id = segment.get("configuration_id")
     candidates = [
         s
         for s in payload.get("ranking_sources", [])
         if s.get("search_engine") == segment.get("search_engine")
         and s.get("region") == segment.get("region")
-        and s.get("configuration_id", "") == segment.get("configuration_id", "")
+        and (not configuration_id or s.get("configuration_id") == configuration_id)
     ]
     return max(
         candidates, key=lambda item: (item.get("date") or "", item.get("id") or ""), default=None
@@ -948,36 +949,28 @@ def _xlsx(snapshot, draft):
                 )
             )
     work = workbook.create_sheet("Выполненные работы")
-    work.append(
-        (
-            "Дата",
-            "Категория",
-            "Название",
-            "Статус",
-            "Страница или материал",
-            "Объём",
-            "Ответственный",
-            "Комментарий",
-            "Результат",
-        )
-    )
+    work_headers = ["Дата", "Категория", "Название", "Статус"]
+    if show_urls:
+        work_headers.extend(("Страница или материал", "URL", "Результат"))
+    else:
+        work_headers.append("Материал")
+    work_headers.extend(("Объём", "Ответственный", "Комментарий"))
+    work.append(work_headers)
     for item in payload.get("completed_work", []):
-        work.append(
-            tuple(
-                _xlsx_value(value)
-                for value in (
-                    date.fromisoformat(item["date"]),
-                    item.get("category"),
-                    item.get("title"),
-                    item.get("status"),
-                    item.get("page_or_material_name") or item.get("url"),
-                    item.get("character_count"),
-                    item.get("responsible"),
-                    item.get("comment"),
-                    item.get("result_url"),
-                )
+        values = [
+            date.fromisoformat(item["date"]),
+            item.get("category"),
+            item.get("title"),
+            item.get("status"),
+        ]
+        if show_urls:
+            values.extend(
+                (item.get("page_or_material_name"), item.get("url"), item.get("result_url"))
             )
-        )
+        else:
+            values.append(item.get("page_or_material_name"))
+        values.extend((item.get("character_count"), item.get("responsible"), item.get("comment")))
+        work.append(tuple(_xlsx_value(value) for value in values))
     for sheet in workbook.worksheets:
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions

@@ -100,10 +100,19 @@ def report_list(request, project_id):
         for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
         if engine in form.connected_engines
     ]
+    can_create = all(
+        len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
+    )
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": form, "calendar_fields": calendar_fields},
+        {
+            "project": project,
+            "reports": reports,
+            "form": form,
+            "calendar_fields": calendar_fields,
+            "can_create": can_create,
+        },
     )
 
 
@@ -162,10 +171,19 @@ def report_create(request, project_id):
         for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
         if engine in form.connected_engines
     ]
+    can_create = all(
+        len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
+    )
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": form, "calendar_fields": calendar_fields},
+        {
+            "project": project,
+            "reports": reports,
+            "form": form,
+            "calendar_fields": calendar_fields,
+            "can_create": can_create,
+        },
         status=400,
     )
 

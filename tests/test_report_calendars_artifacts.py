@@ -1,0 +1,297 @@
+import io
+from datetime import date, timedelta
+from unittest.mock import patch
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.test import Client
+from django.urls import reverse
+from django.utils import timezone
+from docx import Document
+from openpyxl import load_workbook
+
+from apps.metrics.models import KeywordPosition, RankingSnapshot
+from apps.projects.models import Project
+from apps.reports.exporting import generate_artifact
+from apps.reports.forms import ReportCreateForm
+from apps.reports.models import GeneratedArtifact, Report, ReportDatasetSnapshot
+from apps.reports.services import create_report_version
+from apps.topvisor.models import TopvisorProjectMapping
+
+pytestmark = pytest.mark.django_db
+
+
+def mapping(project, configurations):
+    return TopvisorProjectMapping.objects.create(
+        project=project, topvisor_project_id="1", selected_configurations=configurations
+    )
+
+
+def ranking(project, day, engine, config, *, url="https://example.test/page"):
+    snapshot = RankingSnapshot.objects.create(
+        project=project,
+        snapshot_date=day,
+        search_engine=engine,
+        region="Москва",
+        ranking_depth=20,
+        topvisor_configuration_id=config,
+        response_checksum=f"sum-{config}-{day}",
+    )
+    KeywordPosition.objects.create(
+        ranking_snapshot=snapshot,
+        query="ключ",
+        normalized_query="ключ",
+        frequency=42,
+        position_raw="5",
+        position_value=5,
+        position_status="ranked",
+        group_name="Группа",
+        target_url=url,
+        normalized_target_url=url,
+    )
+    return snapshot
+
+
+@pytest.fixture
+def user():
+    return get_user_model().objects.create_user("calendar-user", password="password")
+
+
+@pytest.fixture
+def project():
+    return Project.objects.create(name="Calendar", domain="calendar.example")
+
+
+def test_engines_have_independent_complete_date_sets(project):
+    mapping(
+        project,
+        [
+            {"id": "ya-a", "search_engine": "yandex"},
+            {"id": "ya-b", "search_engine": "yandex"},
+            {"id": "go", "search_engine": "google"},
+        ],
+    )
+    for config in ("ya-a", "ya-b"):
+        ranking(project, date(2026, 6, 1), "yandex", config)
+    ranking(project, date(2026, 6, 2), "yandex", "ya-a")
+    ranking(project, date(2026, 7, 1), "google", "go")
+    ranking(project, date(2026, 7, 2), "google", "go")
+    form = ReportCreateForm(project=project)
+    assert [value for value, _ in form.fields["yandex_dates"].choices] == ["2026-06-01"]
+    assert [value for value, _ in form.fields["google_dates"].choices] == [
+        "2026-07-02",
+        "2026-07-01",
+    ]
+
+
+def test_tampered_date_and_minimum_are_rejected_per_engine(project):
+    mapping(
+        project, [{"id": "ya", "search_engine": "yandex"}, {"id": "go", "search_engine": "google"}]
+    )
+    for engine, config in (("yandex", "ya"), ("google", "go")):
+        ranking(project, date(2026, 7, 1), engine, config)
+        ranking(project, date(2026, 7, 2), engine, config)
+    form = ReportCreateForm(
+        {"yandex_dates": ["2026-07-01", "2026-07-09"], "google_dates": ["2026-07-01"]},
+        project=project,
+    )
+    assert not form.is_valid()
+    assert "yandex_dates" in form.errors and "google_dates" in form.errors
+
+
+@pytest.mark.parametrize(
+    ("count", "message"), [(0, "нет доступных дат"), (1, "нужна ещё минимум одна дата")]
+)
+def test_connected_engine_with_too_few_dates_is_visible(client, user, project, count, message):
+    mapping(project, [{"id": "go", "search_engine": "google"}])
+    if count:
+        ranking(project, date(2026, 7, 1), "google", "go")
+    client.force_login(user)
+    response = client.get(reverse("reports:report-list", args=[project.id]))
+    html = response.content.decode().lower()
+    assert "google" in html and message in html
+    assert "disabled" in html
+
+
+def test_bound_form_preserves_dates_and_show_urls_after_error(client, user, project):
+    mapping(project, [{"id": "go", "search_engine": "google"}])
+    for day in (date(2026, 7, 1), date(2026, 7, 2)):
+        ranking(project, day, "google", "go")
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {"google_dates": ["2026-07-01"], "show_urls": "on"},
+    )
+    assert response.status_code == 400
+    assert response.context["form"]["show_urls"].value() is True
+    assert response.context["form"]["google_dates"].value() == ["2026-07-01"]
+
+
+@pytest.mark.parametrize(("checkbox", "expected"), [(None, False), ("on", True)])
+def test_new_snapshot_stores_url_option(client, user, project, checkbox, expected):
+    mapping(project, [{"id": "go", "search_engine": "google"}])
+    for day in (date(2026, 7, 1), date(2026, 7, 2)):
+        ranking(project, day, "google", "go")
+    client.force_login(user)
+    data = {"google_dates": ["2026-07-01", "2026-07-02"]}
+    if checkbox:
+        data["show_urls"] = checkbox
+    assert client.post(reverse("reports:report-create", args=[project.id]), data).status_code == 302
+    assert ReportDatasetSnapshot.objects.get().payload["display_options"]["show_urls"] is expected
+
+
+@pytest.mark.parametrize("show_urls", [False, True])
+def test_xlsx_url_policy_covers_positions_and_work(project, tmp_path, settings, show_urls):
+    settings.MEDIA_ROOT = tmp_path
+    ranking(project, date(2026, 7, 31), "google", "")
+    report = Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    version = create_report_version(
+        report=report, selection={"display_options": {"show_urls": show_urls}}
+    )
+    payload = version.snapshot.payload
+    payload["completed_work"] = [
+        {
+            "date": "2026-07-01",
+            "category": "SEO",
+            "title": "Статья",
+            "status": "done",
+            "page_or_material_name": "Полезное название",
+            "url": "https://secret.test/work",
+            "result_url": "https://secret.test/result",
+            "character_count": 10,
+            "responsible": "Иван",
+            "comment": "готово",
+        }
+    ]
+    ReportDatasetSnapshot.objects.filter(
+        pk=version.snapshot_id if hasattr(version, "snapshot_id") else version.snapshot.pk
+    ).update(payload=payload)
+    version.snapshot.refresh_from_db()
+    artifact = generate_artifact(version=version, artifact_type="xlsx", is_draft=True)
+    workbook = load_workbook(io.BytesIO(artifact.file.read()), read_only=True)
+    positions = list(workbook["Позиции"].values)
+    work = list(workbook["Выполненные работы"].values)
+    all_values = "\n".join(
+        str(value) for sheet in workbook for row in sheet.values for value in row if value
+    )
+    assert ("Релевантный URL" in positions[0]) is show_urls
+    assert ("URL" in work[0] and "Результат" in work[0]) is show_urls
+    assert "Полезное название" in work[1]
+    assert ("https://secret.test" in all_values) is show_urls
+
+
+def test_legacy_segment_without_configuration_exports_from_frozen_snapshot(
+    client, user, project, tmp_path, settings
+):
+    settings.MEDIA_ROOT = tmp_path
+    ranking(project, date(2026, 7, 31), "google", "legacy-config")
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    payload = version.snapshot.payload
+    payload.pop("display_options", None)
+    payload["source_selection"]["topvisor"] = {"selected_dates": ["2026-07-01", "2026-07-31"]}
+    for segment in payload["calculated"]["positions"]["segments"]:
+        segment.pop("configuration_id", None)
+    ReportDatasetSnapshot.objects.filter(pk=version.snapshot.pk).update(payload=payload)
+    version.snapshot.refresh_from_db()
+    RankingSnapshot.objects.all().delete()
+    client.force_login(user)
+    preview = client.get(reverse("reports:version-detail", args=[version.id]))
+    assert preview.status_code == 200 and preview.context["show_urls"] is True
+    with (
+        patch(
+            "apps.topvisor.client.TopvisorClient._request", side_effect=AssertionError("API called")
+        ),
+        patch(
+            "apps.metrics.models.RankingSnapshot.objects.filter",
+            side_effect=AssertionError("live DB called"),
+        ),
+    ):
+        docx = generate_artifact(version=version, artifact_type="docx", is_draft=True)
+        xlsx = generate_artifact(version=version, artifact_type="xlsx", is_draft=True)
+    document = Document(io.BytesIO(docx.file.read()))
+    doc_text = "\n".join(
+        cell.text for table in document.tables for row in table.rows for cell in row.cells
+    )
+    workbook = load_workbook(io.BytesIO(xlsx.file.read()), read_only=True)
+    assert "ключ" in doc_text and "https://example.test/page" in doc_text
+    assert list(workbook["Позиции"].values)[1][3] == "ключ"
+    assert "Релевантный URL" in list(workbook["Позиции"].values)[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "target"), [("docx", "_docx"), ("pdf", "_pdf"), ("xlsx", "_xlsx")]
+)
+def test_export_errors_mark_artifact_failed(project, kind, target):
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    with (
+        patch(
+            f"apps.reports.exporting.{target}", side_effect=RuntimeError("/secret/path token=bad")
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        generate_artifact(version=version, artifact_type=kind, is_draft=True)
+    artifact = GeneratedArtifact.objects.get()
+    assert artifact.status == "failed" and "/secret/path" not in artifact.generation_log
+
+
+def artifact(version, status, age=0, with_file=True):
+    row = GeneratedArtifact.objects.create(
+        report_version=version, artifact_type="docx", status=status
+    )
+    if with_file:
+        row.file.save("safe.docx", ContentFile(b"data"))
+    if age:
+        GeneratedArtifact.objects.filter(pk=row.pk).update(
+            created_at=timezone.now() - timedelta(seconds=age)
+        )
+        row.refresh_from_db()
+    return row
+
+
+@pytest.mark.parametrize("status", ["ready", "failed"])
+def test_ready_and_failed_artifacts_delete(client, user, project, tmp_path, settings, status):
+    settings.MEDIA_ROOT = tmp_path
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    row = artifact(version, status)
+    client.force_login(user)
+    assert client.post(reverse("reports:artifact-delete", args=[row.id])).status_code == 302
+    assert not GeneratedArtifact.objects.filter(pk=row.id).exists()
+    assert ReportDatasetSnapshot.objects.filter(version=version).exists()
+
+
+def test_stale_is_failed_but_fresh_generating_cannot_delete(client, user, project):
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    stale = artifact(version, "generating", age=1000, with_file=False)
+    fresh = artifact(version, "generating", with_file=False)
+    client.force_login(user)
+    client.get(reverse("reports:version-detail", args=[version.id]))
+    stale.refresh_from_db()
+    assert stale.status == "failed"
+    client.post(reverse("reports:artifact-delete", args=[fresh.id]))
+    assert GeneratedArtifact.objects.filter(pk=fresh.id).exists()
+
+
+def test_delete_is_post_login_csrf_and_missing_file_safe(user, project):
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    row = artifact(version, "failed", with_file=False)
+    url = reverse("reports:artifact-delete", args=[row.id])
+    anonymous = Client()
+    assert anonymous.post(url).status_code == 302
+    client = Client(enforce_csrf_checks=True)
+    client.force_login(user)
+    assert client.get(url).status_code == 405
+    assert client.post(url).status_code == 403
+    client.get(reverse("reports:version-detail", args=[version.id]))
+    token = client.cookies["csrftoken"].value
+    assert client.post(url, HTTP_X_CSRFTOKEN=token).status_code == 302
