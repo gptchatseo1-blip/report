@@ -16,20 +16,23 @@ from apps.yandex.crypto import CredentialConfigurationError
 from .client import TopvisorClient, TopvisorError, client_for_project
 from .models import TopvisorProjectMapping, TopvisorSyncRun
 
-# Official Topvisor visibility coefficients for positions 1–10. Positions below
-# the first results page have coefficient zero.
-VISIBILITY_FORMULA_VERSION = "topvisor-official-2026-08"
+# Official Topvisor visibility coefficient table. Positions 21 and below have
+# coefficient zero.
+VISIBILITY_FORMULA_VERSION = "topvisor-visibility-official-range-table-2026-08-v2"
+VISIBILITY_FORMULA_URL = "https://topvisor.com/ru/support/rankings/summary/visibility/"
 VISIBILITY_WEIGHTS = {
     1: Decimal("1"),
-    2: Decimal("0.85"),
-    3: Decimal("0.60"),
-    4: Decimal("0.50"),
-    5: Decimal("0.40"),
-    6: Decimal("0.30"),
-    7: Decimal("0.20"),
-    8: Decimal("0.10"),
-    9: Decimal("0.05"),
-    10: Decimal("0.03"),
+    2: Decimal("1"),
+    3: Decimal("1"),
+    4: Decimal("0.85"),
+    5: Decimal("0.6"),
+    6: Decimal("0.5"),
+    7: Decimal("0.5"),
+    8: Decimal("0.3"),
+    9: Decimal("0.3"),
+    10: Decimal("0.2"),
+    **{position: Decimal("0.1") for position in range(11, 16)},
+    **{position: Decimal("0.05") for position in range(16, 21)},
 }
 
 
@@ -62,6 +65,7 @@ def visibility_payload(rows, calculated_at):
             "value": None,
             "source": "calculated_from_positions_and_frequency",
             "formula_version": VISIBILITY_FORMULA_VERSION,
+            "formula_source": VISIBILITY_FORMULA_URL,
             "coefficients": coefficients,
             "keyword_count": len(rows),
             "calculated_at": calculated_at.isoformat(),
@@ -73,6 +77,7 @@ def visibility_payload(rows, calculated_at):
         "value": str(value),
         "source": "calculated_from_positions_and_frequency",
         "formula_version": VISIBILITY_FORMULA_VERSION,
+        "formula_source": VISIBILITY_FORMULA_URL,
         "coefficients": coefficients,
         "keyword_count": len(rows),
         "calculated_at": calculated_at.isoformat(),
