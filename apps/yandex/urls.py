@@ -4,6 +4,7 @@ from . import views
 
 app_name = "yandex"
 urlpatterns = [
+    path("settings/", views.oauth_credentials, name="oauth-credentials"),
     path("projects/<uuid:project_id>/", views.connection, name="connection"),
     path("projects/<uuid:project_id>/oauth/start/", views.oauth_start, name="oauth-start"),
     path("oauth/callback/", views.oauth_callback, name="oauth-callback"),

@@ -29,7 +29,7 @@ def context(settings):
         user=user,
         access_token_encrypted=encrypt_token("access-token"),
         refresh_token_encrypted=encrypt_token("refresh-token"),
-        scopes=["metrika:read", "webmaster:read"],
+        scopes=["metrika:read", "webmaster:hostinfo"],
     )
     return user, project, connection
 

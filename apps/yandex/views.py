@@ -5,37 +5,121 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib import messages
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.http import HttpResponseBadRequest, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 
 from apps.projects.models import Project, normalize_domain
 
 from .client import MetrikaClient, WebmasterClient, YandexAPIError, exchange_token
+from .credentials import get_oauth_credentials
 from .crypto import CredentialConfigurationError, encrypt_token
-from .forms import CounterForm, GoalsForm, HostForm, SyncForm
+from .forms import CounterForm, GoalsForm, HostForm, SyncForm, YandexOAuthCredentialsForm
 from .models import (
     YandexConnection,
     YandexMetrikaProjectMapping,
+    YandexOAuthCredential,
     YandexOAuthState,
     YandexWebmasterProjectMapping,
 )
 from .services import sync_metrika, sync_webmaster
 
-WEBMASTER_SCOPE = "webmaster:read"
+METRIKA_SCOPE = "metrika:read"
+WEBMASTER_SCOPE = "webmaster:hostinfo"
+OAUTH_SCOPES = (METRIKA_SCOPE, WEBMASTER_SCOPE)
 
 
 def _configured():
-    return all(
-        (
-            settings.YANDEX_CLIENT_ID,
-            settings.YANDEX_CLIENT_SECRET,
-            settings.YANDEX_REDIRECT_URI,
-            settings.CREDENTIAL_ENCRYPTION_KEY,
+    if not settings.CREDENTIAL_ENCRYPTION_KEY:
+        return False
+    try:
+        return get_oauth_credentials() is not None
+    except CredentialConfigurationError:
+        return False
+
+
+@staff_member_required
+def oauth_credentials(request):
+    record = YandexOAuthCredential.objects.filter(pk=1).first()
+    try:
+        current = get_oauth_credentials()
+        credential_error = ""
+    except CredentialConfigurationError:
+        current = None
+        credential_error = "Сохранённый Client secret невозможно расшифровать. Введите его заново."
+    has_secret = not credential_error and (
+        bool(record and record.client_secret_encrypted)
+        or bool(not record and current and current.client_secret)
+    )
+    if request.method == "POST":
+        form = YandexOAuthCredentialsForm(request.POST, has_secret=has_secret)
+        if form.is_valid():
+            submitted_secret = form.cleaned_data["client_secret"]
+            client_changed = not current or current.client_id != form.cleaned_data["client_id"]
+            secret_changed = bool(
+                submitted_secret and (not current or submitted_secret != current.client_secret)
+            )
+            replacement = record or YandexOAuthCredential()
+            replacement.client_id = form.cleaned_data["client_id"]
+            replacement.redirect_uri = form.cleaned_data["redirect_uri"]
+            try:
+                if submitted_secret:
+                    replacement.set_client_secret(submitted_secret)
+                elif not record and current:
+                    replacement.set_client_secret(current.client_secret)
+                with transaction.atomic():
+                    replacement.save()
+                    if client_changed or secret_changed:
+                        YandexConnection.objects.filter(active=True).update(
+                            active=False,
+                            access_token_encrypted=b"",
+                            refresh_token_encrypted=None,
+                        )
+            except CredentialConfigurationError:
+                form.add_error(
+                    None,
+                    "Не удалось зашифровать Client secret. Проверьте ключ шифрования сервиса.",
+                )
+            else:
+                if client_changed or secret_changed:
+                    messages.success(
+                        request,
+                        "Реквизиты OAuth Яндекса сохранены. Аккаунты проектов нужно "
+                        "авторизовать заново.",
+                    )
+                else:
+                    messages.success(request, "Реквизиты OAuth Яндекса сохранены.")
+                return redirect("yandex:oauth-credentials")
+    else:
+        form = YandexOAuthCredentialsForm(
+            initial={
+                "client_id": record.client_id if record else (current.client_id if current else ""),
+                "redirect_uri": (
+                    record.redirect_uri
+                    if record
+                    else (
+                        current.redirect_uri
+                        if current
+                        else request.build_absolute_uri(reverse("yandex:oauth-callback"))
+                    )
+                ),
+            },
+            has_secret=has_secret,
         )
+    return render(
+        request,
+        "yandex/oauth_credentials.html",
+        {
+            "form": form,
+            "credential": record,
+            "legacy_fallback": bool(current and current.legacy and not record),
+            "credential_error": credential_error,
+        },
     )
 
 
@@ -110,7 +194,11 @@ def oauth_start(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
     project = get_object_or_404(Project, pk=project_id)
-    if not _configured():
+    try:
+        credentials = get_oauth_credentials() if _configured() else None
+    except CredentialConfigurationError:
+        credentials = None
+    if not credentials:
         messages.error(request, "OAuth Яндекса не настроен.")
         return redirect("yandex:connection", project_id=project.id)
     if not request.session.session_key:
@@ -125,9 +213,9 @@ def oauth_start(request, project_id):
     query = urllib.parse.urlencode(
         {
             "response_type": "code",
-            "client_id": settings.YANDEX_CLIENT_ID,
-            "redirect_uri": settings.YANDEX_REDIRECT_URI,
-            "scope": "metrika:read webmaster:read",
+            "client_id": credentials.client_id,
+            "redirect_uri": credentials.redirect_uri,
+            "scope": " ".join(OAUTH_SCOPES),
             "force_confirm": "yes",
             "state": raw,
         }
@@ -173,19 +261,23 @@ def oauth_callback(request):
     if state is None:
         return HttpResponseBadRequest("Недействительный или просроченный OAuth state.")
     try:
+        credentials = get_oauth_credentials()
+        if not credentials:
+            raise YandexAPIError("OAuth Яндекса не настроен.")
         token = exchange_token(
             {
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": settings.YANDEX_REDIRECT_URI,
-            }
+                "redirect_uri": credentials.redirect_uri,
+            },
+            credentials=credentials,
         )
         expires = (
             timezone.now() + timedelta(seconds=int(token["expires_in"]))
             if token.get("expires_in")
             else None
         )
-        raw_scopes = token.get("scope") or []
+        raw_scopes = token.get("scope") or OAUTH_SCOPES
         scopes = raw_scopes.split() if isinstance(raw_scopes, str) else list(raw_scopes)
         defaults = {
             "account_id": str(token.get("uid", "")),

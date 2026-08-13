@@ -4,6 +4,41 @@ from django.conf import settings
 from django.db import models
 
 from apps.projects.models import Project
+from apps.yandex.crypto import decrypt_token, encrypt_token
+
+
+class YandexOAuthCredential(models.Model):
+    """One encrypted OAuth application configuration shared by every project."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    client_id = models.CharField("ClientID", max_length=255)
+    client_secret_encrypted = models.BinaryField(editable=False)
+    client_secret_last_four = models.CharField(max_length=4, blank=True, editable=False)
+    redirect_uri = models.URLField("Redirect URI", max_length=2000)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Реквизиты OAuth Яндекса"
+        verbose_name_plural = "Реквизиты OAuth Яндекса"
+
+    def __str__(self):
+        return "OAuth Яндекса"
+
+    def set_client_secret(self, value):
+        self.client_secret_encrypted = encrypt_token(value)
+        self.client_secret_last_four = value[-4:] if value else ""
+
+    def get_client_secret(self):
+        return decrypt_token(self.client_secret_encrypted)
+
+    @property
+    def masked_client_secret(self):
+        return (
+            f"••••{self.client_secret_last_four}"
+            if self.client_secret_last_four
+            else "Секрет настроен"
+        )
 
 
 class YandexConnection(models.Model):
