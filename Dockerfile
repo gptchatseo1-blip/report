@@ -12,6 +12,10 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir ".[dev]"
 COPY . .
 
+# Build the immutable WhiteNoise manifest into the image. The key is intentionally
+# build-only; no production secret is embedded in a layer or required for static collection.
+RUN DJANGO_DEBUG=0 DJANGO_SECRET_KEY=collectstatic-build-only python manage.py collectstatic --noinput
+
 RUN mkdir -p /app/media \
     && useradd --create-home --uid 10001 app \
     && chown -R app:app /app

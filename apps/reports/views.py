@@ -1,3 +1,4 @@
+import calendar
 import logging
 import secrets
 from datetime import date, timedelta
@@ -62,6 +63,66 @@ METRIC_LABELS = {
 logger = logging.getLogger(__name__)
 
 
+def _calendar_months(field, count=3):
+    """Return an initial, fully rendered calendar; JavaScript only enhances it."""
+    available = {str(value) for value, _label in field.field.choices}
+    if not available:
+        return []
+    selected = set(field.value() or [])
+    latest = date.fromisoformat(max(available)).replace(day=1)
+    start_index = latest.year * 12 + latest.month - count
+    months = []
+    month_names = (
+        "Январь",
+        "Февраль",
+        "Март",
+        "Апрель",
+        "Май",
+        "Июнь",
+        "Июль",
+        "Август",
+        "Сентябрь",
+        "Октябрь",
+        "Ноябрь",
+        "Декабрь",
+    )
+    for offset in range(count):
+        index = start_index + offset
+        year, zero_month = divmod(index, 12)
+        month = zero_month + 1
+        weeks = []
+        for week in calendar.Calendar(firstweekday=calendar.MONDAY).monthdatescalendar(year, month):
+            weeks.append(
+                [
+                    {
+                        "iso": day.isoformat(),
+                        "number": day.day,
+                        "in_month": day.month == month,
+                        "available": day.isoformat() in available and day.month == month,
+                        "selected": day.isoformat() in selected and day.month == month,
+                    }
+                    for day in week
+                ]
+            )
+        months.append(
+            {
+                "year": year,
+                "month": month,
+                "title": f"{month_names[month - 1]} {year}",
+                "weeks": weeks,
+            }
+        )
+    return months
+
+
+def _calendar_fields(form):
+    return [
+        (engine, label, form[f"{engine}_dates"], _calendar_months(form[f"{engine}_dates"]))
+        for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
+        if engine in form.connected_engines
+    ]
+
+
 @login_required
 def home(request):
     return redirect("reports:projects")
@@ -95,11 +156,7 @@ def report_list(request, project_id):
     token = secrets.token_urlsafe(24)
     request.session[f"report_create_token:{project.id}"] = token
     form = ReportCreateForm(project=project, initial={"submission_token": token})
-    calendar_fields = [
-        (engine, label, form[f"{engine}_dates"])
-        for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
-        if engine in form.connected_engines
-    ]
+    calendar_fields = _calendar_fields(form)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -166,11 +223,7 @@ def report_create(request, project_id):
     reports = project.reports.annotate(
         version_count=Count("versions"), latest_version_at=Max("versions__created_at")
     )
-    calendar_fields = [
-        (engine, label, form[f"{engine}_dates"])
-        for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
-        if engine in form.connected_engines
-    ]
+    calendar_fields = _calendar_fields(form)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )

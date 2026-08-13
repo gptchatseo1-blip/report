@@ -302,3 +302,11 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ## Часовой пояс проекта
 
 Часовой пояс сохраняется в модели (для новых проектов — `Europe/Moscow`) и используется расчётами, календарными периодами и интеграциями. Это внутренняя административная настройка: она доступна в Django Admin, но не показывается в обычном пользовательском интерфейсе.
+# Production static files
+
+The application owns the complete `/static/` pipeline. The Docker image runs
+`collectstatic` and WhiteNoise serves compressed, manifest-hashed assets from the
+application. A TLS reverse proxy (including Caddy) must proxy `/static/` to the web
+container just like every other request; do not configure a second `file_server` or
+a separately mounted static directory. This makes every deployment publish the CSS
+and JavaScript referenced by its templates without browser-cache cleanup.

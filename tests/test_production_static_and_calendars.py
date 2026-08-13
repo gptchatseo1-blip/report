@@ -1,0 +1,69 @@
+import re
+from datetime import date
+from pathlib import Path
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.contrib.staticfiles.storage import staticfiles_storage
+from django.test import override_settings
+from django.urls import reverse
+
+from apps.metrics.models import RankingSnapshot
+from apps.projects.models import Project
+from apps.topvisor.models import TopvisorProjectMapping
+
+pytestmark = pytest.mark.django_db
+
+
+def _calendar_page(client):
+    user = get_user_model().objects.create_user("static-reviewer")
+    project = Project.objects.create(name="Static review", domain="example.test")
+    TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="42",
+        selected_configurations=[{"id": "google-main", "search_engine": "google"}],
+    )
+    for day in (date(2026, 5, 3), date(2026, 7, 14)):
+        RankingSnapshot.objects.create(
+            project=project,
+            snapshot_date=day,
+            search_engine="google",
+            topvisor_configuration_id="google-main",
+            response_checksum=str(day),
+        )
+    client.force_login(user)
+    return client.get(reverse("reports:report-list", args=[project.id]))
+
+
+def test_template_uses_manifest_static_url_and_assets_are_served(client):
+    response = _calendar_page(client)
+    html = response.content.decode()
+    script_url = staticfiles_storage.url("reports/calendar.js")
+    css_url = staticfiles_storage.url("reports/app.css")
+    assert script_url in html and css_url in html
+    assert 'src="/static/reports/calendar.js"' not in html
+
+    with override_settings(DEBUG=False):
+        css = client.get(css_url)
+        javascript = client.get(script_url)
+    assert css.status_code == javascript.status_code == 200
+    assert css.headers["Content-Type"].startswith("text/css")
+    assert javascript.headers["Content-Type"].startswith("text/javascript")
+    assert b".date-calendar" in b"".join(css.streaming_content)
+
+
+def test_server_html_contains_three_months_dates_and_disabled_days(client):
+    html = _calendar_page(client).content.decode()
+    assert html.count('class="calendar-month"') == 3
+    assert "Май 2026" in html and "Июнь 2026" in html and "Июль 2026" in html
+    assert re.search(r'data-date="2026-07-14"[^>]*aria-pressed="false"', html)
+    assert re.search(r'data-date="2026-07-13"[^>]*disabled', html)
+    assert "Добавить релевантные URL в предпросмотр и файлы отчёта." in html
+    checkbox = re.search(r'<input[^>]*id="id_show_urls"[^>]*>', html).group()
+    assert 'type="checkbox"' in checkbox and "checked" not in checkbox
+
+
+def test_responsive_css_keeps_one_month_on_mobile():
+    css = Path(staticfiles_storage.path("reports/app.css")).read_text()
+    assert "grid-template-columns:repeat(3" in css
+    assert ".calendar-month:not(:first-child){display:none}" in css
