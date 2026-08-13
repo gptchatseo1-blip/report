@@ -1,0 +1,6 @@
+{% extends "admin/base.html" %}
+{% load static %}
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}SEO-отчёты{% endblock %}
+{% block extrastyle %}{{ block.super }}<link rel="icon" type="image/png" sizes="64x64" href="{% static 'reports/favicon.png' %}">{% endblock %}
+{% block branding %}<div id="site-name"><a href="{% url 'admin:index' %}">SEO-отчёты</a></div>{% endblock %}
+{% block nav-global %}{% endblock %}

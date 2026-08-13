@@ -244,23 +244,27 @@ DOCX/XLSX, сигнатуру, число и непустое содержани
 
 ## Яндекс Метрика через OAuth
 
-Создайте OAuth-приложение в кабинете Яндекса и выдайте ему read-only разрешения
-`metrika:read` и `webmaster:read`. В настройках приложения зарегистрируйте точный callback URL сервиса — он
-должен полностью совпадать с `YANDEX_REDIRECT_URI` (схема, домен, порт и путь
-`/yandex/oauth/callback/`). Сервис никогда не принимает callback или redirect URL от
-пользователя.
+Создайте OAuth-приложение в кабинете Яндекса и выдайте ему минимальные read-only разрешения
+`metrika:read` и `webmaster:hostinfo`. В настройках приложения зарегистрируйте точный callback
+URL сервиса с путём `/yandex/oauth/callback/`.
 
-Заполните переменные `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и
-`CREDENTIAL_ENCRYPTION_KEY` в окружении. Ключ шифрования можно сгенерировать так:
+После входа в сервис откройте «Проекты» → «Настройки Яндекса» и сохраните `ClientID`,
+`Client secret` и полный Redirect URI. Это единые реквизиты OAuth-приложения для всех проектов;
+Client secret хранится в базе только в зашифрованном виде и никогда не показывается в HTML.
+Переменные `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET` и `YANDEX_REDIRECT_URI` поддерживаются
+только как временный fallback для старых установок.
+
+В окружении по-прежнему обязателен стабильный `CREDENTIAL_ENCRYPTION_KEY`. Его можно
+сгенерировать так:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 `CREDENTIAL_ENCRYPTION_KEY` обязан оставаться стабильным весь срок жизни подключений: после
-его замены сохранённые токены расшифровать невозможно. Храните ключ, client secret и реальные
-токены только в secret-хранилище платформы или локальном `.env`. **Никогда не добавляйте
-реальные секреты в Git.** `.env.example` содержит только пустые значения и безопасные defaults.
+его замены сохранённые реквизиты OAuth и токены расшифровать невозможно. Храните ключ только в
+secret-хранилище платформы или локальном `.env`. **Никогда не добавляйте реальные секреты в
+Git.** `.env.example` содержит только пустые значения и безопасные defaults.
 
 После входа откройте страницу отчётов проекта и нажмите «Подключить Яндекс Метрику»:
 
@@ -277,11 +281,12 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ## Яндекс Вебмастер (read-only)
 
 Интеграция использует то же зашифрованное `YandexConnection`, что и Метрика. OAuth запрашивает
-`metrika:read webmaster:read`, а выданный набор scopes сохраняется и проверяется до обращения к
-Вебмастеру. Старое подключение без `webmaster:read` необходимо повторно авторизовать в интерфейсе.
+`metrika:read webmaster:hostinfo`, а выданный набор scopes сохраняется и проверяется до обращения
+к Вебмастеру. Старое подключение без `webmaster:hostinfo` необходимо повторно авторизовать в
+интерфейсе.
 
-Настройте `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI` и
-`CREDENTIAL_ENCRYPTION_KEY`; при необходимости переопределите
+Общие `ClientID`, `Client secret` и Redirect URI настраиваются на странице «Настройки Яндекса»;
+в окружении остаётся только `CREDENTIAL_ENCRYPTION_KEY`. При необходимости переопределите
 `YANDEX_WEBMASTER_API_BASE_URL` (по умолчанию `https://api.webmaster.yandex.net/v4`),
 `YANDEX_REQUEST_TIMEOUT_SECONDS` и `YANDEX_MAX_RETRIES`. Redirect URI должен совпадать с URI
 приложения в OAuth Яндекса.

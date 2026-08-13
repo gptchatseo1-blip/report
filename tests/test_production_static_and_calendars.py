@@ -41,7 +41,8 @@ def test_template_uses_manifest_static_url_and_assets_are_served(client):
     html = response.content.decode()
     script_url = staticfiles_storage.url("reports/calendar.js")
     css_url = staticfiles_storage.url("reports/app.css")
-    assert script_url in html and css_url in html
+    favicon_url = staticfiles_storage.url("reports/favicon.png")
+    assert script_url in html and css_url in html and favicon_url in html
     assert 'src="/static/reports/calendar.js"' not in html
 
     with override_settings(DEBUG=False):
@@ -60,6 +61,7 @@ def test_collectstatic_builds_manifest_from_empty_root(tmp_path, settings):
     manifest = (static_root / "staticfiles.json").read_text()
     assert '"reports/app.css": "reports/app.' in manifest
     assert '"reports/calendar.js": "reports/calendar.' in manifest
+    assert '"reports/favicon.png": "reports/favicon.' in manifest
 
 
 def test_server_html_contains_three_months_dates_and_disabled_days(client):

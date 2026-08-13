@@ -11,6 +11,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 
+from .credentials import get_oauth_credentials
 from .crypto import decrypt_token, encrypt_token
 
 CORE_METRICS = (
@@ -34,19 +35,15 @@ class YandexUnauthorized(YandexAPIError):
     pass
 
 
-def exchange_token(parameters):
-    required = (
-        settings.YANDEX_CLIENT_ID,
-        settings.YANDEX_CLIENT_SECRET,
-        settings.YANDEX_REDIRECT_URI,
-    )
-    if not all(required):
+def exchange_token(parameters, *, credentials=None):
+    credentials = credentials or get_oauth_credentials()
+    if not credentials:
         raise YandexAPIError("OAuth Яндекса не настроен.")
     body = urllib.parse.urlencode(
         {
             **parameters,
-            "client_id": settings.YANDEX_CLIENT_ID,
-            "client_secret": settings.YANDEX_CLIENT_SECRET,
+            "client_id": credentials.client_id,
+            "client_secret": credentials.client_secret,
         }
     ).encode()
     request = urllib.request.Request(settings.YANDEX_OAUTH_TOKEN_URL, data=body, method="POST")

@@ -78,9 +78,8 @@ DJANGO_SECURE_HSTS_PRELOAD=0
 - `MAX_UPLOAD_SIZE_MB`;
 - `TOPVISOR_USER_ID`, `TOPVISOR_API_KEY`, опционально `TOPVISOR_API_BASE_URL`,
   `TOPVISOR_REQUEST_TIMEOUT_SECONDS`, `TOPVISOR_MAX_RETRIES`;
-- `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `YANDEX_REDIRECT_URI`;
 - постоянный `CREDENTIAL_ENCRYPTION_KEY` (Fernet); потеря или смена ключа делает сохранённые
-  OAuth-токены нечитаемыми;
+  OAuth-реквизиты и токены нечитаемыми;
 - опционально `YANDEX_OAUTH_AUTHORIZE_URL`, `YANDEX_OAUTH_TOKEN_URL`,
   `YANDEX_METRIKA_API_BASE_URL`, `YANDEX_WEBMASTER_API_BASE_URL`,
   `YANDEX_REQUEST_TIMEOUT_SECONDS`, `YANDEX_MAX_RETRIES`.
@@ -120,16 +119,16 @@ DJANGO_SECURE_HSTS_PRELOAD=0
 
 Для приёмки нужны: домен проекта; варианты бренда; URL-группы и приоритеты; CSV и XLSX одного
 среза; Topvisor user ID/API key и доступный проект; OAuth-приложение Яндекса с точным HTTPS
-callback; аккаунт с `metrika:read` и `webmaster:read`; доступ к счётчику Метрики, его целям и
+callback; аккаунт с `metrika:read` и `webmaster:hostinfo`; доступ к счётчику Метрики, его целям и
 подтверждённому сайту Вебмастера. Проверяющий не передаёт токены разработчикам — он вводит
-секреты в защищённое окружение и проходит OAuth сам.
+реквизиты приложения на странице «Настройки Яндекса» и проходит OAuth сам.
 
 1. Создать superuser, войти и убедиться, что anonymous URL перенаправляет на login.
 2. В Admin создать проект, буквальное и regex-правило бренда, две пересекающиеся URL-группы с
    разными приоритетами и поисковые конфигурации.
 3. Импортировать CSV: проверить preview, понятную ошибку строки, исправление, подтверждение и
    отсутствие дубля при повторе. Повторить отдельной партией XLSX.
-4. Настроить `TOPVISOR_*`, открыть подключение, выбрать соответствующий проект/системы/регионы,
+4. Настроить Topvisor через страницу подключения, выбрать соответствующий проект/системы/регионы,
    синхронизировать месяц и повторить sync. Сверить несколько запросов, частотность, позиции,
    глубину, checksum и отсутствие дублей с кабинетом Topvisor.
 5. Пройти OAuth Яндекса. Проверить callback, scopes, выбор правильного счётчика, цели и явное
