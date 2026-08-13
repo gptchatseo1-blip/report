@@ -82,6 +82,8 @@ def test_responsive_css_keeps_one_month_on_mobile():
     css = Path(staticfiles_storage.path("reports/app.css")).read_text()
     assert "grid-template-columns:repeat(3" in css
     assert ".calendar-month:not(:first-child){display:none}" in css
+    assert ".calendar-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in css
+    assert "@media(max-width:700px){.calendar-pair{grid-template-columns:1fr}" in css
 
 
 def test_javascript_updates_period_during_every_render():
@@ -89,3 +91,32 @@ def test_javascript_updates_period_during_every_render():
     render_body = javascript.split("function render()", 1)[1].split("root.querySelector", 1)[0]
     assert "period.textContent" in render_body
     assert "render();" in javascript
+
+
+def test_calendar_pair_keeps_yandex_first_and_engines_independent(client):
+    user = get_user_model().objects.create_user("calendar-pair")
+    project = Project.objects.create(name="Pair", domain="pair.example")
+    TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="43",
+        selected_configurations=[
+            {"id": "google-main", "search_engine": "google"},
+            {"id": "yandex-main", "search_engine": "yandex"},
+        ],
+    )
+    for engine in ("google", "yandex"):
+        for day in (date(2026, 7, 1), date(2026, 7, 31)):
+            RankingSnapshot.objects.create(
+                project=project,
+                snapshot_date=day,
+                search_engine=engine,
+                topvisor_configuration_id=f"{engine}-main",
+                response_checksum=f"{engine}-{day}",
+            )
+    client.force_login(user)
+    html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
+    pair = html[html.index('<div class="calendar-pair">') : html.index("Параметры отчёта")]
+    assert pair.index('data-engine="yandex"') < pair.index('data-engine="google"')
+    javascript = Path(staticfiles_storage.path("reports/calendar.js")).read_text()
+    assert "document.querySelectorAll('[data-calendar]').forEach(root =>" in javascript
+    assert "root.querySelectorAll('.calendar-source input[type=checkbox]')" in javascript

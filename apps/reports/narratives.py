@@ -27,6 +27,7 @@ METRIC_LABELS = {
     "search_ctr": "CTR",
     "indexed_pages": "Количество проиндексированных страниц",
     "iks": "ИКС",
+    "quality_index": "ИКС",
 }
 
 
@@ -258,7 +259,7 @@ def build_narrative_specs(payload):
             ),
             _metric_block(payload, "ctr", "yandex_webmaster", ("search_ctr",)),
             _metric_block(payload, "indexing", "yandex_webmaster", ("indexed_pages",)),
-            _metric_block(payload, "iks", "yandex_webmaster", ("iks",)),
+            _metric_block(payload, "iks", "yandex_webmaster", ("iks", "quality_index")),
         )
     )
     traffic = (

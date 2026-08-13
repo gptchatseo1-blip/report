@@ -307,6 +307,16 @@ def test_visibility_and_traffic_render_only_precalculated_series(rich_version, s
     assert _number_text(expected_current) in table_values
 
 
+def test_iks_narrative_uses_quality_index_data_instead_of_missing_fallback(rich_version):
+    block = rich_version.narrative_blocks.get(section_code="iks")
+    changes = rich_version.snapshot.payload["calculated"]["sources"]["sources"]["yandex_webmaster"][
+        "normalized_changes"
+    ]["quality_index"]
+    assert block.generated_text != "Данные раздела отсутствуют."
+    assert "ИКС" in block.generated_text
+    assert _number_text(changes["current"]) in block.generated_text
+
+
 def test_download_requires_login_and_generation_get_is_rejected(client, version):
     response = client.get(f"/versions/{version.id}/export/docx/")
     assert response.status_code == 302
@@ -334,6 +344,22 @@ def test_real_pdf_conversion_smoke(rich_version, settings, tmp_path):
         )
         assert len((page.extract_text() or "").strip()) >= 20 or list(page.images)
     texts = [page.extract_text() or "" for page in pages]
+    for heading in (
+        "Трафик",
+        "Источники трафика",
+        "Клики и показы",
+        "CTR",
+        "Индексация",
+        "ИКС",
+    ):
+        section_text = next(text for text in texts if heading in text)
+        for unavailable in (
+            "Данные раздела отсутствуют",
+            "Данные недоступны",
+            "Источник недоступен",
+            "Сведения об источнике недоступны",
+        ):
+            assert unavailable not in section_text
     for heading in ("TOP-11–20", "Все запросы отчётного периода"):
         page_text = next(text for text in texts if heading in text)
         assert "Запрос" in page_text and "Частотность" in page_text

@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.http import QueryDict
 from django.urls import reverse
 
 from apps.metrics.models import MetricPoint, RankingSnapshot, SourceSnapshot
@@ -10,6 +11,11 @@ from apps.reports.forms import ReportCreateForm
 from apps.reports.models import Report
 from apps.reports.services import build_source_facts
 from apps.topvisor.models import TopvisorProjectMapping
+from apps.yandex.models import (
+    YandexConnection,
+    YandexMetrikaProjectMapping,
+    YandexWebmasterProjectMapping,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -91,6 +97,70 @@ def test_selected_metrika_and_webmaster_periods_are_independent():
     ] == [date(2026, 4, 1), date(2026, 5, 1)]
     assert "search_clicks" not in facts[SourceSnapshot.Source.METRIKA]["three_month_series"]
     assert "visits" not in facts[SourceSnapshot.Source.WEBMASTER]["three_month_series"]
+
+
+def test_form_defaults_to_three_report_month_source_periods_and_preserves_bound_selection():
+    user = get_user_model().objects.create_user("source-defaults")
+    project = Project.objects.create(name="Defaults", domain="defaults.example")
+    ranking(project, date(2026, 7, 31), "google")
+    connection = YandexConnection.objects.create(
+        user=user, access_token_encrypted=b"token", active=True
+    )
+    YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    YandexWebmasterProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        host_id="host",
+        host_url="https://defaults.example/",
+    )
+    metrika = [
+        source_snapshot(
+            project, SourceSnapshot.Source.METRIKA, date(2026, month, 1), month, "visits"
+        )
+        for month in (4, 5, 6, 7)
+    ]
+    webmaster = [
+        source_snapshot(
+            project,
+            SourceSnapshot.Source.WEBMASTER,
+            date(2026, month, 1),
+            month,
+            "search_clicks",
+        )
+        for month in (5, 6, 7)
+    ]
+
+    form = ReportCreateForm(project=project)
+    assert form["metrika_snapshots"].value() == [str(row.id) for row in metrika[1:]][::-1]
+    assert form["webmaster_snapshots"].value() == [str(row.id) for row in webmaster][::-1]
+
+    data = QueryDict(mutable=True)
+    data.setlist("metrika_snapshots", [str(metrika[-1].id)])
+    bound = ReportCreateForm(data, project=project)
+    assert bound["metrika_snapshots"].value() == [str(metrika[-1].id)]
+    assert not bound.is_valid()
+    assert "выберите хотя бы один" in bound.errors["webmaster_snapshots"][0]
+
+
+def test_single_source_period_has_no_previous_value_or_zero_change():
+    project = Project.objects.create(name="Single", domain="single.example")
+    snapshot = source_snapshot(
+        project, SourceSnapshot.Source.METRIKA, date(2026, 7, 1), 42, "visits"
+    )
+    change = build_source_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_snapshot_ids={SourceSnapshot.Source.METRIKA: [str(snapshot.id)]},
+    )["sources"][SourceSnapshot.Source.METRIKA]["normalized_changes"]["visits"]
+    assert change.current is not None
+    assert change.previous is None
+    assert change.absolute is None
 
 
 def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocked(client):

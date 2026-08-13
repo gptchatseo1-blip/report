@@ -2,6 +2,7 @@ import io
 import logging
 import urllib.error
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -22,9 +23,49 @@ from apps.topvisor.client import (
     TopvisorTemporaryError,
 )
 from apps.topvisor.models import TopvisorProjectMapping
-from apps.topvisor.services import sync_positions
+from apps.topvisor.services import (
+    VISIBILITY_FORMULA_URL,
+    VISIBILITY_FORMULA_VERSION,
+    calculate_visibility,
+    sync_positions,
+)
 
 pytestmark = pytest.mark.django_db
+
+
+def test_visibility_uses_exact_official_topvisor_weights():
+    rows = [
+        {"position": 1, "frequency": 100},
+        {"position": 2, "frequency": 200},
+        {"position": 10, "frequency": 300},
+        {"position": 11, "frequency": 400},
+    ]
+    # (100*1 + 200*1 + 300*.2 + 400*.1) / 1000 * 100
+    assert calculate_visibility(rows) == Decimal("40.0000")
+
+
+@pytest.mark.parametrize(
+    ("position", "expected"),
+    [
+        (1, "100.0000"),
+        (3, "100.0000"),
+        (4, "85.0000"),
+        (5, "60.0000"),
+        (6, "50.0000"),
+        (7, "50.0000"),
+        (8, "30.0000"),
+        (9, "30.0000"),
+        (10, "20.0000"),
+        (11, "10.0000"),
+        (15, "10.0000"),
+        (16, "5.0000"),
+        (20, "5.0000"),
+        (21, "0.0000"),
+    ],
+)
+def test_visibility_official_weight_range_boundaries(position, expected):
+    assert calculate_visibility([{"position": position, "frequency": 100}]) == Decimal(expected)
+
 
 REAL_SEARCH_CONFIGURATION_RESPONSE = [
     {
@@ -236,7 +277,13 @@ def test_sync_is_idempotent_requires_frequency_and_keeps_depth_per_segment():
         ("yandex", "Россия", 100),
     }
     assert all(
-        item.response_checksum and item.retrieved_at and item.provenance
+        item.response_checksum
+        and item.retrieved_at
+        and item.provenance
+        and item.visibility is not None
+        and item.visibility_raw["source"] == "calculated_from_positions_and_frequency"
+        and item.visibility_raw["formula_version"] == VISIBILITY_FORMULA_VERSION
+        and item.visibility_raw["formula_source"] == VISIBILITY_FORMULA_URL
         for item in RankingSnapshot.objects.all()
     )
     failed = sync_positions(

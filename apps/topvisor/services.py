@@ -16,6 +16,73 @@ from apps.yandex.crypto import CredentialConfigurationError
 from .client import TopvisorClient, TopvisorError, client_for_project
 from .models import TopvisorProjectMapping, TopvisorSyncRun
 
+# Official Topvisor visibility coefficient table. Positions 21 and below have
+# coefficient zero.
+VISIBILITY_FORMULA_VERSION = "topvisor-visibility-official-range-table-2026-08-v2"
+VISIBILITY_FORMULA_URL = "https://topvisor.com/ru/support/rankings/summary/visibility/"
+VISIBILITY_WEIGHTS = {
+    1: Decimal("1"),
+    2: Decimal("1"),
+    3: Decimal("1"),
+    4: Decimal("0.85"),
+    5: Decimal("0.6"),
+    6: Decimal("0.5"),
+    7: Decimal("0.5"),
+    8: Decimal("0.3"),
+    9: Decimal("0.3"),
+    10: Decimal("0.2"),
+    **{position: Decimal("0.1") for position in range(11, 16)},
+    **{position: Decimal("0.05") for position in range(16, 21)},
+}
+
+
+def calculate_visibility(rows):
+    """Calculate Topvisor visibility as weighted frequency share, in percent."""
+    rows = list(rows)
+    try:
+        frequencies = [Decimal(str(row["frequency"])) for row in rows]
+    except (KeyError, TypeError, ValueError):
+        return None
+    denominator = sum(frequencies, Decimal("0"))
+    if not rows or denominator <= 0:
+        return None
+    numerator = sum(
+        (
+            frequency * VISIBILITY_WEIGHTS.get(int(row["position"]), Decimal("0"))
+            if str(row.get("position", "")).isdigit()
+            else Decimal("0")
+        )
+        for row, frequency in zip(rows, frequencies, strict=True)
+    )
+    return (numerator * Decimal("100") / denominator).quantize(Decimal("0.0001"))
+
+
+def visibility_payload(rows, calculated_at):
+    value = calculate_visibility(rows)
+    coefficients = {str(position): str(weight) for position, weight in VISIBILITY_WEIGHTS.items()}
+    if value is None:
+        return {
+            "value": None,
+            "source": "calculated_from_positions_and_frequency",
+            "formula_version": VISIBILITY_FORMULA_VERSION,
+            "formula_source": VISIBILITY_FORMULA_URL,
+            "coefficients": coefficients,
+            "keyword_count": len(rows),
+            "calculated_at": calculated_at.isoformat(),
+            "warning": (
+                "Видимость не рассчитана: отсутствуют запросы или положительная частотность."
+            ),
+        }
+    return {
+        "value": str(value),
+        "source": "calculated_from_positions_and_frequency",
+        "formula_version": VISIBILITY_FORMULA_VERSION,
+        "formula_source": VISIBILITY_FORMULA_URL,
+        "coefficients": coefficients,
+        "keyword_count": len(rows),
+        "calculated_at": calculated_at.isoformat(),
+    }
+
 
 def response_checksum(value) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
@@ -71,6 +138,12 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
     depth = min(provider_depth, 100)
     rows = payload.get("positions", payload.get("rows", []))
     retrieved_at = timezone.now()
+    raw_visibility = payload.get("visibility")
+    if raw_visibility is None:
+        raw_visibility = visibility_payload(rows, retrieved_at)
+    visibility_value = (
+        raw_visibility.get("value") if isinstance(raw_visibility, dict) else raw_visibility
+    )
     defaults = {
         "search_engine": str(
             configuration.get(
@@ -84,10 +157,8 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
         "depth_raw": str(depth_raw),
         "depth_retrieved_at": retrieved_at,
         "depth_source": RankingSnapshot.DepthSource.TOPVISOR_API,
-        "visibility": Decimal(str(payload["visibility"]))
-        if payload.get("visibility") is not None
-        else None,
-        "visibility_raw": payload.get("visibility"),
+        "visibility": Decimal(str(visibility_value)) if visibility_value is not None else None,
+        "visibility_raw": raw_visibility,
         "response_checksum": response_checksum(payload),
         "retrieved_at": retrieved_at,
         "provenance": {
@@ -97,6 +168,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
             "provider_depth": provider_depth,
             "report_depth": depth,
             "retrieved_at": retrieved_at.isoformat(),
+            "visibility": raw_visibility,
         },
     }
     existing = RankingSnapshot.objects.filter(

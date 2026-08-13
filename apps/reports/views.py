@@ -207,7 +207,7 @@ def report_create(request, project_id):
         )
         from apps.metrics.models import SourceSnapshot
 
-        source_rows = SourceSnapshot.objects.filter(id__in=selected_source_ids)
+        source_rows = SourceSnapshot.objects.filter(project=project, id__in=selected_source_ids)
         endpoint = (
             date.fromisoformat(selected_dates[-1])
             if selected_dates
