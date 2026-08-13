@@ -2,7 +2,7 @@
 {% block title %}Отчёты — {{ project.name }}{% endblock %}
 {% block content %}
 <h1>Отчёты проекта «{{ project.name }}»</h1>
-<p><a class="button secondary" href="{% url 'topvisor:connection' project.id %}">Topvisor</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Метрика</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Вебмастер</a></p>
+<p><a class="button secondary" href="{% url 'topvisor:connection' project.id %}">Topvisor</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Метрика и Вебмастер</a></p>
 <section class="card"><h2>Создать отчёт</h2><form method="post" action="{% url 'reports:report-create' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
 <h3>Выберите даты</h3>
 <div class="calendar-pair">{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}</div>

@@ -34,6 +34,44 @@ WEBMASTER_SCOPE = "webmaster:hostinfo"
 OAUTH_SCOPES = (METRIKA_SCOPE, WEBMASTER_SCOPE)
 
 
+def _is_other_domain(project, value):
+    try:
+        return normalize_domain(value) != project.normalized_domain
+    except (ValidationError, TypeError, ValueError):
+        return True
+
+
+def _counter_options(project, counters):
+    options = []
+    for counter in counters:
+        site2 = counter.get("site2") if isinstance(counter.get("site2"), dict) else {}
+        domain = str(site2.get("site") or counter.get("site") or "")
+        name = str(counter.get("name") or domain or f"Счётчик {counter.get('id', '')}")
+        options.append(
+            {
+                "id": str(counter.get("id", "")),
+                "label": f"{name} — {domain}" if domain and domain != name else name,
+                "mismatch": _is_other_domain(project, domain),
+            }
+        )
+    return options
+
+
+def _host_options(project, hosts):
+    options = []
+    for host in hosts:
+        url = str(host.get("unicode_host_url") or host.get("ascii_host_url") or "")
+        options.append(
+            {
+                "id": str(host.get("host_id", "")),
+                "label": url or str(host.get("host_id", "")),
+                "verified": host.get("verified") is True,
+                "mismatch": _is_other_domain(project, url),
+            }
+        )
+    return options
+
+
 def _configured():
     if not settings.CREDENTIAL_ENCRYPTION_KEY:
         return False
@@ -174,9 +212,9 @@ def connection(request, project_id):
             "project": project,
             "mapping": mapping,
             "connection": connection_obj,
-            "counters": counters,
+            "counter_options": _counter_options(project, counters),
             "goals": goals,
-            "hosts": hosts,
+            "host_options": _host_options(project, hosts),
             "webmaster_mapping": webmaster_mapping,
             "webmaster_scope_missing": bool(
                 connection_obj and WEBMASTER_SCOPE not in connection_obj.scopes

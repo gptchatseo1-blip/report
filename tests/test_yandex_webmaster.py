@@ -7,7 +7,7 @@ from django.urls import reverse
 
 from apps.metrics.models import SourceSnapshot
 from apps.projects.models import Project
-from apps.yandex.client import WebmasterClient
+from apps.yandex.client import MetrikaClient, WebmasterClient
 from apps.yandex.crypto import encrypt_token
 from apps.yandex.models import YandexConnection, YandexWebmasterProjectMapping
 from apps.yandex.services import sync_webmaster
@@ -315,6 +315,43 @@ def test_unverified_host_is_visible_but_cannot_be_selected(client, context, monk
     )
     assert "не подтверждён" in response.content.decode()
     assert not YandexWebmasterProjectMapping.objects.exists()
+
+
+def test_connection_uses_one_compact_webmaster_select(client, context, monkeypatch):
+    user, project, _ = context
+    client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
+    monkeypatch.setattr(WebmasterClient, "user", lambda self: {"user_id": 7})
+    monkeypatch.setattr(
+        WebmasterClient,
+        "hosts",
+        lambda self, uid: [
+            {
+                "host_id": "matching",
+                "ascii_host_url": "https://site.example",
+                "verified": True,
+            },
+            {
+                "host_id": "other",
+                "ascii_host_url": "https://other.example",
+                "verified": True,
+            },
+            {
+                "host_id": "unverified",
+                "ascii_host_url": "https://unverified.example",
+                "verified": False,
+            },
+        ],
+    )
+
+    html = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+
+    assert "3. Яндекс.Вебмастер" in html
+    assert html.count(reverse("yandex:select-host", args=[project.id])) == 1
+    assert '<select id="host-id"' in html
+    assert 'value="matching" data-domain-mismatch="false"' in html
+    assert 'value="other" data-domain-mismatch="true"' in html
+    assert 'value="unverified" data-domain-mismatch="true" disabled' in html
 
 
 def test_actual_period_uses_only_received_dates_and_empty_has_reason(context):

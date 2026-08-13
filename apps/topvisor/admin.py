@@ -1,14 +1,13 @@
 from django.contrib import admin
 
-from .models import TopvisorConnection, TopvisorProjectMapping
+from .models import TopvisorCredential, TopvisorProjectMapping
 
 
-@admin.register(TopvisorConnection)
-class TopvisorConnectionAdmin(admin.ModelAdmin):
-    list_display = ["project", "user_id", "key_status", "last_verified_at", "updated_at"]
-    search_fields = ["project__name", "user_id"]
+@admin.register(TopvisorCredential)
+class TopvisorCredentialAdmin(admin.ModelAdmin):
+    list_display = ["user_id", "key_status", "last_verified_at", "updated_at"]
+    search_fields = ["user_id"]
     readonly_fields = [
-        "project",
         "user_id",
         "key_status",
         "last_verified_at",

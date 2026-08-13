@@ -4,6 +4,7 @@ from . import views
 
 app_name = "topvisor"
 urlpatterns = [
+    path("settings/", views.credentials, name="credentials"),
     path("projects/<uuid:project_id>/", views.connection, name="connection"),
     path("projects/<uuid:project_id>/sync/", views.sync, name="sync"),
     path(
@@ -14,5 +15,4 @@ urlpatterns = [
         views.delete_failed_runs,
         name="delete-failed-runs",
     ),
-    path("projects/<uuid:project_id>/delete/", views.delete_connection, name="delete-connection"),
 ]

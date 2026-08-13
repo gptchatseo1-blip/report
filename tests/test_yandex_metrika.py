@@ -380,6 +380,34 @@ def test_admin_and_html_never_render_tokens(client, identity, yandex_settings, m
     assert "refresh_token_encrypted" in YandexConnectionAdmin.exclude
 
 
+def test_connection_uses_one_compact_counter_select_and_no_duplicate_oauth_link(
+    client, identity, yandex_settings, monkeypatch
+):
+    user, project = identity
+    make_connection(user)
+    client.force_login(user)
+    monkeypatch.setattr(
+        MetrikaClient,
+        "counters",
+        lambda *_: iter(
+            [
+                {"id": 42, "name": "Site", "site": "site.example"},
+                {"id": 43, "name": "Other", "site": "other.example"},
+            ]
+        ),
+    )
+
+    html = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+
+    assert "2. Счётчик Яндекс.Метрика" in html
+    assert "Настройки OAuth" not in html
+    assert html.count(reverse("yandex:select-counter", args=[project.id])) == 1
+    assert '<select id="counter-id"' in html
+    assert 'value="42" data-domain-mismatch="false"' in html
+    assert 'value="43" data-domain-mismatch="true"' in html
+    assert "Счётчик относится к другому домену" in html
+
+
 def test_version_docx_xlsx_exports_never_call_live_metrika(
     identity, yandex_settings, settings, tmp_path, monkeypatch
 ):

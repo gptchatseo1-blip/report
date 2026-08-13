@@ -62,6 +62,8 @@ def test_collectstatic_builds_manifest_from_empty_root(tmp_path, settings):
     assert '"reports/app.css": "reports/app.' in manifest
     assert '"reports/calendar.js": "reports/calendar.' in manifest
     assert '"reports/favicon.png": "reports/favicon.' in manifest
+    assert '"reports/source-picker.css": "reports/source-picker.' in manifest
+    assert '"reports/source-picker.js": "reports/source-picker.' in manifest
 
 
 def test_server_html_contains_three_months_dates_and_disabled_days(client):
@@ -74,6 +76,8 @@ def test_server_html_contains_three_months_dates_and_disabled_days(client):
     assert "Добавить релевантные URL в предпросмотр и файлы отчёта." in html
     checkbox = re.search(r'<input[^>]*id="id_show_urls"[^>]*>', html).group()
     assert 'type="checkbox"' in checkbox and "checked" not in checkbox
+    assert "Яндекс.Метрика и Вебмастер" in html
+    assert html.count('href="/yandex/projects/') == 1
     calendars_end = html.rindex("</section>", 0, html.index("Параметры отчёта"))
     options = html.index("Параметры отчёта")
     metrika = html.index("Яндекс.Метрика", options)
@@ -93,6 +97,13 @@ def test_javascript_updates_period_during_every_render():
     render_body = javascript.split("function render()", 1)[1].split("root.querySelector", 1)[0]
     assert "period.textContent" in render_body
     assert "render();" in javascript
+
+
+def test_source_picker_only_requires_confirmation_for_another_domain():
+    javascript = Path(staticfiles_storage.path("reports/source-picker.js")).read_text()
+    assert 'option.dataset.domainMismatch === "true"' in javascript
+    assert "confirmation.hidden = !mismatch" in javascript
+    assert "checkbox.required = mismatch" in javascript
 
 
 def test_calendar_pair_keeps_yandex_first_and_engines_independent(client):

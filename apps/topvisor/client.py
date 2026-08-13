@@ -1,9 +1,4 @@
-"""Small read-only Topvisor API v2 client.
-
-Credentials are supplied explicitly from a project-scoped encrypted connection. Global
-settings are used only as a temporary legacy fallback for projects without a connection.
-Credentials and provider response bodies are never included in safe exceptions.
-"""
+"""Small read-only Topvisor API v2 client with service-wide encrypted credentials."""
 
 import json
 import random
@@ -243,12 +238,12 @@ class TopvisorClient:
 
 
 def credentials_for_project(project):
-    """Resolve only this project's credentials, with an explicit legacy fallback."""
-    from .models import TopvisorConnection
+    """Resolve the one Topvisor account shared by every internal project."""
+    from .models import TopvisorCredential
 
-    connection = TopvisorConnection.objects.filter(project=project).first()
-    if connection:
-        return TopvisorCredentials(connection.user_id, connection.get_api_key()), False
+    credential = TopvisorCredential.objects.filter(pk=1).first()
+    if credential:
+        return TopvisorCredentials(credential.user_id, credential.get_api_key()), False
     credentials = TopvisorCredentials(settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY)
     return credentials, bool(credentials.user_id and credentials.api_key)
 

@@ -55,6 +55,7 @@ def test_staff_stores_one_encrypted_credential_without_rendering_secret(client, 
     assert "••••cret" in body
     project_list = client.get(reverse("reports:projects")).content.decode()
     assert reverse("yandex:oauth-credentials") in project_list
+    assert reverse("topvisor:credentials") in project_list
     assert reverse("topvisor:connection", args=[project.id]) in project_list
     assert reverse("yandex:connection", args=[project.id]) in project_list
 
