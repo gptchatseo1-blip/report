@@ -1,6 +1,8 @@
+import logging
 import secrets
-from datetime import date
+from datetime import date, timedelta
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError
@@ -8,6 +10,7 @@ from django.db.models import Count, Max, OuterRef, Subquery
 from django.http import FileResponse, Http404, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from apps.projects.models import Project
 
@@ -56,6 +59,7 @@ METRIC_LABELS = {
     "indexed_pages": "Проиндексированные страницы",
     "iks": "ИКС",
 }
+logger = logging.getLogger(__name__)
 
 
 @login_required
@@ -91,10 +95,15 @@ def report_list(request, project_id):
     token = secrets.token_urlsafe(24)
     request.session[f"report_create_token:{project.id}"] = token
     form = ReportCreateForm(project=project, initial={"submission_token": token})
+    calendar_fields = [
+        (engine, label, form[f"{engine}_dates"])
+        for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
+        if engine in form.connected_engines
+    ]
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": form},
+        {"project": project, "reports": reports, "form": form, "calendar_fields": calendar_fields},
     )
 
 
@@ -110,7 +119,10 @@ def report_create(request, project_id):
         if submitted_token and submitted_token != request.session.pop(token_key, None):
             messages.warning(request, "Запрос уже обработан. Новая версия не создана.")
             return redirect("reports:report-list", project_id=project.id)
-        selected_dates = form.cleaned_data["topvisor_dates"]
+        selected_by_engine = {
+            engine: form.cleaned_data[f"{engine}_dates"] for engine in ("yandex", "google")
+        }
+        selected_dates = sorted({day for dates in selected_by_engine.values() for day in dates})
         selected_source_ids = (
             form.cleaned_data["metrika_snapshots"] + form.cleaned_data["webmaster_snapshots"]
         )
@@ -128,7 +140,8 @@ def report_create(request, project_id):
             report=report,
             created_by=request.user,
             selection={
-                "topvisor_dates": selected_dates,
+                "topvisor": selected_by_engine,
+                "display_options": {"show_urls": form.cleaned_data["show_urls"]},
                 "yandex_metrika": form.cleaned_data["metrika_snapshots"],
                 "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
             },
@@ -144,10 +157,15 @@ def report_create(request, project_id):
     reports = project.reports.annotate(
         version_count=Count("versions"), latest_version_at=Max("versions__created_at")
     )
+    calendar_fields = [
+        (engine, label, form[f"{engine}_dates"])
+        for engine, label in (("yandex", "Яндекс"), ("google", "Google"))
+        if engine in form.connected_engines
+    ]
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": form},
+        {"project": project, "reports": reports, "form": form, "calendar_fields": calendar_fields},
         status=400,
     )
 
@@ -263,6 +281,7 @@ def _preview_context(version, *, form_overrides=None):
     issues = list(version.validation_issues.all())
     sections = []
     payload = snapshot.payload
+    show_urls = payload.get("display_options", {}).get("show_urls", True)
     form_overrides = form_overrides or {}
     for code in SECTION_ORDER:
         block = blocks.get(code)
@@ -282,6 +301,7 @@ def _preview_context(version, *, form_overrides=None):
                 "traffic_rows": _traffic_rows(payload) if code == "traffic_sources" else [],
                 "work_rows": payload.get("completed_work", []) if code == "completed_work" else [],
                 "periods": payload.get("periods", {}),
+                "show_urls": show_urls,
             }
         )
     provenance = []
@@ -323,6 +343,7 @@ def _preview_context(version, *, form_overrides=None):
         "warnings": warnings,
         "can_publish": not errors,
         "provenance": provenance,
+        "show_urls": show_urls,
     }
 
 
@@ -336,6 +357,13 @@ def version_detail(request, version_id):
     )
     context = _preview_context(version)
     context["project"] = version.report.project
+    stale_before = timezone.now() - timedelta(seconds=settings.REPORT_ARTIFACT_STALE_SECONDS)
+    version.generated_artifacts.filter(
+        status=GeneratedArtifact.Status.GENERATING, created_at__lt=stale_before
+    ).update(
+        status=GeneratedArtifact.Status.FAILED,
+        generation_log="Формирование было прервано и не завершилось вовремя.",
+    )
     context["artifacts"] = version.generated_artifacts.all()
     return render(request, "reports/version_detail.html", context)
 
@@ -357,7 +385,8 @@ def artifact_generate(request, version_id, artifact_type):
         messages.success(request, f"Файл {artifact_type.upper()} сформирован.")
     except ExportBlocked as exc:
         messages.error(request, str(exc))
-    except Exception:
+    except Exception as exc:
+        logger.exception("Artifact generation failed: %s", type(exc).__name__)
         messages.error(request, "Не удалось сформировать файл; безопасный журнал сохранён.")
     return redirect("reports:version-detail", version_id=version.id)
 
@@ -380,6 +409,28 @@ def artifact_download(request, artifact_id):
         filename=artifact.filename,
         content_type=artifact.mime_type,
     )
+
+
+@login_required
+@require_POST
+def artifact_delete(request, artifact_id):
+    artifact = get_object_or_404(
+        GeneratedArtifact.objects.select_related("report_version__report__project"), pk=artifact_id
+    )
+    version_id = artifact.report_version_id
+    stale = (
+        artifact.status == GeneratedArtifact.Status.GENERATING
+        and artifact.created_at
+        < timezone.now() - timedelta(seconds=settings.REPORT_ARTIFACT_STALE_SECONDS)
+    )
+    if artifact.status == GeneratedArtifact.Status.GENERATING and not stale:
+        messages.error(request, "Нельзя удалить файл, пока он формируется.")
+        return redirect("reports:version-detail", version_id=version_id)
+    if artifact.file:
+        artifact.file.delete(save=False)
+    artifact.delete()
+    messages.success(request, "Созданный файл удалён.")
+    return redirect("reports:version-detail", version_id=version_id)
 
 
 def _updated_preview(request, version):

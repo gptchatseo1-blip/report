@@ -44,8 +44,10 @@ def build_position_facts(*, project, report_month, selected_dates=None):
     """Build facts independently for every search-engine/region pair; device is absent by design."""
     periods = calculate_periods(report_month)
     snapshot_filter = {"project": project}
+    selected_by_engine = selected_dates if isinstance(selected_dates, dict) else None
+    flat_dates = {day for dates in (selected_by_engine or {}).values() for day in dates}
     if selected_dates:
-        snapshot_filter["snapshot_date__in"] = selected_dates
+        snapshot_filter["snapshot_date__in"] = flat_dates if selected_by_engine else selected_dates
     else:
         snapshot_filter["snapshot_date__range"] = (periods.three_months.start, periods.report.end)
     snapshots = (
@@ -55,22 +57,31 @@ def build_position_facts(*, project, report_month, selected_dates=None):
     )
     grouped = defaultdict(dict)
     for snapshot in snapshots:
+        if selected_by_engine and snapshot.snapshot_date not in selected_by_engine.get(
+            snapshot.search_engine, ()
+        ):
+            continue
         month = snapshot.snapshot_date if selected_dates else snapshot.snapshot_date.replace(day=1)
         # The latest snapshot inside a calendar month wins deterministically.
-        existing = grouped[(snapshot.search_engine, snapshot.region)].get(month)
+        segment_key = (snapshot.search_engine, snapshot.region, snapshot.topvisor_configuration_id)
+        existing = grouped[segment_key].get(month)
         snapshot_key = (snapshot.snapshot_date, snapshot.created_at, str(snapshot.id))
         existing_key = (
             (existing.snapshot_date, existing.created_at, str(existing.id)) if existing else None
         )
         if existing_key is None or snapshot_key > existing_key:
-            grouped[(snapshot.search_engine, snapshot.region)][month] = snapshot
-    months = (
-        tuple(selected_dates)
-        if selected_dates
-        else tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
-    )
+            grouped[segment_key][month] = snapshot
     facts = []
-    for (engine, region), values in sorted(grouped.items()):
+    for (engine, region, configuration_id), values in sorted(grouped.items()):
+        months = (
+            tuple(selected_by_engine.get(engine, ()))
+            if selected_by_engine
+            else (
+                tuple(selected_dates)
+                if selected_dates
+                else tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
+            )
+        )
         report_snapshot = values.get(months[-1])
         previous_snapshot = values.get(months[0] if selected_dates else periods.previous.start)
         report_rows = tuple(report_snapshot.positions.all()) if report_snapshot else ()
@@ -116,6 +127,7 @@ def build_position_facts(*, project, report_month, selected_dates=None):
             {
                 "search_engine": engine,
                 "region": region,
+                "configuration_id": configuration_id,
                 "distribution": distribution,
                 "visibility_change": calculate_change(
                     report_snapshot.visibility if report_snapshot else None,
@@ -320,8 +332,13 @@ def snapshot_checksum(payload):
 
 def _ranking_source_data(project, periods, selected_dates=None):
     filters = {"project": project}
+    selected_by_engine = selected_dates if isinstance(selected_dates, dict) else None
     if selected_dates:
-        filters["snapshot_date__in"] = selected_dates
+        filters["snapshot_date__in"] = (
+            {d for dates in selected_by_engine.values() for d in dates}
+            if selected_by_engine
+            else selected_dates
+        )
     else:
         filters["snapshot_date__range"] = (periods.three_months.start, periods.report.end)
     snapshots = (
@@ -331,6 +348,10 @@ def _ranking_source_data(project, periods, selected_dates=None):
     )
     result = []
     for item in snapshots:
+        if selected_by_engine and item.snapshot_date not in selected_by_engine.get(
+            item.search_engine, ()
+        ):
+            continue
         result.append(
             {
                 "id": str(item.id),
@@ -416,9 +437,17 @@ def build_report_snapshot(*, report, selection=None):
     )
     explicit_selection = selection is not None
     selection = selection or {}
-    selected_dates = tuple(
-        date.fromisoformat(value) for value in selection.get("topvisor_dates", ())
-    )
+    raw_topvisor = selection.get("topvisor")
+    if raw_topvisor is None:
+        legacy = selection.get("topvisor_dates", ())
+        selected_dates = tuple(date.fromisoformat(value) for value in legacy)
+        selected_by_engine = None
+    else:
+        selected_by_engine = {
+            engine: tuple(date.fromisoformat(value) for value in raw_topvisor.get(engine, ()))
+            for engine in ("yandex", "google")
+        }
+        selected_dates = selected_by_engine
     selected_source_ids = tuple(selection.get("yandex_metrika", ())) + tuple(
         selection.get("yandex_webmaster", ())
     )
@@ -457,13 +486,29 @@ def build_report_snapshot(*, report, selection=None):
             "provenance": {"method": "project_database", "updated_at": project.updated_at},
         },
         "periods": periods,
+        "display_options": selection.get("display_options", {"show_urls": False})
+        if explicit_selection
+        else {"show_urls": True},
         "source_selection": {
-            "topvisor": {
-                "selected_dates": selected_dates,
-                "comparison_start": selected_dates[0] if selected_dates else None,
-                "comparison_end": selected_dates[-1] if selected_dates else None,
-                "intermediate_dates": selected_dates[1:-1],
-            },
+            "topvisor": (
+                {
+                    engine: {
+                        "selected_dates": dates,
+                        "comparison_start": dates[0] if dates else None,
+                        "comparison_end": dates[-1] if dates else None,
+                        "intermediate_dates": dates[1:-1],
+                        "snapshots": [],
+                    }
+                    for engine, dates in selected_by_engine.items()
+                }
+                if selected_by_engine is not None
+                else {
+                    "selected_dates": selected_dates,
+                    "comparison_start": selected_dates[0] if selected_dates else None,
+                    "comparison_end": selected_dates[-1] if selected_dates else None,
+                    "intermediate_dates": selected_dates[1:-1],
+                }
+            ),
             "yandex_metrika": list(selection.get("yandex_metrika", ())),
             "yandex_webmaster": list(selection.get("yandex_webmaster", ())),
         },
@@ -507,6 +552,23 @@ def build_report_snapshot(*, report, selection=None):
             for item in works
         ],
     }
+    if selected_by_engine is not None:
+        for engine in selected_by_engine:
+            payload["source_selection"]["topvisor"][engine]["snapshots"] = [
+                {
+                    "identifier": source["id"],
+                    "checksum": source["provenance"].get("response_checksum"),
+                    "date": source["date"],
+                    "search_engine": source["search_engine"],
+                    "region": source["region"],
+                    "configuration": source["configuration_id"],
+                    "actual_depth": source["ranking_depth"],
+                    "retrieved_at": source["provenance"].get("retrieved_at"),
+                    "provenance": {"method": source["provenance"].get("method")},
+                }
+                for source in payload["ranking_sources"]
+                if source["search_engine"] == engine
+            ]
     return _json_value(payload)
 
 

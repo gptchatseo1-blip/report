@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import matplotlib
+from django.conf import settings
 from django.core.files.base import ContentFile
 from django.utils import timezone
 from docx import Document
@@ -303,20 +304,19 @@ def _add_provenance(doc, payload, code, segment=None):
 
 
 def _current_position_source(payload, segment):
-    report_month = str(payload.get("periods", {}).get("report", {}).get("start"))[:7]
     candidates = [
         s
         for s in payload.get("ranking_sources", [])
         if s.get("search_engine") == segment.get("search_engine")
         and s.get("region") == segment.get("region")
-        and str(s.get("date"))[:7] == report_month
+        and s.get("configuration_id", "") == segment.get("configuration_id", "")
     ]
     return max(
         candidates, key=lambda item: (item.get("date") or "", item.get("id") or ""), default=None
     )
 
 
-def _position_rows(source, start=None, end=None):
+def _position_rows(source, start=None, end=None, *, show_urls=True):
     if not source:
         return []
     rows = []
@@ -327,15 +327,14 @@ def _position_rows(source, start=None, end=None):
             position = None
         if start is not None and (position is None or position < start or position > end):
             continue
-        rows.append(
-            (
-                item.get("query"),
-                item.get("frequency"),
-                position,
-                item.get("group"),
-                item.get("target_url"),
-            )
-        )
+        values = [
+            item.get("query"),
+            item.get("frequency"),
+            position,
+            item.get("group"),
+            item.get("target_url"),
+        ]
+        rows.append(tuple(values if show_urls else values[:-1]))
     return rows
 
 
@@ -409,10 +408,11 @@ def _render_distribution(doc, payload, segments, narrative):
 
 
 def _render_top(doc, payload, segments, narrative, start, end, code):
+    show_urls = payload.get("display_options", {}).get("show_urls", True)
     any_segment = False
     for segment in segments:
         source = _current_position_source(payload, segment)
-        rows = _position_rows(source, start, end)
+        rows = _position_rows(source, start, end, show_urls=show_urls)
         if (
             code == "top_11_20"
             and not rows
@@ -457,11 +457,13 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
                 kpi += f" · TOP-30: {_number(distribution.get('top_30'))}"
             doc.add_paragraph(kpi, style="KPI")
         if rows:
+            headers = (
+                ("Запрос", "Частотность", "Позиция", "Группа", "Релевантный URL")
+                if show_urls
+                else ("Запрос", "Частотность", "Позиция", "Группа")
+            )
             _table(
-                doc,
-                ("Запрос", "Частотность", "Позиция", "Группа", "Релевантный URL"),
-                rows,
-                [5.0, 2.3, 2.0, 3.0, 4.0],
+                doc, headers, rows, [5.0, 2.3, 2.0, 3.0, 4.0] if show_urls else [7.0, 2.5, 2.5, 4.0]
             )
         else:
             doc.add_paragraph("Запросы в диапазоне отсутствуют.", style="Data Missing")
@@ -471,6 +473,7 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
 
 
 def _render_position_dynamics(doc, payload, segments, narrative):
+    show_urls = payload.get("display_options", {}).get("show_urls", True)
     if not segments:
         doc.add_paragraph("Данные недоступны.", style="Data Missing")
     for segment in segments:
@@ -534,15 +537,20 @@ def _render_position_dynamics(doc, payload, segments, narrative):
             history_rows = [row[:-1] for row in history_rows]
         _table(doc, headers, history_rows, widths)
         source = _current_position_source(payload, segment)
-        all_rows = _position_rows(source)
+        all_rows = _position_rows(source, show_urls=show_urls)
         _start_landscape(doc)
         doc.add_heading("Все запросы отчётного периода", level=3)
         if all_rows:
+            headers = (
+                ("Запрос", "Частотность", "Позиция", "Группа", "Релевантный URL")
+                if show_urls
+                else ("Запрос", "Частотность", "Позиция", "Группа")
+            )
             _table(
                 doc,
-                ("Запрос", "Частотность", "Позиция", "Группа", "Релевантный URL"),
+                headers,
                 all_rows,
-                [7.0, 2.7, 2.2, 5.0, 9.0],
+                [7.0, 2.7, 2.2, 5.0, 9.0] if show_urls else [11.0, 3.5, 3.0, 8.4],
             )
         else:
             doc.add_paragraph("Данные недоступны.", style="Data Missing")
@@ -688,6 +696,7 @@ def _render_traffic_sources(doc, payload, narrative):
 
 
 def _render_work(doc, payload, narrative):
+    show_urls = payload.get("display_options", {}).get("show_urls", True)
     rows = [
         (
             w.get("date"),
@@ -703,23 +712,24 @@ def _render_work(doc, payload, narrative):
         for w in payload.get("completed_work", [])
     ]
     if rows:
+        if not show_urls:
+            rows = [row[:4] + row[5:8] for row in rows]
         doc.add_heading("Таблица выполненных работ", level=3)
-        _table(
-            doc,
-            (
-                "Дата",
-                "Категория",
-                "Название",
-                "Статус",
-                "Страница или материал",
-                "Объём",
-                "Ответственный",
-                "Комментарий",
-                "Результат",
-            ),
-            rows,
-            [2.2, 3.0, 4.5, 2.5, 4.2, 2.0, 3.2, 4.2, 4.2],
-        )
+        headers = [
+            "Дата",
+            "Категория",
+            "Название",
+            "Статус",
+            "Объём",
+            "Ответственный",
+            "Комментарий",
+        ]
+        widths = [2.2, 3.0, 4.5, 2.5, 2.0, 3.2, 4.2]
+        if show_urls:
+            headers.insert(4, "Страница или материал")
+            headers.append("Результат")
+            widths = [2.2, 3.0, 4.5, 2.5, 4.2, 2.0, 3.2, 4.2, 4.2]
+        _table(doc, headers, rows, widths)
     else:
         doc.add_paragraph("Выполненные работы отсутствуют.", style="Data Missing")
     doc.add_paragraph(_clean(narrative))
@@ -831,6 +841,7 @@ def _xlsx_value(value):
 
 def _xlsx(snapshot, draft):
     payload = snapshot.payload
+    show_urls = payload.get("display_options", {}).get("show_urls", True)
     workbook = Workbook()
     metadata = workbook.active
     metadata.title = "Метаданные"
@@ -853,44 +864,41 @@ def _xlsx(snapshot, draft):
     ):
         metadata.append(tuple(_xlsx_value(value) for value in row))
     positions = workbook.create_sheet("Позиции")
-    positions.append(
-        (
-            "Поисковая система",
-            "Регион",
-            "Дата",
-            "Запрос",
-            "Частотность",
-            "Позиция",
-            "Статус",
-            "Группа",
-            "Релевантный URL",
-            "Фактическая глубина",
-            "Provenance",
-        )
-    )
+    position_headers = [
+        "Поисковая система",
+        "Регион",
+        "Дата",
+        "Запрос",
+        "Частотность",
+        "Позиция",
+        "Статус",
+        "Группа",
+        "Фактическая глубина",
+        "Provenance",
+    ]
+    if show_urls:
+        position_headers.insert(8, "Релевантный URL")
+    positions.append(position_headers)
     for source in payload.get("ranking_sources", []):
         provenance = (source.get("provenance") or {}).get("method") or (
             source.get("provenance") or {}
         ).get("import_batch_id")
         for row in source.get("positions", []):
-            positions.append(
-                tuple(
-                    _xlsx_value(value)
-                    for value in (
-                        source.get("search_engine"),
-                        source.get("region"),
-                        date.fromisoformat(source["date"]),
-                        row.get("query"),
-                        row.get("frequency"),
-                        row.get("position"),
-                        row.get("status"),
-                        row.get("group"),
-                        row.get("target_url"),
-                        source.get("ranking_depth"),
-                        provenance,
-                    )
-                )
-            )
+            values = [
+                source.get("search_engine"),
+                source.get("region"),
+                date.fromisoformat(source["date"]),
+                row.get("query"),
+                row.get("frequency"),
+                row.get("position"),
+                row.get("status"),
+                row.get("group"),
+                source.get("ranking_depth"),
+                provenance,
+            ]
+            if show_urls:
+                values.insert(8, row.get("target_url"))
+            positions.append(tuple(_xlsx_value(value) for value in values))
     history = workbook.create_sheet("История")
     history.append(("Система", "Регион", "Месяц", "Видимость", "Глубина", "Распределение"))
     for segment in payload.get("calculated", {}).get("positions", {}).get("segments", []):
@@ -1007,7 +1015,7 @@ def _pdf(docx_bytes):
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=settings.REPORT_PDF_TIMEOUT_SECONDS,
             check=False,
         )
         pdf = root / "report.pdf"
@@ -1072,6 +1080,6 @@ def generate_artifact(*, version, artifact_type, is_draft=False, created_by=None
         return artifact
     except Exception as exc:
         artifact.status = GeneratedArtifact.Status.FAILED
-        artifact.generation_log = _clean(str(exc))[:2000]
+        artifact.generation_log = "Экспорт не завершён (" + type(exc).__name__ + ")."
         artifact.save(update_fields=["status", "generation_log"])
         raise

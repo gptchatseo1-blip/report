@@ -53,9 +53,12 @@ def test_report_form_offers_only_dates_complete_for_active_configurations():
     ranking(project, date(2026, 7, 1), "yandex")
     ranking(project, date(2026, 7, 2), "yandex")
     ranking(project, date(2026, 7, 2), "google")
-    assert list(ReportCreateForm(project=project).fields["topvisor_dates"].choices) == [
-        ("2026-07-02", "02.07.2026")
+    form = ReportCreateForm(project=project)
+    assert list(form.fields["yandex_dates"].choices) == [
+        ("2026-07-02", "02.07.2026"),
+        ("2026-07-01", "01.07.2026"),
     ]
+    assert list(form.fields["google_dates"].choices) == [("2026-07-02", "02.07.2026")]
 
 
 def test_selected_metrika_and_webmaster_periods_are_independent():
@@ -104,7 +107,7 @@ def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocke
     list_url = reverse("reports:report-list", args=[project.id])
     create_url = reverse("reports:report-create", args=[project.id])
     token1 = client.get(list_url).context["form"].initial["submission_token"]
-    first_data = {"submission_token": token1, "topvisor_dates": ["2026-07-01", "2026-07-15"]}
+    first_data = {"submission_token": token1, "google_dates": ["2026-07-01", "2026-07-15"]}
     client.post(create_url, first_data)
     report = Report.objects.get()
     first_payload = report.versions.get(number=1).snapshot.payload
@@ -112,11 +115,11 @@ def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocke
     assert report.versions.count() == 1
     token2 = client.get(list_url).context["form"].initial["submission_token"]
     client.post(
-        create_url, {"submission_token": token2, "topvisor_dates": ["2026-07-15", "2026-07-31"]}
+        create_url, {"submission_token": token2, "google_dates": ["2026-07-15", "2026-07-31"]}
     )
     report.refresh_from_db()
     assert report.versions.count() == 2
     assert report.versions.get(number=1).snapshot.payload == first_payload
-    assert report.versions.get(number=2).snapshot.payload["source_selection"]["topvisor"][
+    assert report.versions.get(number=2).snapshot.payload["source_selection"]["topvisor"]["google"][
         "selected_dates"
     ] == ["2026-07-15", "2026-07-31"]
