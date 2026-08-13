@@ -81,6 +81,7 @@ def test_csv_preview_and_confirmation_create_normalized_positions(staff_client, 
     assert ranked.position_status == KeywordPosition.Status.RANKED
     assert ranked.normalized_target_url == "https://example.com/catalog/"
     beyond = KeywordPosition.objects.get(normalized_query="доставка")
+    assert beyond.frequency == 1
     assert beyond.position_status == KeywordPosition.Status.BEYOND_100
     assert beyond.normalized_target_url == "/delivery/?from=seo"
 
@@ -151,6 +152,31 @@ def test_xlsx_preview_is_supported(staff_client, project):
     assert batch.valid_rows == 1
     assert batch.error_rows == 0
     assert batch.preview_payload[0]["frequency"] == 45
+
+
+@pytest.mark.parametrize("filename", ["positions.csv", "positions.xlsx"])
+def test_zero_frequency_is_normalized_to_one_for_csv_and_xlsx(filename):
+    if filename.endswith(".csv"):
+        preview = parse_position_file(filename, "Запрос;Позиция;Частотность\nSEO;3;0\n".encode())
+    else:
+        workbook = Workbook()
+        workbook.active.append(["Запрос", "Позиция", "Частотность"])
+        workbook.active.append(["SEO", 3, 0])
+        data = BytesIO()
+        workbook.save(data)
+        preview = parse_position_file(filename, data.getvalue())
+    assert preview.errors == []
+    assert preview.valid_rows[0]["frequency"] == 1
+
+
+@pytest.mark.parametrize("frequency", ["", "-1", "invalid"])
+def test_invalid_frequency_still_blocks_file_import(frequency):
+    preview = parse_position_file(
+        "positions.csv",
+        f"Запрос;Позиция;Частотность\nSEO;3;{frequency}\n".encode(),
+    )
+    assert preview.valid_rows == []
+    assert preview.errors[0].code == "invalid_frequency"
 
 
 def test_more_than_3000_rows_is_supported():

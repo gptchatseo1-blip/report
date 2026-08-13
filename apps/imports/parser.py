@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from openpyxl import load_workbook
 
 from apps.metrics.models import KeywordPosition
+from apps.metrics.normalization import normalize_frequency
 
 MAX_HEADER_SCAN_ROWS = 20
 MAX_XLSX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
@@ -376,22 +377,12 @@ def _parse_position(value: str):
 
 
 def _parse_frequency(value):
-    raw = _string_value(value).strip().replace(" ", "").replace("\u00a0", "")
-    if not raw:
-        raise ValueError("Частотность обязательна для каждой строки.")
-    raw = raw.replace(",", ".")
     try:
-        numeric = float(raw)
+        return normalize_frequency(value)
     except ValueError as exc:
+        if not _string_value(value).strip():
+            raise ValueError("Частотность обязательна для каждой строки.") from exc
         raise ValueError("Частотность должна быть целым неотрицательным числом.") from exc
-    if (
-        not math.isfinite(numeric)
-        or not numeric.is_integer()
-        or numeric < 0
-        or numeric > 2_147_483_647
-    ):
-        raise ValueError("Частотность должна быть целым неотрицательным числом.")
-    return int(numeric)
 
 
 def _normalize_header(value):

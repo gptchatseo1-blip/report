@@ -1,5 +1,3 @@
-from datetime import date
-
 from django import forms
 
 from .services import configuration_id, configuration_segment
@@ -10,10 +8,6 @@ def configuration_label(item):
     region = item.get("region_name", item.get("region", "без региона"))
     depth = item.get("normalized_depth", item.get("depth", item.get("check_depth", 100)))
     return f"{searcher} — {region} (TOP-{depth})"
-
-
-class MonthInput(forms.DateInput):
-    input_type = "month"
 
 
 class TopvisorCredentialsForm(forms.Form):
@@ -72,8 +66,4 @@ class TopvisorProjectForm(forms.Form):
 
 
 class TopvisorSyncForm(forms.Form):
-    month = forms.DateField(label="Отчётный месяц", input_formats=["%Y-%m"], widget=MonthInput())
-
-    def clean_month(self):
-        value = self.cleaned_data["month"]
-        return date(value.year, value.month, 1)
+    """Confirmation-only form: report dates never belong to source settings."""

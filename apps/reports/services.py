@@ -40,19 +40,22 @@ DAILY_NORMALIZED_CODES = {
 }
 
 
-def build_position_facts(*, project, report_month):
+def build_position_facts(*, project, report_month, selected_dates=None):
     """Build facts independently for every search-engine/region pair; device is absent by design."""
     periods = calculate_periods(report_month)
+    snapshot_filter = {"project": project}
+    if selected_dates:
+        snapshot_filter["snapshot_date__in"] = selected_dates
+    else:
+        snapshot_filter["snapshot_date__range"] = (periods.three_months.start, periods.report.end)
     snapshots = (
-        RankingSnapshot.objects.filter(
-            project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
-        )
+        RankingSnapshot.objects.filter(**snapshot_filter)
         .prefetch_related("positions")
         .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
     )
     grouped = defaultdict(dict)
     for snapshot in snapshots:
-        month = snapshot.snapshot_date.replace(day=1)
+        month = snapshot.snapshot_date if selected_dates else snapshot.snapshot_date.replace(day=1)
         # The latest snapshot inside a calendar month wins deterministically.
         existing = grouped[(snapshot.search_engine, snapshot.region)].get(month)
         snapshot_key = (snapshot.snapshot_date, snapshot.created_at, str(snapshot.id))
@@ -61,11 +64,15 @@ def build_position_facts(*, project, report_month):
         )
         if existing_key is None or snapshot_key > existing_key:
             grouped[(snapshot.search_engine, snapshot.region)][month] = snapshot
-    months = tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
+    months = (
+        tuple(selected_dates)
+        if selected_dates
+        else tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
+    )
     facts = []
     for (engine, region), values in sorted(grouped.items()):
-        report_snapshot = values.get(periods.report.start)
-        previous_snapshot = values.get(periods.previous.start)
+        report_snapshot = values.get(months[-1])
+        previous_snapshot = values.get(months[0] if selected_dates else periods.previous.start)
         report_rows = tuple(report_snapshot.positions.all()) if report_snapshot else ()
         previous_rows = tuple(previous_snapshot.positions.all()) if previous_snapshot else ()
         comparison_depth = (
@@ -174,58 +181,73 @@ def build_position_facts(*, project, report_month):
     return {"formula_version": FORMULA_VERSION, "periods": periods, "segments": facts}
 
 
-def build_source_facts(*, project, report_month):
+def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
+    """Calculate each source exclusively from its independently selected snapshots."""
     periods = calculate_periods(report_month)
-    snapshots = SourceSnapshot.objects.filter(
-        project=project,
-        period_start__range=(periods.three_months.start, periods.report.start),
-    ).prefetch_related("metrics")
-    indexed = {(item.source, item.period_start): item for item in snapshots}
-    months = tuple(shift_month(periods.report.start, offset) for offset in (-2, -1, 0))
+    selected_snapshot_ids = selected_snapshot_ids or {}
     result = {}
     for source in (SourceSnapshot.Source.METRIKA, SourceSnapshot.Source.WEBMASTER):
-        monthly_by_start = {}
-        for month in months:
-            snapshot = indexed.get((source, month))
-            monthly_by_start[month] = (
-                {point.metric_code: point for point in snapshot.metrics.all()} if snapshot else {}
+        ids = selected_snapshot_ids.get(source)
+        if ids is None:  # Backward compatibility for old/programmatic snapshots only.
+            rows = SourceSnapshot.objects.filter(
+                project=project,
+                source=source,
+                period_start__range=(periods.three_months.start, periods.report.start),
             )
-        monthly = {
-            "previous": monthly_by_start[periods.previous.start],
-            "report": monthly_by_start[periods.report.start],
-        }
-        series_codes = sorted(
-            {code for month_metrics in monthly_by_start.values() for code in month_metrics}
+        else:
+            rows = SourceSnapshot.objects.filter(project=project, source=source, id__in=ids)
+        snapshots = list(
+            rows.prefetch_related("metrics").order_by("period_start", "period_end", "id")
         )
-        three_month_series = {}
-        for code in series_codes:
-            values = []
-            for month in months:
-                point = monthly_by_start[month].get(code)
-                value = point.numeric_value if point else None
-                if code in DAILY_NORMALIZED_CODES or code.startswith("source_"):
-                    period = calculate_periods(month).report
-                    value = normalize_count_per_day(value, period)
-                values.append({"month": month, "value": value})
-            three_month_series[code] = tuple(values)
-        codes = sorted(set(monthly["previous"]) | set(monthly["report"]))
+        points = [
+            (snapshot, {point.metric_code: point for point in snapshot.metrics.all()})
+            for snapshot in snapshots
+        ]
+        first = points[0][1] if points else {}
+        current = points[-1][1] if points else {}
+
+        def normalized(point, snapshot):
+            if point is None:
+                return None
+            value = point.numeric_value
+            if point.metric_code in DAILY_NORMALIZED_CODES or point.metric_code.startswith(
+                "source_"
+            ):
+
+                class SelectedPeriod:
+                    start = snapshot.period_start
+                    end = snapshot.period_end
+                    days = (end - start).days + 1
+
+                value = normalize_count_per_day(value, SelectedPeriod)
+            return value
+
+        codes = sorted({code for _snapshot, metrics in points for code in metrics})
+        series = {
+            code: [
+                {
+                    "month": snapshot.period_start,
+                    "value": normalized(metrics.get(code), snapshot),
+                }
+                for snapshot, metrics in points
+            ]
+            for code in codes
+        }
         changes = {}
-        for code in codes:
-            old, new = monthly["previous"].get(code), monthly["report"].get(code)
-            old_value = old.numeric_value if old else None
-            new_value = new.numeric_value if new else None
+        for code in sorted(set(first) | set(current)):
+            old, new = first.get(code), current.get(code)
             unit = (new or old).unit
             kind = (
                 ChangeKind.PERCENTAGE_POINTS
                 if unit == MetricPoint.Unit.PERCENT
                 else ChangeKind.VALUE
             )
-            if code in DAILY_NORMALIZED_CODES or code.startswith("source_"):
-                old_value = normalize_count_per_day(old_value, periods.previous)
-                new_value = normalize_count_per_day(new_value, periods.report)
-            changes[code] = calculate_change(new_value, old_value, kind=kind)
+            changes[code] = calculate_change(
+                normalized(new, points[-1][0]) if points else None,
+                normalized(old, points[0][0]) if points else None,
+                kind=kind,
+            )
         extra = {}
-        current = monthly["report"]
         if source == SourceSnapshot.Source.METRIKA:
             sources = {
                 code.removeprefix("source_").removesuffix("_visits"): point.numeric_value
@@ -235,45 +257,24 @@ def build_source_facts(*, project, report_month):
             extra["traffic_sources"] = calculate_source_shares(
                 current.get("visits").numeric_value if current.get("visits") else None, sources
             )
-            source_codes = sorted(
-                code
-                for month_metrics in monthly_by_start.values()
-                for code in month_metrics
-                if code.startswith("source_")
-            )
             extra["traffic_source_series"] = {
-                code.removeprefix("source_").removesuffix("_visits"): [
-                    {
-                        "month": month,
-                        "value": (
-                            normalize_count_per_day(
-                                monthly_by_start[month][code].numeric_value,
-                                calculate_periods(month).report,
-                            )
-                            if code in monthly_by_start[month]
-                            else None
-                        ),
-                    }
-                    for month in months
-                ]
-                for code in source_codes
+                code.removeprefix("source_").removesuffix("_visits"): series[code]
+                for code in codes
+                if code.startswith("source_")
             }
             extra["traffic_source_dynamics"] = {}
-            for name, series in extra["traffic_source_series"].items():
-                previous_value = series[-2]["value"] if len(series) > 1 else None
-                current_value = series[-1]["value"] if series else None
-                current_raw = sources.get(name)
-                total_raw = current.get("visits").numeric_value if current.get("visits") else None
-                share = (
-                    current_raw * Decimal("100") / total_raw
-                    if current_raw is not None and total_raw not in (None, 0)
-                    else None
-                )
+            for name, values in extra["traffic_source_series"].items():
+                raw = sources.get(name)
+                total = current.get("visits").numeric_value if current.get("visits") else None
                 extra["traffic_source_dynamics"][name] = {
-                    "series": series,
-                    "share_percent": share,
+                    "series": values,
+                    "share_percent": raw * Decimal("100") / total
+                    if raw is not None and total not in (None, 0)
+                    else None,
                     "change": calculate_change(
-                        current_value, previous_value, kind=ChangeKind.VALUE
+                        values[-1]["value"] if values else None,
+                        values[0]["value"] if values else None,
+                        kind=ChangeKind.VALUE,
                     ),
                 }
         else:
@@ -284,11 +285,7 @@ def build_source_facts(*, project, report_month):
                 else None,
                 current["search_ctr"].numeric_value if "search_ctr" in current else None,
             )
-        result[source] = {
-            "normalized_changes": changes,
-            "three_month_series": three_month_series,
-            **extra,
-        }
+        result[source] = {"normalized_changes": changes, "three_month_series": series, **extra}
     return {"formula_version": FORMULA_VERSION, "periods": periods, "sources": result}
 
 
@@ -321,11 +318,14 @@ def snapshot_checksum(payload):
     return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
 
 
-def _ranking_source_data(project, periods):
+def _ranking_source_data(project, periods, selected_dates=None):
+    filters = {"project": project}
+    if selected_dates:
+        filters["snapshot_date__in"] = selected_dates
+    else:
+        filters["snapshot_date__range"] = (periods.three_months.start, periods.report.end)
     snapshots = (
-        RankingSnapshot.objects.filter(
-            project=project, snapshot_date__range=(periods.three_months.start, periods.report.end)
-        )
+        RankingSnapshot.objects.filter(**filters)
         .prefetch_related("positions")
         .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
     )
@@ -366,12 +366,14 @@ def _ranking_source_data(project, periods):
     return result
 
 
-def _external_source_data(project, periods):
+def _external_source_data(project, periods, selected_ids=None):
+    filters = {"project": project}
+    if selected_ids is not None:
+        filters["id__in"] = selected_ids
+    else:
+        filters["period_start__range"] = (periods.three_months.start, periods.report.start)
     rows = (
-        SourceSnapshot.objects.filter(
-            project=project,
-            period_start__range=(periods.three_months.start, periods.report.start),
-        )
+        SourceSnapshot.objects.filter(**filters)
         .prefetch_related("metrics")
         .order_by("source", "period_start", "period_end", "id")
     )
@@ -402,7 +404,7 @@ def _external_source_data(project, periods):
     ]
 
 
-def build_report_snapshot(*, report):
+def build_report_snapshot(*, report, selection=None):
     project = report.project
     periods = calculate_periods(report.report_month)
     works = (
@@ -411,6 +413,14 @@ def build_report_snapshot(*, report):
         )
         .select_related("category")
         .order_by("work_date", "category__sort_order", "title", "id")
+    )
+    explicit_selection = selection is not None
+    selection = selection or {}
+    selected_dates = tuple(
+        date.fromisoformat(value) for value in selection.get("topvisor_dates", ())
+    )
+    selected_source_ids = tuple(selection.get("yandex_metrika", ())) + tuple(
+        selection.get("yandex_webmaster", ())
     )
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -447,11 +457,34 @@ def build_report_snapshot(*, report):
             "provenance": {"method": "project_database", "updated_at": project.updated_at},
         },
         "periods": periods,
-        "ranking_sources": _ranking_source_data(project, periods),
-        "source_snapshots": _external_source_data(project, periods),
+        "source_selection": {
+            "topvisor": {
+                "selected_dates": selected_dates,
+                "comparison_start": selected_dates[0] if selected_dates else None,
+                "comparison_end": selected_dates[-1] if selected_dates else None,
+                "intermediate_dates": selected_dates[1:-1],
+            },
+            "yandex_metrika": list(selection.get("yandex_metrika", ())),
+            "yandex_webmaster": list(selection.get("yandex_webmaster", ())),
+        },
+        "ranking_sources": _ranking_source_data(project, periods, selected_dates),
+        "source_snapshots": _external_source_data(
+            project, periods, selected_source_ids if explicit_selection else None
+        ),
         "calculated": {
-            "positions": build_position_facts(project=project, report_month=report.report_month),
-            "sources": build_source_facts(project=project, report_month=report.report_month),
+            "positions": build_position_facts(
+                project=project, report_month=report.report_month, selected_dates=selected_dates
+            ),
+            "sources": build_source_facts(
+                project=project,
+                report_month=report.report_month,
+                selected_snapshot_ids={
+                    SourceSnapshot.Source.METRIKA: selection.get("yandex_metrika", []),
+                    SourceSnapshot.Source.WEBMASTER: selection.get("yandex_webmaster", []),
+                }
+                if explicit_selection
+                else None,
+            ),
         },
         "completed_work": [
             {
@@ -478,11 +511,11 @@ def build_report_snapshot(*, report):
 
 
 @transaction.atomic
-def create_report_version(*, report, created_by=None):
+def create_report_version(*, report, created_by=None, selection=None):
     """Explicitly freeze current source data; no version is made by reads or source updates."""
     locked_report = Report.objects.select_for_update().select_related("project").get(pk=report.pk)
     number = (locked_report.versions.aggregate(value=Max("number"))["value"] or 0) + 1
-    payload = build_report_snapshot(report=locked_report)
+    payload = build_report_snapshot(report=locked_report, selection=selection)
     version = ReportVersion.objects.create(
         report=locked_report, number=number, created_by=created_by
     )

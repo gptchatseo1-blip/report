@@ -1,4 +1,5 @@
 import secrets
+from datetime import date
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -87,10 +88,13 @@ def report_list(request, project_id):
         report.ready = latest and not any(
             i.severity == ValidationIssue.Severity.ERROR for i in latest.validation_issues.all()
         )
+    token = secrets.token_urlsafe(24)
+    request.session[f"report_create_token:{project.id}"] = token
+    form = ReportCreateForm(project=project, initial={"submission_token": token})
     return render(
         request,
         "reports/report_list.html",
-        {"project": project, "reports": reports, "form": ReportCreateForm()},
+        {"project": project, "reports": reports, "form": form},
     )
 
 
@@ -99,16 +103,42 @@ def report_create(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
     project = get_object_or_404(Project, pk=project_id)
-    form = ReportCreateForm(request.POST)
+    form = ReportCreateForm(request.POST, project=project)
     if form.is_valid():
-        report, created = Report.objects.get_or_create(
-            project=project, report_month=form.cleaned_data["month"]
+        submitted_token = form.cleaned_data.get("submission_token")
+        token_key = f"report_create_token:{project.id}"
+        if submitted_token and submitted_token != request.session.pop(token_key, None):
+            messages.warning(request, "Запрос уже обработан. Новая версия не создана.")
+            return redirect("reports:report-list", project_id=project.id)
+        selected_dates = form.cleaned_data["topvisor_dates"]
+        selected_source_ids = (
+            form.cleaned_data["metrika_snapshots"] + form.cleaned_data["webmaster_snapshots"]
         )
+        from apps.metrics.models import SourceSnapshot
+
+        source_rows = SourceSnapshot.objects.filter(id__in=selected_source_ids)
+        endpoint = (
+            date.fromisoformat(selected_dates[-1])
+            if selected_dates
+            else max((item.period_end for item in source_rows), default=timezone.localdate())
+        )
+        month = form.cleaned_data.get("month") or endpoint.replace(day=1)
+        report, created = Report.objects.get_or_create(project=project, report_month=month)
+        version = create_report_version(
+            report=report,
+            created_by=request.user,
+            selection={
+                "topvisor_dates": selected_dates,
+                "yandex_metrika": form.cleaned_data["metrika_snapshots"],
+                "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
+            },
+        )
+        validate_report_version(version)
         messages.info(
             request,
-            "Отчёт создан."
+            "Отчёт и версия созданы."
             if created
-            else "Отчёт за этот месяц уже существует; открыт существующий отчёт.",
+            else "Для существующего отчёта создана новая неизменяемая версия.",
         )
         return redirect("reports:report-detail", report_id=report.id)
     reports = project.reports.annotate(
