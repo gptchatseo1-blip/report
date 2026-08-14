@@ -12,6 +12,7 @@ from apps.yandex.models import (
     YandexConnection,
     YandexMetrikaProjectMapping,
     YandexOAuthCredential,
+    YandexWebmasterProjectMapping,
 )
 
 pytestmark = pytest.mark.django_db
@@ -129,6 +130,99 @@ def test_database_credentials_override_env_and_oauth_uses_real_webmaster_scope(
     assert query["redirect_uri"] == [CALLBACK]
     assert query["scope"] == ["metrika:read webmaster:hostinfo"]
     assert "webmaster:read" not in response.url
+
+
+def test_active_connection_shows_safe_reauthorization_action(client, oauth_context, monkeypatch):
+    staff, user, project = oauth_context
+    client.force_login(staff)
+    save_credentials(client)
+    connection = YandexConnection.objects.create(
+        user=user,
+        access_token_encrypted=encrypt_token("access-token"),
+        refresh_token_encrypted=encrypt_token("refresh-token"),
+        scopes=["metrika:read", "webmaster:hostinfo"],
+    )
+    monkeypatch.setattr("apps.yandex.views.MetrikaClient.counters", lambda self: [])
+    monkeypatch.setattr(
+        "apps.yandex.views.WebmasterClient.user", lambda self: {"user_id": "user-id"}
+    )
+    monkeypatch.setattr("apps.yandex.views.WebmasterClient.hosts", lambda self, user_id: [])
+
+    client.force_login(user)
+    response = client.get(reverse("yandex:connection", args=[project.id]))
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert "Повторно авторизовать аккаунт Яндекса" in body
+    assert "если сервис сообщает об истёкшем доступе или недостающих правах" in body
+    assert "Выбранные счётчик, цели и сайт сохранятся" in body
+    assert reverse("yandex:oauth-start", args=[project.id]) in body
+    assert reverse("yandex:disconnect", args=[connection.id]) in body
+
+
+def test_reauthorization_reuses_connection_and_preserves_project_selections(
+    client, oauth_context, monkeypatch
+):
+    staff, user, project = oauth_context
+    client.force_login(staff)
+    save_credentials(client)
+    connection = YandexConnection.objects.create(
+        user=user,
+        account_login="old@yandex.ru",
+        access_token_encrypted=encrypt_token("old-access"),
+        refresh_token_encrypted=encrypt_token("old-refresh"),
+        scopes=["metrika:read"],
+        active=False,
+    )
+    metrika_mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="42",
+        counter_name="Counter",
+        counter_domain=project.domain,
+        selected_goals=[{"id": "7", "name": "Goal"}],
+    )
+    webmaster_mapping = YandexWebmasterProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        host_id="https:oauth.example:443",
+        host_url="https://oauth.example/",
+        verification_status="VERIFIED",
+    )
+    client.force_login(user)
+    start = client.post(reverse("yandex:oauth-start", args=[project.id]))
+    state = urllib.parse.parse_qs(urllib.parse.urlsplit(start.url).query)["state"][0]
+    monkeypatch.setattr(
+        "apps.yandex.views.exchange_token",
+        lambda parameters, credentials=None: {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+            "scope": "metrika:read webmaster:hostinfo",
+            "uid": "123",
+            "login": "new@yandex.ru",
+        },
+    )
+
+    response = client.get(
+        reverse("yandex:oauth-callback"), {"state": state, "code": "authorization-code"}
+    )
+
+    assert response.status_code == 302
+    connection.refresh_from_db()
+    metrika_mapping.refresh_from_db()
+    webmaster_mapping.refresh_from_db()
+    assert YandexConnection.objects.filter(user=user).count() == 1
+    assert connection.active is True
+    assert connection.account_login == "new@yandex.ru"
+    assert decrypt_token(connection.access_token_encrypted) == "new-access"
+    assert decrypt_token(connection.refresh_token_encrypted) == "new-refresh"
+    assert connection.scopes == ["metrika:read", "webmaster:hostinfo"]
+    assert metrika_mapping.connection_id == connection.id
+    assert metrika_mapping.counter_id == "42"
+    assert metrika_mapping.selected_goals == [{"id": "7", "name": "Goal"}]
+    assert webmaster_mapping.connection_id == connection.id
+    assert webmaster_mapping.host_url == "https://oauth.example/"
 
 
 def test_invalid_callback_path_does_not_save_or_echo_secret(client, oauth_context):

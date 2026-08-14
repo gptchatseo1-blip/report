@@ -344,13 +344,33 @@ def oauth_callback(request):
             "scopes": scopes,
             "active": True,
         }
+        project_connection_id = (
+            YandexMetrikaProjectMapping.objects.filter(
+                project=state.project, connection__user=request.user
+            )
+            .values_list("connection_id", flat=True)
+            .first()
+            or YandexWebmasterProjectMapping.objects.filter(
+                project=state.project, connection__user=request.user
+            )
+            .values_list("connection_id", flat=True)
+            .first()
+        )
         existing = YandexConnection.objects.filter(user=request.user, active=True).first()
+        if existing is None and project_connection_id:
+            existing = YandexConnection.objects.filter(pk=project_connection_id).first()
         if existing:
             for field, value in defaults.items():
                 setattr(existing, field, value)
             existing.save(update_fields=[*defaults, "updated_at"])
         else:
-            YandexConnection.objects.create(user=request.user, **defaults)
+            existing = YandexConnection.objects.create(user=request.user, **defaults)
+        YandexMetrikaProjectMapping.objects.filter(
+            project=state.project, connection__user=request.user
+        ).update(connection=existing)
+        YandexWebmasterProjectMapping.objects.filter(
+            project=state.project, connection__user=request.user
+        ).update(connection=existing)
     except (YandexAPIError, CredentialConfigurationError):
         messages.error(request, "Не удалось завершить OAuth-подключение Яндекса.")
         return redirect("yandex:connection", project_id=state.project_id)

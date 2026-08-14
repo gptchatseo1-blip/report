@@ -14,10 +14,19 @@
   <h2>1. Подключение</h2>
   {% if connection %}
   <p>Состояние: <strong>подключено</strong>{% if connection.account_login %} ({{ connection.account_login }}){% endif %}</p>
-  <form method="post" action="{% url 'yandex:disconnect' connection.id %}">
-    {% csrf_token %}<input type="hidden" name="project_id" value="{{ project.id }}">
-    <div class="actions"><button class="secondary">Отключить аккаунт</button></div>
-  </form>
+  <p class="source-help">Нажмите «Повторно авторизовать», если сервис сообщает об истёкшем доступе или недостающих правах, например для Вебмастера. Выбранные счётчик, цели и сайт сохранятся.</p>
+  <div class="connection-actions">
+    {% if configured %}
+    <form method="post" action="{% url 'yandex:oauth-start' project.id %}">
+      {% csrf_token %}<button>Повторно авторизовать аккаунт Яндекса</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{% url 'yandex:disconnect' connection.id %}">
+      {% csrf_token %}<input type="hidden" name="project_id" value="{{ project.id }}">
+      <button class="secondary">Отключить аккаунт</button>
+    </form>
+  </div>
+  {% if not configured %}<div class="notice">OAuth Яндекса не настроен администратором.</div>{% endif %}
   {% else %}
   <p>Состояние: не подключено.</p>
   {% if configured %}
