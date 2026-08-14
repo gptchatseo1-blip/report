@@ -136,6 +136,56 @@ def _calendar_fields(form):
     return fields
 
 
+def _source_period_fields(form):
+    def period_word(count):
+        if count % 10 == 1 and count % 100 != 11:
+            return "период"
+        if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+            return "периода"
+        return "периодов"
+
+    fields = []
+    for name, label, short_label, description, unavailable_description in (
+        (
+            "metrika_snapshots",
+            "Яндекс.Метрика",
+            "Метрика",
+            "Периоды для разделов «Трафик» и «Источники трафика».",
+            "разделы «Трафик» и «Источники трафика» не будут заполнены.",
+        ),
+        (
+            "webmaster_snapshots",
+            "Яндекс.Вебмастер",
+            "Вебмастер",
+            "Периоды для кликов, показов, CTR, индексации и ИКС.",
+            "клики, показы, CTR, индексация и ИКС не будут заполнены.",
+        ),
+    ):
+        bound = form[name]
+        selected = {str(value) for value in (bound.value() or [])}
+        options = [
+            {**option, "selected": option["id"] in selected}
+            for option in form.source_period_options.get(name, [])
+        ]
+        selected_months = [option["month"] for option in options if option["selected"]]
+        fields.append(
+            {
+                "name": name,
+                "label": label,
+                "short_label": short_label,
+                "description": description,
+                "unavailable_description": unavailable_description,
+                "options": options,
+                "selected_count": len(selected_months),
+                "period_word": period_word(len(selected_months)),
+                "start": min(selected_months, default=""),
+                "end": max(selected_months, default=""),
+                "errors": bound.errors,
+            }
+        )
+    return fields
+
+
 @login_required
 def home(request):
     return redirect("reports:projects")
@@ -170,6 +220,7 @@ def report_list(request, project_id):
     request.session[f"report_create_token:{project.id}"] = token
     form = ReportCreateForm(project=project, initial={"submission_token": token})
     calendar_fields = _calendar_fields(form)
+    source_period_fields = _source_period_fields(form)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -181,6 +232,7 @@ def report_list(request, project_id):
             "reports": reports,
             "form": form,
             "calendar_fields": calendar_fields,
+            "source_period_fields": source_period_fields,
             "can_create": can_create,
         },
     )
@@ -237,6 +289,7 @@ def report_create(request, project_id):
         version_count=Count("versions"), latest_version_at=Max("versions__created_at")
     )
     calendar_fields = _calendar_fields(form)
+    source_period_fields = _source_period_fields(form)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -248,6 +301,7 @@ def report_create(request, project_id):
             "reports": reports,
             "form": form,
             "calendar_fields": calendar_fields,
+            "source_period_fields": source_period_fields,
             "can_create": can_create,
         },
         status=400,

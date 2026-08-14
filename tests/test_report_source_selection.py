@@ -163,6 +163,61 @@ def test_single_source_period_has_no_previous_value_or_zero_change():
     assert change.absolute is None
 
 
+def test_report_page_keeps_source_period_controls_inside_each_source_card(client):
+    user = get_user_model().objects.create_user("source-ui")
+    project = Project.objects.create(name="Source UI", domain="source-ui.example")
+    ranking(project, date(2026, 7, 31), "google")
+    connection = YandexConnection.objects.create(
+        user=user,
+        access_token_encrypted=b"token",
+        active=True,
+    )
+    YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    YandexWebmasterProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        host_id="host",
+        host_url="https://source-ui.example/",
+    )
+    for month in (5, 6, 7):
+        source_snapshot(
+            project,
+            SourceSnapshot.Source.METRIKA,
+            date(2026, month, 1),
+            month,
+            "visits",
+        )
+        source_snapshot(
+            project,
+            SourceSnapshot.Source.WEBMASTER,
+            date(2026, month, 1),
+            month,
+            "search_clicks",
+        )
+    client.force_login(user)
+
+    html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
+
+    metrika_start = html.index('data-source-label="Метрика"')
+    webmaster_start = html.index('data-source-label="Вебмастер"')
+    metrika_card = html[metrika_start:webmaster_start]
+    webmaster_card = html[webmaster_start:]
+    assert 'value="2026-05" data-period-start' in metrika_card
+    assert 'value="2026-07" data-period-end' in metrika_card
+    assert "Метрика: выбрано 3 периода." in metrika_card
+    assert 'name="metrika_snapshots"' in metrika_card
+    assert 'name="webmaster_snapshots"' not in metrika_card
+    assert "Вебмастер: выбрано 3 периода." in webmaster_card
+    assert 'name="webmaster_snapshots"' in webmaster_card
+    assert "По умолчанию отмечены три последних доступных периода" in html
+
+
 def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocked(client):
     user = get_user_model().objects.create_user("selection", password="password")
     project = Project.objects.create(name="Versions", domain="versions.example")

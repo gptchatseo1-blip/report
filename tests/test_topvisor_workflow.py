@@ -256,6 +256,12 @@ def test_connection_and_project_configuration_selection(client, settings, monkey
     saved = project.topvisor_mapping
     assert saved.topvisor_project_id == "42"
     assert "super-secret" not in repr(saved.selected_configurations)
+    page = client.get(
+        reverse("topvisor:connection", args=[project.id]),
+        {"topvisor_project": "42"},
+    ).content.decode()
+    assert 'class="configuration-form"' in page
+    assert 'class="configuration-list"' in page
 
 
 def test_sync_is_idempotent_requires_frequency_and_keeps_depth_per_segment():

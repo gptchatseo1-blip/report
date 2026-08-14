@@ -4,16 +4,13 @@
 <h1>Отчёты проекта «{{ project.name }}»</h1>
 <p><a class="button secondary" href="{% url 'topvisor:connection' project.id %}">Topvisor</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Метрика и Вебмастер</a></p>
 <section class="card"><h2>Создать отчёт</h2><form method="post" action="{% url 'reports:report-create' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
-<h3>Выберите даты</h3>
+<h3>Выберите даты для вывода видимости</h3>
 <div class="calendar-pair">{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}</div>
 {% if not form.yandex_dates.field.choices and not form.google_dates.field.choices %}<p>Нет синхронизированных данных. <a href="{% url 'topvisor:connection' project.id %}">Перейти к синхронизации</a></p>{% endif %}
 <fieldset class="report-options"><legend>Параметры отчёта</legend><label class="url-option" for="{{ form.show_urls.id_for_label }}">{{ form.show_urls }} <span><strong>Выводить URL</strong><small>Добавить релевантные URL в предпросмотр и файлы отчёта.</small></span></label></fieldset>
-<h3>Яндекс.Метрика</h3>{% if form.metrika_snapshots.field.choices %}{{ form.metrika_snapshots }}{% else %}<p>Нет синхронизированных данных.</p>{% endif %}
-<h3>Яндекс.Вебмастер</h3>{% if form.webmaster_snapshots.field.choices %}{{ form.webmaster_snapshots }}{% else %}<p>Нет синхронизированных данных.</p>{% endif %}
-<div class="source-selection-summary" aria-live="polite">
-{% with count=form.metrika_snapshots.value|length %}{% if count %}<p>Метрика: выбрано {{ count }} периода</p>{% else %}<p class="warning">Метрика: данные недоступны — разделы «Трафик» и «Источники трафика» не будут заполнены.</p>{% endif %}{% endwith %}
-{% with count=form.webmaster_snapshots.value|length %}{% if count %}<p>Вебмастер: выбрано {{ count }} периода</p>{% else %}<p class="warning">Вебмастер: данные недоступны — клики, показы, CTR, индексация и ИКС не будут заполнены.</p>{% endif %}{% endwith %}
-</div>
+<h3>Данные сервисов Яндекса</h3>
+<p>Выберите месяцы, данные которых попадут в отчёт. По умолчанию отмечены три последних доступных периода.</p>
+<div class="report-source-grid">{% for source in source_period_fields %}{% include "reports/_source_period_picker.html" with source=source %}{% endfor %}</div>
 <p><button{% if not can_create %} disabled aria-disabled="true" title="Для каждой подключённой поисковой системы нужны минимум две даты"{% endif %}>Создать отчёт</button></p></form></section>
 <section><h2>Отчётные месяцы</h2>{% if reports %}<div class="table-wrap"><table><thead><tr><th>Месяц</th><th>Версий</th><th>Последняя версия</th><th></th></tr></thead><tbody>{% for report in reports %}<tr><td>{{ report.report_month|date:'F Y' }}</td><td>{{ report.version_count }}</td><td>{{ report.latest_version_at|date:'d.m.Y H:i'|default:'—' }}</td><td><a class="button" href="{% url 'reports:report-detail' report.id %}">Открыть отчёт</a></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">Отчётов пока нет.</div>{% endif %}</section>
 {% endblock %}

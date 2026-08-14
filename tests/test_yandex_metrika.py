@@ -19,6 +19,7 @@ from apps.yandex.crypto import decrypt_token, encrypt_token
 from apps.yandex.models import (
     YandexConnection,
     YandexMetrikaProjectMapping,
+    YandexMetrikaSyncRun,
     YandexOAuthState,
 )
 from apps.yandex.services import sync_metrika
@@ -192,6 +193,73 @@ def test_goal_selection_uses_available_goals(client, identity, yandex_settings, 
     assert response.status_code == 302
     mapping.refresh_from_db()
     assert mapping.selected_goals == [{"id": "7", "name": "Order", "label": "Order"}]
+
+
+def test_goals_use_compact_picker_with_selected_count(
+    client, identity, yandex_settings, monkeypatch
+):
+    user, project = identity
+    mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=make_connection(user),
+        counter_id="42",
+        counter_name="C",
+        counter_domain=project.domain,
+        selected_goals=[{"id": "7", "name": "Order", "label": "Order"}],
+    )
+    client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
+    monkeypatch.setattr(
+        MetrikaClient,
+        "goals",
+        lambda *_: [
+            {"id": 7, "name": "Order"},
+            {"id": 8, "name": "Callback"},
+        ],
+    )
+
+    html = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+
+    assert mapping.counter_id in html
+    assert '<details class="goal-picker">' in html
+    assert "Выбрать цели · выбрано <span data-goal-count>1</span>" in html
+    assert 'value="7" checked' in html
+    assert 'value="8"' in html
+
+
+def test_metrika_run_can_only_be_deleted_by_post_and_keeps_snapshots(
+    client, identity, yandex_settings
+):
+    user, project = identity
+    mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=make_connection(user),
+        counter_id="42",
+        counter_name="C",
+        counter_domain=project.domain,
+    )
+    run = YandexMetrikaSyncRun.objects.create(
+        mapping=mapping,
+        report_month=date(2026, 3, 1),
+        status=YandexMetrikaSyncRun.Status.SUCCESS,
+    )
+    snapshot = SourceSnapshot.objects.create(
+        project=project,
+        source=SourceSnapshot.Source.METRIKA,
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),
+        checksum="kept",
+        payload={},
+    )
+    url = reverse("yandex:delete-metrika-run", args=[project.id, run.id])
+    client.force_login(user)
+
+    assert client.get(url).status_code == 405
+    response = client.post(url)
+
+    assert response.status_code == 302
+    assert not YandexMetrikaSyncRun.objects.filter(pk=run.id).exists()
+    assert SourceSnapshot.objects.filter(pk=snapshot.pk).exists()
 
 
 class FakeMetrika:

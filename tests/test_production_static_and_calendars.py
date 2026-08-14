@@ -8,6 +8,7 @@ from django.contrib.staticfiles.storage import staticfiles_storage
 from django.core.management import call_command
 from django.test import override_settings
 from django.urls import reverse
+from PIL import Image
 
 from apps.metrics.models import RankingSnapshot
 from apps.projects.models import Project
@@ -68,6 +69,7 @@ def test_collectstatic_builds_manifest_from_empty_root(tmp_path, settings):
 
 def test_server_html_contains_three_months_dates_and_disabled_days(client):
     html = _calendar_page(client).content.decode()
+    assert "Выберите даты для вывода видимости" in html
     assert html.count('class="calendar-month"') == 3
     assert "Май 2026" in html and "Июнь 2026" in html and "Июль 2026" in html
     assert re.search(r"data-period[^>]*>Май — Июль 2026</span>", html)
@@ -89,7 +91,10 @@ def test_responsive_css_keeps_one_month_on_mobile():
     assert "grid-template-columns:repeat(3" in css
     assert ".calendar-month:not(:first-child){display:none}" in css
     assert ".calendar-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))" in css
-    assert "@media(max-width:700px){.calendar-pair{grid-template-columns:1fr}" in css
+    assert (
+        "@media(max-width:700px){.calendar-pair,.report-source-grid{grid-template-columns:1fr}"
+        in css
+    )
 
 
 def test_javascript_updates_period_during_every_render():
@@ -104,6 +109,26 @@ def test_source_picker_only_requires_confirmation_for_another_domain():
     assert 'option.dataset.domainMismatch === "true"' in javascript
     assert "confirmation.hidden = !mismatch" in javascript
     assert "checkbox.required = mismatch" in javascript
+
+
+def test_source_period_picker_uses_month_range_and_source_local_summary():
+    javascript = Path(staticfiles_storage.path("reports/calendar.js")).read_text()
+    css = Path(staticfiles_storage.path("reports/app.css")).read_text()
+    assert "[data-source-period-picker]" in javascript
+    assert "function applyRange(changed)" in javascript
+    assert "dataset.periodMonth" in javascript
+    assert "periodWord(count)" in javascript
+    assert ".report-source-grid{display:grid;grid-template-columns:repeat(2" in css
+    assert ".source-period-range{display:grid;grid-template-columns:repeat(2" in css
+
+
+def test_favicon_has_a_real_transparent_background():
+    with Image.open(staticfiles_storage.path("reports/favicon.png")) as favicon:
+        rgba = favicon.convert("RGBA")
+        assert rgba.size == (64, 64)
+        assert rgba.getpixel((0, 0))[3] == 0
+        assert rgba.getpixel((63, 63))[3] == 0
+        assert any(alpha > 0 for *_, alpha in rgba.getdata())
 
 
 def test_calendar_pair_keeps_yandex_first_and_engines_independent(client):
