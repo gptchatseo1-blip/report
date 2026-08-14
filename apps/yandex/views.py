@@ -32,8 +32,8 @@ from .models import (
 from .services import sync_metrika, sync_webmaster
 
 METRIKA_SCOPE = "metrika:read"
-WEBMASTER_SCOPE = "webmaster:hostinfo"
-OAUTH_SCOPES = (METRIKA_SCOPE, WEBMASTER_SCOPE)
+WEBMASTER_SCOPES = ("webmaster:hostinfo", "webmaster:verify")
+OAUTH_SCOPES = (METRIKA_SCOPE, *WEBMASTER_SCOPES)
 
 
 def _is_other_domain(project, value):
@@ -211,7 +211,7 @@ def connection(request, project_id):
                 goals = list(client.goals(mapping.counter_id))
         except (YandexAPIError, CredentialConfigurationError):
             error = "Не удалось получить данные Яндекс Метрики."
-        if WEBMASTER_SCOPE in connection_obj.scopes:
+        if all(scope in connection_obj.scopes for scope in WEBMASTER_SCOPES):
             try:
                 webmaster = WebmasterClient(connection_obj)
                 webmaster_user = webmaster.user()
@@ -233,7 +233,8 @@ def connection(request, project_id):
             "host_options": _host_options(project, hosts),
             "webmaster_mapping": webmaster_mapping,
             "webmaster_scope_missing": bool(
-                connection_obj and WEBMASTER_SCOPE not in connection_obj.scopes
+                connection_obj
+                and any(scope not in connection_obj.scopes for scope in WEBMASTER_SCOPES)
             ),
             "error": error,
             "configured": _configured(),
@@ -309,6 +310,18 @@ def consume_oauth_state(*, raw, user, session_key):
 @login_required
 def oauth_callback(request):
     raw, code = request.GET.get("state", ""), request.GET.get("code", "")
+    if request.GET.get("error"):
+        state = consume_oauth_state(
+            raw=raw, user=request.user, session_key=request.session.session_key
+        )
+        if state is None:
+            return HttpResponseBadRequest("Недействительный или просроченный OAuth state.")
+        messages.error(
+            request,
+            "Яндекс не выдал необходимые права. Проверьте доступы Метрики и Вебмастера "
+            "в настройках OAuth-приложения и повторите авторизацию.",
+        )
+        return redirect("yandex:connection", project_id=state.project_id)
     if not raw or not code:
         return HttpResponseBadRequest("Недействительный или просроченный OAuth state.")
     state = consume_oauth_state(raw=raw, user=request.user, session_key=request.session.session_key)
@@ -464,7 +477,7 @@ def select_host(request, project_id):
     connection_obj = get_object_or_404(
         YandexConnection, pk=request.POST.get("connection_id"), user=request.user, active=True
     )
-    if WEBMASTER_SCOPE not in connection_obj.scopes:
+    if any(scope not in connection_obj.scopes for scope in WEBMASTER_SCOPES):
         messages.error(request, "Требуется повторная авторизация с правом Вебмастера.")
         return redirect("yandex:connection", project_id=project.id)
     form = HostForm(request.POST)

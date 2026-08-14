@@ -1,4 +1,5 @@
 import urllib.parse
+from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -128,7 +129,7 @@ def test_database_credentials_override_env_and_oauth_uses_real_webmaster_scope(
     query = urllib.parse.parse_qs(parsed.query)
     assert query["client_id"] == ["database-id"]
     assert query["redirect_uri"] == [CALLBACK]
-    assert query["scope"] == ["metrika:read webmaster:hostinfo"]
+    assert query["scope"] == ["metrika:read webmaster:hostinfo webmaster:verify"]
     assert "webmaster:read" not in response.url
 
 
@@ -140,7 +141,7 @@ def test_active_connection_shows_safe_reauthorization_action(client, oauth_conte
         user=user,
         access_token_encrypted=encrypt_token("access-token"),
         refresh_token_encrypted=encrypt_token("refresh-token"),
-        scopes=["metrika:read", "webmaster:hostinfo"],
+        scopes=["metrika:read", "webmaster:hostinfo", "webmaster:verify"],
     )
     monkeypatch.setattr("apps.yandex.views.MetrikaClient.counters", lambda self: [])
     monkeypatch.setattr(
@@ -154,10 +155,70 @@ def test_active_connection_shows_safe_reauthorization_action(client, oauth_conte
 
     assert response.status_code == 200
     assert "Повторно авторизовать аккаунт Яндекса" in body
-    assert "если сервис сообщает об истёкшем доступе или недостающих правах" in body
+    assert "Повторная авторизация нужна, если сервис сообщает" in body
     assert "Выбранные счётчик, цели и сайт сохранятся" in body
     assert reverse("yandex:oauth-start", args=[project.id]) in body
     assert reverse("yandex:disconnect", args=[connection.id]) in body
+    actions_start = body.index('<div class="connection-actions">')
+    actions_end = body.index("</div>", actions_start)
+    help_start = body.index('<p class="connection-help">')
+    assert actions_start < actions_end < help_start
+
+
+def test_connection_without_second_webmaster_scope_shows_actionable_notice(
+    client, oauth_context, monkeypatch
+):
+    staff, user, project = oauth_context
+    client.force_login(staff)
+    save_credentials(client)
+    YandexConnection.objects.create(
+        user=user,
+        access_token_encrypted=encrypt_token("access-token"),
+        refresh_token_encrypted=encrypt_token("refresh-token"),
+        scopes=["metrika:read", "webmaster:hostinfo"],
+    )
+    monkeypatch.setattr("apps.yandex.views.MetrikaClient.counters", lambda self: [])
+
+    client.force_login(user)
+    body = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+
+    assert "Подключению не хватает прав Вебмастера" in body
+    assert "Получение информации о сайтах" in body
+    assert "Добавление сайтов, получение статуса индексирования" in body
+    assert "Повторно авторизовать аккаунт Яндекса" in body
+
+
+def test_oauth_permission_denial_returns_to_project_with_safe_actionable_message(
+    client, oauth_context
+):
+    staff, user, project = oauth_context
+    client.force_login(staff)
+    save_credentials(client)
+    client.force_login(user)
+    start = client.post(reverse("yandex:oauth-start", args=[project.id]))
+    state = urllib.parse.parse_qs(urllib.parse.urlsplit(start.url).query)["state"][0]
+
+    response = client.get(
+        reverse("yandex:oauth-callback"),
+        {"state": state, "error": "invalid_scope", "error_description": "private response"},
+        follow=True,
+    )
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert "Яндекс не выдал необходимые права" in body
+    assert "private response" not in body
+
+
+def test_reauthorization_actions_have_desktop_and_mobile_layout_rules():
+    css = Path("static/reports/source-picker.css").read_text()
+    assert ".connection-actions {" in css
+    assert "display: flex;" in css
+    assert ".connection-actions > form {" in css
+    assert "flex: 0 0 auto;" in css
+    assert ".connection-help {" in css
+    assert "font-size: 0.85rem;" in css
+    assert "flex-direction: column;" in css
 
 
 def test_reauthorization_reuses_connection_and_preserves_project_selections(
@@ -198,7 +259,7 @@ def test_reauthorization_reuses_connection_and_preserves_project_selections(
             "access_token": "new-access",
             "refresh_token": "new-refresh",
             "expires_in": 3600,
-            "scope": "metrika:read webmaster:hostinfo",
+            "scope": "metrika:read webmaster:hostinfo webmaster:verify",
             "uid": "123",
             "login": "new@yandex.ru",
         },
@@ -217,7 +278,7 @@ def test_reauthorization_reuses_connection_and_preserves_project_selections(
     assert connection.account_login == "new@yandex.ru"
     assert decrypt_token(connection.access_token_encrypted) == "new-access"
     assert decrypt_token(connection.refresh_token_encrypted) == "new-refresh"
-    assert connection.scopes == ["metrika:read", "webmaster:hostinfo"]
+    assert connection.scopes == ["metrika:read", "webmaster:hostinfo", "webmaster:verify"]
     assert metrika_mapping.connection_id == connection.id
     assert metrika_mapping.counter_id == "42"
     assert metrika_mapping.selected_goals == [{"id": "7", "name": "Goal"}]

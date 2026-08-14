@@ -50,8 +50,23 @@
   gap: 0.75rem;
 }
 
-.connection-actions form {
+.connection-actions > form {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: auto;
   margin: 0;
+}
+
+.connection-actions > form > button {
+  width: auto;
+}
+
+.connection-help {
+  max-width: 54rem;
+  margin: 0.55rem 0 0;
+  color: #667085;
+  font-size: 0.85rem;
+  line-height: 1.4;
 }
 
 .goal-picker {
@@ -166,7 +181,8 @@
     flex-direction: column;
   }
 
-  .connection-actions button {
+  .connection-actions > form,
+  .connection-actions > form > button {
     width: 100%;
   }
 

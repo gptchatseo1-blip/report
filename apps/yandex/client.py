@@ -195,18 +195,25 @@ class WebmasterClient(MetrikaClient):
                         else 0.5 * 2**attempt + random.uniform(0, 0.25)
                     )
                     continue
-                if exc.code in (401, 403):
-                    raise YandexUnauthorized(
-                        "Подключение Яндекса требует повторной авторизации для Вебмастера."
-                    ) from None
                 try:
                     payload = json.loads(exc.read())
                 except (ValueError, TypeError):
                     payload = {}
+                error_code = str(payload.get("error_code", ""))
+                if exc.code == 403 and error_code in {"HOST_NOT_VERIFIED", "HOST_NOT_LOADED"}:
+                    raise YandexAPIError(
+                        f"Сайт Вебмастера недоступен (HTTP {exc.code}).",
+                        http_status=exc.code,
+                        error_code=error_code,
+                    ) from None
+                if exc.code in (401, 403):
+                    raise YandexUnauthorized(
+                        "Подключение Яндекса требует повторной авторизации для Вебмастера."
+                    ) from None
                 raise YandexAPIError(
                     f"Вебмастер временно недоступен (HTTP {exc.code}).",
                     http_status=exc.code,
-                    error_code=str(payload.get("error_code", "")),
+                    error_code=error_code,
                 ) from None
             except (urllib.error.URLError, TimeoutError, ValueError):
                 if attempt < settings.YANDEX_MAX_RETRIES:

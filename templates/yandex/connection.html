@@ -14,7 +14,6 @@
   <h2>1. Подключение</h2>
   {% if connection %}
   <p>Состояние: <strong>подключено</strong>{% if connection.account_login %} ({{ connection.account_login }}){% endif %}</p>
-  <p class="source-help">Нажмите «Повторно авторизовать», если сервис сообщает об истёкшем доступе или недостающих правах, например для Вебмастера. Выбранные счётчик, цели и сайт сохранятся.</p>
   <div class="connection-actions">
     {% if configured %}
     <form method="post" action="{% url 'yandex:oauth-start' project.id %}">
@@ -26,6 +25,7 @@
       <button class="secondary">Отключить аккаунт</button>
     </form>
   </div>
+  <p class="connection-help">Повторная авторизация нужна, если сервис сообщает об истёкшем доступе или недостающих правах, например для Вебмастера. Выбранные счётчик, цели и сайт сохранятся.</p>
   {% if not configured %}<div class="notice">OAuth Яндекса не настроен администратором.</div>{% endif %}
   {% else %}
   <p>Состояние: не подключено.</p>
@@ -107,8 +107,8 @@
 <section class="card integration-card">
   <h2>3. Яндекс.Вебмастер</h2>
   {% if webmaster_scope_missing %}
-  <div class="notice">У подключения нет права Вебмастера. Выполните повторную авторизацию.</div>
-  <form method="post" action="{% url 'yandex:oauth-start' project.id %}">{% csrf_token %}<div class="actions"><button>Повторно авторизовать Яндекс</button></div></form>
+  <div class="notice">Подключению не хватает прав Вебмастера. В приложении OAuth Яндекса включите «Получение информации о сайтах» и «Добавление сайтов, получение статуса индексирования», затем выполните повторную авторизацию.</div>
+  <form method="post" action="{% url 'yandex:oauth-start' project.id %}">{% csrf_token %}<div class="actions"><button>Повторно авторизовать аккаунт Яндекса</button></div></form>
   {% elif connection %}
   {% if webmaster_mapping %}<p>Выбран: <strong>{{ webmaster_mapping.host_url }}</strong> — подтверждение: {{ webmaster_mapping.verification_status|default:'неизвестно' }}{% if webmaster_mapping.main_mirror %}; главное зеркало: {{ webmaster_mapping.main_mirror }}{% endif %}.</p>{% endif %}
   {% if host_options %}
