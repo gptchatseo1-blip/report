@@ -23,9 +23,11 @@ from .forms import CounterForm, GoalsForm, HostForm, SyncForm, YandexOAuthCreden
 from .models import (
     YandexConnection,
     YandexMetrikaProjectMapping,
+    YandexMetrikaSyncRun,
     YandexOAuthCredential,
     YandexOAuthState,
     YandexWebmasterProjectMapping,
+    YandexWebmasterSyncRun,
 )
 from .services import sync_metrika, sync_webmaster
 
@@ -70,6 +72,18 @@ def _host_options(project, hosts):
             }
         )
     return options
+
+
+def _goal_options(goals, selected_goals):
+    selected = {str(item.get("id")) for item in selected_goals}
+    return [
+        {
+            "id": str(goal.get("id", "")),
+            "label": str(goal.get("name") or f"Цель {goal.get('id', '')}"),
+            "selected": str(goal.get("id", "")) in selected,
+        }
+        for goal in goals
+    ]
 
 
 def _configured():
@@ -205,6 +219,7 @@ def connection(request, project_id):
                 hosts = list(webmaster.hosts(webmaster_user_id)) if webmaster_user_id else []
             except (YandexAPIError, CredentialConfigurationError):
                 error = "Не удалось получить данные Яндекс Вебмастера."
+    goal_options = _goal_options(goals, mapping.selected_goals if mapping else [])
     return render(
         request,
         "yandex/connection.html",
@@ -213,7 +228,8 @@ def connection(request, project_id):
             "mapping": mapping,
             "connection": connection_obj,
             "counter_options": _counter_options(project, counters),
-            "goals": goals,
+            "goal_options": goal_options,
+            "selected_goal_count": sum(option["selected"] for option in goal_options),
             "host_options": _host_options(project, hosts),
             "webmaster_mapping": webmaster_mapping,
             "webmaster_scope_missing": bool(
@@ -524,6 +540,36 @@ def sync_webmaster_view(request, project_id):
         )
         return redirect("reports:report-detail", report_id=report.id)
     messages.error(request, run.error_message)
+    return redirect("yandex:connection", project_id=project_id)
+
+
+@login_required
+def delete_metrika_run(request, project_id, run_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    run = get_object_or_404(
+        YandexMetrikaSyncRun,
+        pk=run_id,
+        mapping__project_id=project_id,
+        mapping__connection__user=request.user,
+    )
+    run.delete()
+    messages.success(request, "Запись синхронизации Метрики удалена.")
+    return redirect("yandex:connection", project_id=project_id)
+
+
+@login_required
+def delete_webmaster_run(request, project_id, run_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    run = get_object_or_404(
+        YandexWebmasterSyncRun,
+        pk=run_id,
+        mapping__project_id=project_id,
+        mapping__connection__user=request.user,
+    )
+    run.delete()
+    messages.success(request, "Запись синхронизации Вебмастера удалена.")
     return redirect("yandex:connection", project_id=project_id)
 
 

@@ -28,6 +28,7 @@ class ReportCreateForm(forms.Form):
         self.connected_engines = set()
         self.connected_sources = set()
         self.source_availability = {}
+        self.source_period_options = {}
         if project is None:
             for name in (
                 "yandex_dates",
@@ -108,6 +109,14 @@ class ReportCreateForm(forms.Form):
             )
             self.fields[field].choices = [
                 (str(row.id), f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}")
+                for row in rows
+            ]
+            self.source_period_options[field] = [
+                {
+                    "id": str(row.id),
+                    "month": row.period_start.strftime("%Y-%m"),
+                    "label": f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}",
+                }
                 for row in rows
             ]
             defaults = []

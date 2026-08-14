@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from calendar import monthrange
 from datetime import date
 from decimal import Decimal
@@ -16,6 +17,8 @@ from .client import (
     LAST_SIGN_TRAFFIC_SOURCE,
     MetrikaClient,
     WebmasterClient,
+    YandexAPIError,
+    YandexUnauthorized,
 )
 from .models import YandexMetrikaSyncRun, YandexWebmasterSyncRun
 
@@ -40,6 +43,8 @@ TRAFFIC_SOURCE_CODES = {
     "saved": "other",
     "undefined": "other",
 }
+logger = logging.getLogger(__name__)
+OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
 
 
 def shift_month(value, offset):
@@ -329,21 +334,53 @@ def _last_metric(rows, names):
     return None
 
 
+def _optional_webmaster_resource(mapping, resource, fetch):
+    try:
+        return fetch()
+    except YandexAPIError as exc:
+        if exc.http_status == 404 and exc.error_code in OPTIONAL_WEBMASTER_CODES:
+            logger.info(
+                "Webmaster resource is unavailable: project=%s resource=%s code=%s",
+                mapping.project_id,
+                resource,
+                exc.error_code,
+            )
+            return {}
+        raise
+
+
 def _webmaster_month(
     client, mapping, user_id, month, *, host=None, summary=None, include_current=False
 ):
     start, end = month, month_end(month)
     params = {"date_from": start.isoformat(), "date_to": end.isoformat()}
-    queries = client.search_query_history(
-        user_id,
-        mapping.host_id,
-        **params,
-        device_type_indicator="ALL",
-        query_indicator=["TOTAL_SHOWS", "TOTAL_CLICKS", "AVG_SHOW_POSITION"],
+
+    queries = _optional_webmaster_resource(
+        mapping,
+        "search_queries",
+        lambda: client.search_query_history(
+            user_id,
+            mapping.host_id,
+            **params,
+            device_type_indicator="ALL",
+            query_indicator=["TOTAL_SHOWS", "TOTAL_CLICKS", "AVG_SHOW_POSITION"],
+        ),
     )
-    pages = client.search_urls_history(user_id, mapping.host_id, **params)
-    indexing = client.indexing_history(user_id, mapping.host_id, **params)
-    sqi = client.squ_history(user_id, mapping.host_id, **params)
+    pages = _optional_webmaster_resource(
+        mapping,
+        "pages_in_search",
+        lambda: client.search_urls_history(user_id, mapping.host_id, **params),
+    )
+    indexing = _optional_webmaster_resource(
+        mapping,
+        "search_events",
+        lambda: client.indexing_history(user_id, mapping.host_id, **params),
+    )
+    sqi = _optional_webmaster_resource(
+        mapping,
+        "sqi",
+        lambda: client.squ_history(user_id, mapping.host_id, **params),
+    )
     impressions_values = [
         value for _, value in _valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end)
     ]
@@ -436,9 +473,20 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
             raise ValueError("missing user id")
         allowed = {str(item.get("host_id")): item for item in client.hosts(user_id)}
         if mapping.host_id not in allowed:
-            raise ValueError("host is no longer available")
-        host = client.host(user_id, mapping.host_id)
-        summary = client.summary(user_id, mapping.host_id)
+            raise YandexAPIError(
+                "Выбранный сайт больше не доступен.",
+                http_status=404,
+                error_code="HOST_NOT_LOADED",
+            )
+        # The host list already contains the verified host metadata required below.
+        # Avoid a redundant host-detail request: it added another failure point and
+        # its response was never persisted or used for calculations.
+        host = allowed[mapping.host_id]
+        summary = _optional_webmaster_resource(
+            mapping,
+            "summary",
+            lambda: client.summary(user_id, mapping.host_id),
+        )
         fetched = [
             _webmaster_month(
                 client,
@@ -510,7 +558,42 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
             run.status, run.completed_at = run.Status.SUCCESS, now
             run.save(update_fields=["status", "completed_at"])
         return run
+    except YandexUnauthorized:
+        logger.warning(
+            "Webmaster authorization failed: project=%s run=%s",
+            mapping.project_id,
+            run.id,
+        )
+        run.status = run.Status.FAILED
+        run.completed_at = timezone.now()
+        run.error_message = "Нужно повторно авторизовать аккаунт Яндекса для Вебмастера."
+        run.save(update_fields=["status", "completed_at", "error_message"])
+        return run
+    except YandexAPIError as exc:
+        logger.warning(
+            "Webmaster API failed: project=%s run=%s status=%s code=%s",
+            mapping.project_id,
+            run.id,
+            exc.http_status,
+            exc.error_code or "unknown",
+        )
+        run.status = run.Status.FAILED
+        run.completed_at = timezone.now()
+        run.error_message = (
+            "Проверьте подтверждение выбранного сайта в Яндекс.Вебмастере."
+            if exc.error_code == "HOST_NOT_VERIFIED"
+            else "Выбранный сайт больше не доступен аккаунту Яндекса. Выберите сайт заново."
+            if exc.error_code == "HOST_NOT_LOADED"
+            else "Не удалось синхронизировать данные Вебмастера. Повторите позже."
+        )
+        run.save(update_fields=["status", "completed_at", "error_message"])
+        return run
     except Exception:
+        logger.exception(
+            "Unexpected Webmaster sync failure: project=%s run=%s",
+            mapping.project_id,
+            run.id,
+        )
         run.status = run.Status.FAILED
         run.completed_at = timezone.now()
         run.error_message = "Не удалось синхронизировать данные Вебмастера. Повторите позже."

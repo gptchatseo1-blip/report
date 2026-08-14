@@ -7,9 +7,13 @@ from django.urls import reverse
 
 from apps.metrics.models import SourceSnapshot
 from apps.projects.models import Project
-from apps.yandex.client import MetrikaClient, WebmasterClient
+from apps.yandex.client import MetrikaClient, WebmasterClient, YandexAPIError
 from apps.yandex.crypto import encrypt_token
-from apps.yandex.models import YandexConnection, YandexWebmasterProjectMapping
+from apps.yandex.models import (
+    YandexConnection,
+    YandexWebmasterProjectMapping,
+    YandexWebmasterSyncRun,
+)
 from apps.yandex.services import sync_webmaster
 
 pytestmark = pytest.mark.django_db
@@ -188,6 +192,54 @@ def test_all_fetches_happen_before_atomic_write(context):
     assert not SourceSnapshot.objects.exists()
 
 
+def test_optional_missing_history_keeps_available_webmaster_data(context):
+    item = mapping(context)
+    fake = FakeWebmaster()
+    fake.host = lambda *_: (_ for _ in ()).throw(AssertionError("redundant host request"))
+    fake.squ_history = lambda *a, **k: (_ for _ in ()).throw(
+        YandexAPIError(
+            "safe",
+            http_status=404,
+            error_code="HOST_NOT_INDEXED",
+        )
+    )
+    fake.summary = lambda *a, **k: (_ for _ in ()).throw(
+        YandexAPIError(
+            "safe",
+            http_status=404,
+            error_code="HOST_NOT_INDEXED",
+        )
+    )
+
+    run = sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=fake)
+
+    assert run.status == run.Status.SUCCESS
+    assert SourceSnapshot.objects.count() == 3
+    march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
+    codes = set(march.metrics.values_list("metric_code", flat=True))
+    assert {"search_clicks", "search_impressions", "indexed_pages"} <= codes
+    assert "iks" not in codes
+
+
+def test_unverified_host_error_has_safe_actionable_message(context):
+    item = mapping(context)
+    fake = FakeWebmaster()
+    fake.summary = lambda *a, **k: (_ for _ in ()).throw(
+        YandexAPIError(
+            "provider response that must stay private",
+            http_status=404,
+            error_code="HOST_NOT_VERIFIED",
+        )
+    )
+
+    run = sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=fake)
+
+    assert run.status == run.Status.FAILED
+    assert run.error_message == "Проверьте подтверждение выбранного сайта в Яндекс.Вебмастере."
+    assert "provider response" not in run.error_message
+    assert not SourceSnapshot.objects.exists()
+
+
 def test_host_selection_uses_server_list_and_requires_mismatch_confirmation(
     client, context, monkeypatch
 ):
@@ -272,6 +324,33 @@ def test_mutating_routes_reject_get(client, context):
         assert client.get(reverse(f"yandex:{name}", args=[project.id])).status_code == 405
 
 
+def test_webmaster_run_can_only_be_deleted_by_post_and_keeps_snapshots(client, context):
+    user, project, _ = context
+    item = mapping(context)
+    run = YandexWebmasterSyncRun.objects.create(
+        mapping=item,
+        report_month=date(2026, 3, 1),
+        status=YandexWebmasterSyncRun.Status.FAILED,
+    )
+    snapshot = SourceSnapshot.objects.create(
+        project=project,
+        source=SourceSnapshot.Source.WEBMASTER,
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),
+        checksum="kept",
+        payload={},
+    )
+    url = reverse("yandex:delete-webmaster-run", args=[project.id, run.id])
+    client.force_login(user)
+
+    assert client.get(url).status_code == 405
+    response = client.post(url)
+
+    assert response.status_code == 302
+    assert not YandexWebmasterSyncRun.objects.filter(pk=run.id).exists()
+    assert SourceSnapshot.objects.filter(pk=snapshot.pk).exists()
+
+
 def test_version_docx_xlsx_never_call_live_webmaster(context, settings, tmp_path, monkeypatch):
     from apps.metrics.synthetic import sync_synthetic_metrics
     from apps.reports.exporting import generate_artifact
@@ -352,6 +431,28 @@ def test_connection_uses_one_compact_webmaster_select(client, context, monkeypat
     assert 'value="matching" data-domain-mismatch="false"' in html
     assert 'value="other" data-domain-mismatch="true"' in html
     assert 'value="unverified" data-domain-mismatch="true" disabled' in html
+
+
+def test_webmaster_page_has_compact_sync_help_and_delete_actions(client, context, monkeypatch):
+    user, project, _ = context
+    item = mapping(context)
+    run = YandexWebmasterSyncRun.objects.create(
+        mapping=item,
+        report_month=date(2026, 3, 1),
+        status=YandexWebmasterSyncRun.Status.FAILED,
+        error_message="Безопасная ошибка",
+    )
+    client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
+    monkeypatch.setattr(WebmasterClient, "user", lambda self: {"user_id": 7})
+    monkeypatch.setattr(WebmasterClient, "hosts", lambda self, uid: FakeWebmaster().hosts(uid))
+
+    html = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+
+    assert "3. Яндекс.Вебмастер" in html
+    assert "Сервис загрузит этот месяц и два предыдущих" in html
+    assert 'class="sync-form"' in html
+    assert reverse("yandex:delete-webmaster-run", args=[project.id, run.id]) in html
 
 
 def test_actual_period_uses_only_received_dates_and_empty_has_reason(context):

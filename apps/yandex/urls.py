@@ -17,5 +17,15 @@ urlpatterns = [
         views.sync_webmaster_view,
         name="sync-webmaster",
     ),
+    path(
+        "projects/<uuid:project_id>/metrika/runs/<int:run_id>/delete/",
+        views.delete_metrika_run,
+        name="delete-metrika-run",
+    ),
+    path(
+        "projects/<uuid:project_id>/webmaster/runs/<int:run_id>/delete/",
+        views.delete_webmaster_run,
+        name="delete-webmaster-run",
+    ),
     path("connections/<uuid:connection_id>/disconnect/", views.disconnect, name="disconnect"),
 ]

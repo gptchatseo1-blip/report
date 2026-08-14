@@ -10,7 +10,7 @@
 </div>
 {% if error %}<div class="notice">{{ error }}</div>{% endif %}
 
-<section class="card">
+<section class="card integration-card">
   <h2>1. Подключение</h2>
   {% if connection %}
   <p>Состояние: <strong>подключено</strong>{% if connection.account_login %} ({{ connection.account_login }}){% endif %}</p>
@@ -27,7 +27,7 @@
 </section>
 
 {% if connection %}
-<section class="card">
+<section class="card integration-card">
   <h2>2. Счётчик Яндекс.Метрика</h2>
   {% if mapping %}<p>Выбран: <strong>{{ mapping.counter_name }}</strong> — {{ mapping.counter_domain }} (ID {{ mapping.counter_id }}).</p>{% endif %}
   {% if counter_options %}
@@ -42,27 +42,60 @@
     <div class="actions"><button>Сохранить счётчик</button></div>
   </form>
   {% else %}<p>Доступных счётчиков нет.</p>{% endif %}
+
+  {% if mapping %}
+  <div class="integration-subsection">
+    <h3>Цели Метрики</h3>
+    {% if goal_options %}
+    <form method="post" action="{% url 'yandex:select-goals' project.id %}" data-goal-picker>
+      {% csrf_token %}
+      <details class="goal-picker">
+        <summary>Выбрать цели · выбрано <span data-goal-count>{{ selected_goal_count }}</span></summary>
+        <div class="goal-options">
+          {% for goal in goal_options %}
+          <label><input type="checkbox" name="goals" value="{{ goal.id }}"{% if goal.selected %} checked{% endif %}> <span>{{ goal.label }}</span></label>
+          {% endfor %}
+        </div>
+      </details>
+      <div class="actions"><button>Сохранить цели</button></div>
+    </form>
+    {% else %}<p>Доступных целей нет.</p>{% endif %}
+  </div>
+
+  <div class="integration-subsection">
+    <h3>Синхронизация Метрики</h3>
+    <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих.</p>
+    <p>Последняя успешная: {{ mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
+    <form method="post" action="{% url 'yandex:sync' project.id %}" class="sync-form">
+      {% csrf_token %}
+      <label>Отчётный месяц <input type="month" name="month" required></label>
+      <button>Синхронизировать и открыть отчёт</button>
+    </form>
+  </div>
+  {% endif %}
 </section>
-{% endif %}
 
 {% if mapping %}
-<section class="card">
-  <h2>Цели Метрики</h2>
-  <form method="post" action="{% url 'yandex:select-goals' project.id %}">{% csrf_token %}
-    {% for goal in goals %}<label><input type="checkbox" name="goals" value="{{ goal.id }}" {% for selected in mapping.selected_goals %}{% if selected.id|stringformat:'s' == goal.id|stringformat:'s' %}checked{% endif %}{% endfor %}> {{ goal.name }}</label><br>{% empty %}<p>Целей нет.</p>{% endfor %}
-    <div class="actions"><button>Сохранить цели</button></div>
-  </form>
-  <p>Выбраны: {% for goal in mapping.selected_goals %}{{ goal.label }}{% if not forloop.last %}, {% endif %}{% empty %}нет{% endfor %}</p>
+<section class="sync-log">
+  <h2>Последние запуски Метрики</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Начало</th><th>Месяц</th><th>Статус</th><th>Ошибка</th><th><span class="sr-only">Действия</span></th></tr></thead>
+      <tbody>
+      {% for run in runs %}
+      <tr>
+        <td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td>
+        <td><form method="post" action="{% url 'yandex:delete-metrika-run' project.id run.id %}" class="run-delete-form" onsubmit="return confirm('Удалить запись запуска Метрики?')">{% csrf_token %}<button class="delete-button" aria-label="Удалить запись запуска Метрики">Удалить</button></form></td>
+      </tr>
+      {% empty %}<tr><td colspan="5">Запусков нет.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
-<section class="card">
-  <h2>Синхронизация Метрики</h2>
-  <p>Последняя успешная: {{ mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
-  <form method="post" action="{% url 'yandex:sync' project.id %}">{% csrf_token %}<label>Отчётный месяц <input type="month" name="month" required></label><div class="actions"><button>Синхронизировать и открыть отчёт</button></div></form>
-</section>
-<section><h2>Последние запуски Метрики</h2><table><tr><th>Начало</th><th>Месяц</th><th>Статус</th><th>Ошибка</th></tr>{% for run in runs %}<tr><td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td></tr>{% empty %}<tr><td colspan="4">Запусков нет.</td></tr>{% endfor %}</table></section>
+{% endif %}
 {% endif %}
 
-<section class="card">
+<section class="card integration-card">
   <h2>3. Яндекс.Вебмастер</h2>
   {% if webmaster_scope_missing %}
   <div class="notice">У подключения нет права Вебмастера. Выполните повторную авторизацию.</div>
@@ -81,11 +114,39 @@
     <div class="actions"><button>Сохранить сайт</button></div>
   </form>
   {% else %}<p>Доступных сайтов нет.</p>{% endif %}
+
   {% if webmaster_mapping %}
-  <form method="post" action="{% url 'yandex:sync-webmaster' project.id %}">{% csrf_token %}<label>Отчётный месяц <input type="month" name="month" required></label><div class="actions"><button>Синхронизировать Вебмастер и открыть отчёт</button></div></form>
-  <table><tr><th>Начало</th><th>Месяц</th><th>Статус</th><th>Ошибка</th></tr>{% for run in webmaster_runs %}<tr><td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td></tr>{% empty %}<tr><td colspan="4">Запусков нет.</td></tr>{% endfor %}</table>
+  <div class="integration-subsection">
+    <h3>Синхронизация Вебмастера</h3>
+    <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих. Если отдельная история ещё не рассчитана Яндексом, остальные доступные показатели всё равно будут сохранены.</p>
+    <p>Последняя успешная: {{ webmaster_mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
+    <form method="post" action="{% url 'yandex:sync-webmaster' project.id %}" class="sync-form">
+      {% csrf_token %}
+      <label>Отчётный месяц <input type="month" name="month" required></label>
+      <button>Синхронизировать Вебмастер и открыть отчёт</button>
+    </form>
+  </div>
   {% endif %}
   {% endif %}
 </section>
+
+{% if webmaster_mapping %}
+<section class="sync-log">
+  <h2>Последние запуски Вебмастера</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Начало</th><th>Месяц</th><th>Статус</th><th>Ошибка</th><th><span class="sr-only">Действия</span></th></tr></thead>
+      <tbody>
+      {% for run in webmaster_runs %}
+      <tr>
+        <td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td>
+        <td><form method="post" action="{% url 'yandex:delete-webmaster-run' project.id run.id %}" class="run-delete-form" onsubmit="return confirm('Удалить запись запуска Вебмастера?')">{% csrf_token %}<button class="delete-button" aria-label="Удалить запись запуска Вебмастера">Удалить</button></form></td>
+      </tr>
+      {% empty %}<tr><td colspan="5">Запусков нет.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 {% endblock %}
 {% block scripts %}<script src="{% static 'reports/source-picker.js' %}" defer></script>{% endblock %}

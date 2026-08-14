@@ -28,7 +28,12 @@ GOAL_CONVERSION_RATE = "ym:s:goal{id}conversionRate"
 
 
 class YandexAPIError(Exception):
-    pass
+    """Safe provider error; response bodies and credentials are never exposed."""
+
+    def __init__(self, message, *, http_status=None, error_code=""):
+        super().__init__(message)
+        self.http_status = http_status
+        self.error_code = error_code
 
 
 class YandexUnauthorized(YandexAPIError):
@@ -194,7 +199,15 @@ class WebmasterClient(MetrikaClient):
                     raise YandexUnauthorized(
                         "Подключение Яндекса требует повторной авторизации для Вебмастера."
                     ) from None
-                raise YandexAPIError(f"Вебмастер временно недоступен (HTTP {exc.code}).") from None
+                try:
+                    payload = json.loads(exc.read())
+                except (ValueError, TypeError):
+                    payload = {}
+                raise YandexAPIError(
+                    f"Вебмастер временно недоступен (HTTP {exc.code}).",
+                    http_status=exc.code,
+                    error_code=str(payload.get("error_code", "")),
+                ) from None
             except (urllib.error.URLError, TimeoutError, ValueError):
                 if attempt < settings.YANDEX_MAX_RETRIES:
                     self.sleep(0.5 * 2**attempt + random.uniform(0, 0.25))

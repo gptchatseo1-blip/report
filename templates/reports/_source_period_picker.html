@@ -1,0 +1,25 @@
+<section class="report-source-card" data-source-period-picker data-source-label="{{ source.short_label }}">
+  <h3>{{ source.label }}</h3>
+  <p class="source-help">{{ source.description }}</p>
+  {% if source.options %}
+  <div class="source-period-range">
+    <label>С месяца <input type="month" value="{{ source.start }}" data-period-start></label>
+    <label>По месяц <input type="month" value="{{ source.end }}" data-period-end></label>
+  </div>
+  <p class="source-period-summary" data-period-summary>{{ source.short_label }}: выбрано {{ source.selected_count }} {{ source.period_word }}.</p>
+  <details class="source-period-details">
+    <summary>Точный выбор периодов</summary>
+    <div class="source-period-options">
+      {% for option in source.options %}
+      <label>
+        <input type="checkbox" name="{{ source.name }}" value="{{ option.id }}" data-period-month="{{ option.month }}"{% if option.selected %} checked{% endif %}>
+        <span>{{ option.label }}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </details>
+  {% for error in source.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  {% else %}
+  <p class="inline-warning warning">{{ source.short_label }}: данные недоступны — {{ source.unavailable_description }}</p>
+  {% endif %}
+</section>
