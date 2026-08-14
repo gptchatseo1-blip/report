@@ -1,4 +1,6 @@
+import io
 import json
+import urllib.error
 from datetime import date
 
 import pytest
@@ -7,7 +9,12 @@ from django.urls import reverse
 
 from apps.metrics.models import SourceSnapshot
 from apps.projects.models import Project
-from apps.yandex.client import MetrikaClient, WebmasterClient, YandexAPIError
+from apps.yandex.client import (
+    MetrikaClient,
+    WebmasterClient,
+    YandexAPIError,
+    YandexUnauthorized,
+)
 from apps.yandex.crypto import encrypt_token
 from apps.yandex.models import (
     YandexConnection,
@@ -33,7 +40,7 @@ def context(settings):
         user=user,
         access_token_encrypted=encrypt_token("access-token"),
         refresh_token_encrypted=encrypt_token("refresh-token"),
-        scopes=["metrika:read", "webmaster:hostinfo"],
+        scopes=["metrika:read", "webmaster:hostinfo", "webmaster:verify"],
     )
     return user, project, connection
 
@@ -112,6 +119,40 @@ class FakeWebmaster:
                 {"date": f"{prefix}02", "value": 60},
             ]
         }
+
+
+def webmaster_http_error(code, error_code):
+    return urllib.error.HTTPError(
+        "https://api.webmaster.yandex.net/v4/safe",
+        code,
+        "provider error",
+        {},
+        io.BytesIO(json.dumps({"error_code": error_code}).encode()),
+    )
+
+
+def test_host_verification_error_is_not_misreported_as_reauthorization(context):
+    def opener(*args, **kwargs):
+        raise webmaster_http_error(403, "HOST_NOT_VERIFIED")
+
+    client = WebmasterClient(context[2], opener=opener)
+
+    with pytest.raises(YandexAPIError) as raised:
+        client.summary("user", "host")
+
+    assert type(raised.value) is YandexAPIError
+    assert raised.value.http_status == 403
+    assert raised.value.error_code == "HOST_NOT_VERIFIED"
+
+
+def test_webmaster_permission_error_still_requires_reauthorization(context):
+    def opener(*args, **kwargs):
+        raise webmaster_http_error(403, "ACCESS_DENIED")
+
+    client = WebmasterClient(context[2], opener=opener)
+
+    with pytest.raises(YandexUnauthorized):
+        client.user()
 
 
 def mapping(context):
