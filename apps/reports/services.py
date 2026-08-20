@@ -620,10 +620,8 @@ def create_report_version(*, report, created_by=None, selection=None):
 def delete_report_version(*, version):
     """Delete one explicitly selected version without touching live source snapshots."""
     locked_report = Report.objects.select_for_update().get(pk=version.report_id)
-    locked_version = (
-        ReportVersion.objects.select_for_update()
-        .select_related("snapshot")
-        .get(pk=version.pk, report=locked_report)
+    locked_version = ReportVersion.objects.select_for_update().get(
+        pk=version.pk, report=locked_report
     )
     active_after = timezone.now() - timedelta(seconds=settings.REPORT_ARTIFACT_STALE_SECONDS)
     if locked_version.generated_artifacts.filter(
