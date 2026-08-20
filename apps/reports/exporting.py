@@ -28,6 +28,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 matplotlib.use("Agg")
+from matplotlib import dates as mdates  # noqa: E402
 from matplotlib import pyplot as plt  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import FancyBboxPatch, Patch  # noqa: E402
@@ -37,7 +38,7 @@ from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, Va
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.2-provider-fidelity"
+GENERATOR_VERSION = "mvp1.3-provider-fidelity"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -107,6 +108,16 @@ TOPVISOR_COLORS = {
     "101+": "#FFB820",
 }
 WEBMASTER_COLORS = ("#FFD54A", "#8BCB55", "#FF6657", "#84BFE0")
+INDEXING_GROUP_COLORS = (
+    "#00B945",
+    "#20B7A5",
+    "#5B8FF9",
+    "#8B6FD6",
+    "#FF9D4D",
+    "#D65DB1",
+    "#8CBF26",
+    "#38A3A5",
+)
 METRIKA_COLORS = ("#7A45E5", "#FF3399", "#0FBDA0", "#3388FF", "#FFB851")
 CHART_FONT = "sans-serif"
 
@@ -229,6 +240,14 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         _set_cell_width(cell, width)
         _shade_cell(cell, header_fill)
+        for paragraph in cell.paragraphs:
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            for run in paragraph.runs:
+                run.font.name = "Arial"
+                run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Arial")
+                run.font.size = Pt(8.5)
+                run.font.bold = True
     _repeat_header(table.rows[0])
     _prevent_row_split(table.rows[0])
     for row_index, values in enumerate(rows):
@@ -240,6 +259,14 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
             cell.text = _clean(value if value is not None and value != "" else "—")
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             _set_cell_width(cell, width)
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.space_before = Pt(0)
+                paragraph.paragraph_format.space_after = Pt(0)
+                for run in paragraph.runs:
+                    run.font.name = "Arial"
+                    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Arial")
+                    run.font.size = Pt(8.5)
+                    run.font.bold = False
             if cell_fills and row_index < len(cell_fills):
                 fills = cell_fills[row_index]
                 if column_index < len(fills):
@@ -492,14 +519,14 @@ def _position_fill(position):
     if position is None:
         return None
     if position <= 3:
-        return "80DFA8"
+        return "55C98A"
     if position <= 5:
-        return "A7E8C1"
+        return "8FDDB0"
     if position <= 10:
-        return "D9F3E3"
+        return "C9EFD7"
     if position <= 20:
-        return "EDF8F1"
-    return "F6FBF8"
+        return "E2F5E9"
+    return "F1F9F4"
 
 
 def _render_position_table(doc, payload, segment, start, end):
@@ -537,10 +564,30 @@ def _render_position_table(doc, payload, segment, start, end):
     return True
 
 
+def _monthly_boundary_points(points, date_getter):
+    points_by_month = {}
+    for order, point in enumerate(points):
+        point_date = date.fromisoformat(str(date_getter(point))[:10])
+        points_by_month.setdefault((point_date.year, point_date.month), []).append(
+            (point_date, order, point)
+        )
+    month_keys = sorted(points_by_month)
+    monthly_points = []
+    for index, month_key in enumerate(month_keys):
+        dated_points = sorted(points_by_month[month_key], key=lambda item: (item[0], item[1]))
+        # The first month is the comparison baseline; later months use their latest point.
+        monthly_points.append(dated_points[0 if index == 0 else -1][2])
+    return monthly_points
+
+
 def _monthly_topvisor_rows(segment):
     rows = []
     depth = segment.get("ranking_depth") or 0
-    for point in segment.get("three_month_series") or []:
+    monthly_points = _monthly_boundary_points(
+        segment.get("three_month_series") or [], lambda point: point.get("month")
+    )
+
+    for point in monthly_points:
         distribution = point.get("distribution") or {}
         buckets = {item["label"]: item for item in _topvisor_buckets(distribution, depth)}
 
@@ -653,7 +700,7 @@ def _top_table_title(segment, start, end):
     return f"Запросы в {range_label} по {engine}.{region}"
 
 
-def _render_topvisor_segment(doc, payload, segment, blocks, *, show_link=False):
+def _render_topvisor_segment(doc, payload, segment, blocks, *, report_url=""):
     engine = ENGINE_LABELS.get(segment.get("search_engine"), "Поиск")
     region = segment.get("region") or "регион не указан"
     doc.add_heading(f"{engine}. {region}", level=2)
@@ -685,11 +732,6 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, show_link=False):
         doc.add_paragraph("В динамике по месяцам")
         _render_monthly_topvisor_table(doc, segment)
     _render_topvisor_comparison(doc, segment)
-    if show_link:
-        options = payload.get("display_options", {})
-        doc.add_paragraph(
-            "Подробный отчёт доступен по ссылке: " + _clean(options["topvisor_report_url"])
-        )
     top_mode = payload.get("project", {}).get("top_11_20_mode", "auto")
     for code in ("top_5", "top_10", "top_20", "top_11_30", "top_30", "top_11_20"):
         if not section_enabled(payload, code):
@@ -712,6 +754,19 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, show_link=False):
             "подтверждённой глубины точная позиция не определяется.",
             style="Depth Note",
         )
+    if report_url:
+        doc.add_paragraph(
+            f"Подробный отчёт {engine} · {region}: {_clean(report_url)}",
+            style="Compact",
+        )
+
+
+def _topvisor_segment_url(options, segment):
+    urls = options.get("topvisor_report_urls") or {}
+    configuration = str(
+        segment.get("configuration_id") or segment.get("topvisor_configuration_id") or ""
+    )
+    return urls.get(configuration, "")
 
 
 def _render_topvisor(doc, payload, segments, blocks):
@@ -722,16 +777,21 @@ def _render_topvisor(doc, payload, segments, blocks):
         level=1,
     )
     options = payload.get("display_options", {})
-    link_pending = bool(
-        options.get("include_topvisor_report_link") and options.get("topvisor_report_url")
-    )
+    report_urls = options.get("topvisor_report_urls") or {}
+    legacy_url = options.get("topvisor_report_url", "")
+    link_pending = bool(options.get("include_topvisor_report_link") and legacy_url)
     yandex_indexes = [i for i, item in enumerate(segments) if item.get("search_engine") == "yandex"]
     for index, segment in enumerate(segments):
-        show_link = link_pending and (
-            index == yandex_indexes[-1] if yandex_indexes else index == len(segments) - 1
+        report_url = (
+            _topvisor_segment_url(options, segment)
+            if options.get("include_topvisor_report_link") and report_urls
+            else legacy_url
+            if link_pending
+            and (index == yandex_indexes[-1] if yandex_indexes else index == len(segments) - 1)
+            else ""
         )
-        _render_topvisor_segment(doc, payload, segment, blocks, show_link=show_link)
-        link_pending = link_pending and not show_link
+        _render_topvisor_segment(doc, payload, segment, blocks, report_url=report_url)
+        link_pending = link_pending and not bool(report_url)
 
 
 def _metric_series(payload, source, codes):
@@ -809,17 +869,33 @@ def _nice_step(values, *, minimum=10):
     return max(minimum, factor * magnitude)
 
 
-def _single_service_chart(points, *, title, color, fill=False, suffix="", minimum_step=None):
-    useful = [(day, value) for day, value in points if value is not None]
+def _single_service_chart(
+    points, *, title, color, fill=False, suffix="", minimum_step=None, step=False
+):
+    by_day = {}
+    for day, value in points:
+        if not day or value is None:
+            continue
+        by_day[date.fromisoformat(str(day)[:10])] = value
+    useful = sorted(by_day.items())
     if not useful:
         return None
-    labels = [_date_label(day) for day, _ in useful]
+    dates = [day for day, _ in useful]
     values = [float(value) for _, value in useful]
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
         figure, axis = plt.subplots(figsize=(7.2, 3.25), dpi=150, facecolor="white")
-        axis.plot(labels, values, linewidth=2.0, color=color)
+        if step:
+            axis.step(dates, values, where="post", linewidth=2.0, color=color)
+        else:
+            axis.plot(dates, values, linewidth=2.0, color=color)
         if fill:
-            axis.fill_between(labels, values, color=color, alpha=0.82)
+            axis.fill_between(
+                dates,
+                values,
+                color=color,
+                alpha=0.82,
+                step="post" if step else None,
+            )
         axis.set_title(title, loc="left", fontsize=13, color="#2F343B", pad=16)
         axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:g}{suffix}"))
         if minimum_step:
@@ -831,7 +907,62 @@ def _single_service_chart(points, *, title, color, fill=False, suffix="", minimu
             axis.set_ylim(low, high)
             axis.set_yticks([low + step * index for index in range(int((high - low) / step) + 1)])
         _style_axis(axis)
-        axis.xaxis.set_major_locator(MaxNLocator(7))
+        axis.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=7))
+        axis.xaxis.set_major_formatter(
+            FuncFormatter(lambda value, _pos: _date_label(mdates.num2date(value).date()))
+        )
+        figure.tight_layout()
+        return _save_figure(figure)
+
+
+def _indexing_group_color(index, row):
+    if row.get("path") == "Статус неизвестен":
+        return "#F2B51D"
+    return INDEXING_GROUP_COLORS[index % len(INDEXING_GROUP_COLORS)]
+
+
+def _indexing_group_chart(points, distribution):
+    rows = [
+        row
+        for row in ((distribution or {}).get("rows") or [])
+        if _decimal_or_none(row.get("count")) not in (None, 0)
+    ]
+    if not rows:
+        return _single_service_chart(
+            points,
+            title="Страницы в поиске",
+            color="#00B945",
+            fill=True,
+            step=True,
+        )
+    by_day = {}
+    for day, value in points:
+        if not day or value is None:
+            continue
+        by_day[date.fromisoformat(str(day)[:10])] = float(value)
+    useful = sorted(by_day.items())
+    if not useful:
+        return None
+    dates = [day for day, _ in useful]
+    totals = [value for _, value in useful]
+    distribution_total = sum(float(row["count"]) for row in rows)
+    if not distribution_total:
+        return None
+    series = [
+        [total * float(row["count"]) / distribution_total for total in totals] for row in rows
+    ]
+    colors = [_indexing_group_color(index, row) for index, row in enumerate(rows)]
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
+        figure, axis = plt.subplots(figsize=(7.2, 3.25), dpi=150, facecolor="white")
+        axis.stackplot(dates, *series, colors=colors, alpha=0.9, step="post")
+        axis.set_title("Страницы в поиске", loc="left", fontsize=13, color="#2F343B", pad=16)
+        axis.set_ylim(bottom=0)
+        axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:g}"))
+        _style_axis(axis)
+        axis.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=3, maxticks=7))
+        axis.xaxis.set_major_formatter(
+            FuncFormatter(lambda value, _pos: _date_label(mdates.num2date(value).date()))
+        )
         figure.tight_layout()
         return _save_figure(figure)
 
@@ -954,21 +1085,63 @@ def _change_color(current, previous, *, lower_is_better=False):
     return "26A95B" if improved else "F04444"
 
 
+def _style_run(run, *, size, color="000000", bold=False):
+    run.font.name = "Arial"
+    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Arial")
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.color.rgb = RGBColor.from_string(color)
+
+
+def _style_provider_table(table):
+    for cell in table.rows[0].cells:
+        for paragraph in cell.paragraphs:
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            for run in paragraph.runs:
+                _style_run(run, size=11)
+    for row in table.rows[1:]:
+        for paragraph in row.cells[0].paragraphs:
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            for run in paragraph.runs:
+                _style_run(run, size=11)
+
+
 def _paired_metric_cell(cell, code, current, previous, *, lower_is_better=False):
     cell.text = _provider_value(code, current)
-    cell.paragraphs[0].runs[0].font.size = Pt(9)
+    current_paragraph = cell.paragraphs[0]
+    current_paragraph.paragraph_format.space_after = Pt(8)
+    _style_run(current_paragraph.runs[0], size=9)
     if previous is None:
         return
-    delta = abs((_decimal_or_none(current) or 0) - (_decimal_or_none(previous) or 0))
-    change_text = _number(
-        delta,
-        decimal_places=2 if code in {"ctr", "average_position", "bounce_rate"} else 0,
-    )
+
+    previous_paragraph = cell.add_paragraph(_provider_value(code, previous))
+    previous_paragraph.paragraph_format.space_after = Pt(0)
+    _style_run(previous_paragraph.runs[0], size=7.5, color="7A8796")
+
+    current_number = _decimal_or_none(current)
+    previous_number = _decimal_or_none(previous)
+    delta = abs((current_number or 0) - (previous_number or 0))
+    if code in {"shows", "clicks"}:
+        relative = (
+            delta / abs(previous_number) * Decimal(100)
+            if previous_number not in (None, 0)
+            else None
+        )
+        change_text = _number(relative, "%", decimal_places=0)
+    else:
+        change_text = _number(
+            delta,
+            "%" if code in {"ctr", "bounce_rate", "conversion_rate"} else "",
+            decimal_places=2,
+        )
     change = cell.add_paragraph(change_text)
     change.paragraph_format.space_after = Pt(0)
-    change.runs[0].font.size = Pt(7.5)
-    change.runs[0].font.color.rgb = RGBColor.from_string(
-        _change_color(current, previous, lower_is_better=lower_is_better)
+    _style_run(
+        change.runs[0],
+        size=7.5,
+        color=_change_color(current, previous, lower_is_better=lower_is_better),
     )
 
 
@@ -990,8 +1163,30 @@ def _webmaster_query_summary_table(doc, current, previous):
             previous.get(code),
             lower_is_better=code == "average_position",
         )
+    _style_provider_table(table)
     _set_table_borders(table, "D7DADF", size="3")
     return table
+
+
+def _webmaster_query_summary_from_changes(payload):
+    changes = _metric_source(payload, "yandex_webmaster").get("normalized_changes", {})
+    codes = {
+        "shows": "search_impressions",
+        "clicks": "search_clicks",
+        "ctr": "search_ctr",
+        "average_position": "average_position",
+    }
+    current = {
+        target: changes[source].get("current")
+        for target, source in codes.items()
+        if source in changes and changes[source].get("current") is not None
+    }
+    previous = {
+        target: changes[source].get("previous")
+        for target, source in codes.items()
+        if source in changes and changes[source].get("previous") is not None
+    }
+    return current, previous
 
 
 def _webmaster_query_text(current, previous):
@@ -1061,6 +1256,7 @@ def _webmaster_popular_table(doc, current_rows, previous_rows):
                 before.get(code),
                 lower_is_better=code == "average_position",
             )
+    _style_provider_table(table)
     _set_table_borders(table, "D7DADF", size="3")
     return table
 
@@ -1082,9 +1278,8 @@ def _render_indexing_legend(doc, distribution):
     if not rows:
         return
     paragraph = doc.add_paragraph()
-    colors = ("00B945", "15A850", "3BBB69", "69C985", "8BD6A1", "A9DFB8")
     for index, row in enumerate(rows):
-        color = "F2B51D" if row.get("path") == "Статус неизвестен" else colors[index % len(colors)]
+        color = _indexing_group_color(index, row).removeprefix("#")
         count = paragraph.add_run(_number(row.get("count"), decimal_places=0) + "  ")
         count.bold = True
         count.font.color.rgb = RGBColor.from_string(color)
@@ -1175,6 +1370,7 @@ def _render_webmaster(doc, payload, blocks):
                     title=f"Индекс качества сайта (ИКС) — {_number(current)}",
                     color=WEBMASTER_COLORS[0],
                     minimum_step=10,
+                    step=True,
                 ),
             )
             _render_iks_explanation(doc)
@@ -1183,16 +1379,14 @@ def _render_webmaster(doc, payload, blocks):
         indexing_rows = _daily_rows(details, "indexed_pages")
         _period_caption(doc, indexing_rows)
         points = [(row.get("date"), row.get("value")) for row in indexing_rows]
+        distribution = latest.get("path_distribution")
         _add_report_picture(
             doc,
-            _single_service_chart(
+            _indexing_group_chart(
                 points or _metric_series(payload, source, ("indexed_pages",))[0][1],
-                title="Страницы в поиске",
-                color="#00B945",
-                fill=True,
+                distribution,
             ),
         )
-        distribution = latest.get("path_distribution")
         _render_indexing_legend(doc, distribution)
         distribution_rows = (distribution or {}).get("rows") or []
         known_rows = [row for row in distribution_rows if row.get("path") != "Статус неизвестен"]
@@ -1211,21 +1405,10 @@ def _render_webmaster(doc, payload, blocks):
         _add_report_picture(doc, _webmaster_search_chart(payload))
         current_summary = latest.get("query_summary") or {}
         previous_summary = latest.get("comparison_query_summary") or {}
+        if not current_summary:
+            current_summary, previous_summary = _webmaster_query_summary_from_changes(payload)
         if current_summary:
             _webmaster_query_summary_table(doc, current_summary, previous_summary)
-        else:
-            codes = tuple(
-                code
-                for code in (
-                    "search_impressions",
-                    "search_clicks",
-                    "search_ctr",
-                    "average_position",
-                )
-                if _metric_has_data(payload, source, code)
-            )
-            if codes:
-                _change_table(doc, payload, source, codes, provider="webmaster")
         doc.add_paragraph(
             "Красным шрифтом представлены цифры, показывающие спад показателя по сравнению "
             "с предыдущим периодом, зелёным — рост. Запросы, по которым начинает показываться "
@@ -1435,6 +1618,16 @@ def _search_engine_name(row):
     return str(dimension.get("name") or dimension.get("id") or "").strip()
 
 
+def _search_engine_code(label):
+    raw = str(label or "").casefold()
+    if "yandex" in raw or "яндекс" in raw:
+        return "yandex"
+    for code in ("google", "bing", "yahoo"):
+        if code in raw:
+            return code
+    return raw
+
+
 def _compact_number(value):
     number = _decimal_or_none(value)
     if number is None:
@@ -1634,30 +1827,45 @@ def _metrika_detail_table(doc, rows, *, first_header, metrics=("visits", "users"
         widths,
         header_fill="F7F7F7",
     )
-    for cell in table.rows[0].cells[1:]:
-        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for column_index, cell in enumerate(table.rows[0].cells):
+        cell.paragraphs[0].alignment = (
+            WD_ALIGN_PARAGRAPH.LEFT if column_index == 0 else WD_ALIGN_PARAGRAPH.CENTER
+        )
         for run in cell.paragraphs[0].runs:
-            run.font.size = Pt(7)
-            run.font.color.rgb = RGBColor.from_string("7A8796")
+            _style_run(
+                run,
+                size=8 if column_index == 0 else 7,
+                color="000000" if column_index == 0 else "7A8796",
+            )
     for row_index, (_label, current, previous) in enumerate(rows, start=1):
+        label_cell = table.rows[row_index].cells[0]
+        for run in label_cell.paragraphs[0].runs:
+            _style_run(run, size=8)
         for metric_index, code in enumerate(metrics):
             previous_cell = table.rows[row_index].cells[1 + metric_index * 2]
             current_cell = table.rows[row_index].cells[2 + metric_index * 2]
             previous_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             current_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            previous_cell.paragraphs[0].paragraph_format.space_after = Pt(0)
+            current_cell.paragraphs[0].paragraph_format.space_after = Pt(2)
+            for run in previous_cell.paragraphs[0].runs:
+                _style_run(run, size=8)
+            for run in current_cell.paragraphs[0].runs:
+                _style_run(run, size=8)
             delta = _relative_delta(current.get(code), previous.get(code))
             if delta is None:
                 continue
             change = current_cell.add_paragraph(_number(delta, "%", decimal_places=2))
             change.alignment = WD_ALIGN_PARAGRAPH.CENTER
             change.paragraph_format.space_after = Pt(0)
-            change.runs[0].font.size = Pt(7)
-            change.runs[0].font.color.rgb = RGBColor.from_string(
-                _change_color(
+            _style_run(
+                change.runs[0],
+                size=7,
+                color=_change_color(
                     current.get(code),
                     previous.get(code),
                     lower_is_better=code == "bounce_rate",
-                )
+                ),
             )
     _set_table_borders(table, "E2E4E8", size="3")
     return table
@@ -1924,7 +2132,23 @@ def _render_metrika(doc, payload, blocks):
                 else {}
             )
             ordered = sorted(current, key=lambda key: current[key]["visits"], reverse=True)[:4]
-            colors = {"Google": "#7A45E5", "Яндекс": "#FF3399"}
+            colors = {
+                "Google": "#7A45E5",
+                "Яндекс": "#FF3399",
+                "Bing": "#0FBDA0",
+                "Yahoo": "#3388FF",
+                "Yahoo!": "#3388FF",
+            }
+            selected_bar_engines = options.get("metrika_bar_search_engines")
+            chart_labels = (
+                [
+                    label
+                    for label in ordered
+                    if _search_engine_code(label) in selected_bar_engines
+                ]
+                if selected_bar_engines is not None
+                else ordered
+            )
             chart_rows = [
                 {
                     "label": label,
@@ -1932,7 +2156,7 @@ def _render_metrika(doc, payload, blocks):
                     "current": current[label].get("visits"),
                     "color": colors.get(label),
                 }
-                for label in ordered
+                for label in chart_labels
             ]
             doc.add_paragraph(
                 "Динамика по поисковым системам за квартал:",
@@ -1996,8 +2220,6 @@ def _render_metrika(doc, payload, blocks):
         flags = {
             "moscow": "geography_moscow",
             "saint_petersburg": "geography_saint_petersburg",
-            "undefined": "geography_undefined",
-            "area_undefined": "geography_area_undefined",
         }
         selected = [
             key for key, flag in flags.items() if options.get(flag, True) and key in current

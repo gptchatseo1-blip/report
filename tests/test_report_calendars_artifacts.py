@@ -28,12 +28,20 @@ def mapping(project, configurations):
     )
 
 
-def ranking(project, day, engine, config, *, url="https://example.test/page"):
+def ranking(
+    project,
+    day,
+    engine,
+    config,
+    *,
+    url="https://example.test/page",
+    region="Москва",
+):
     snapshot = RankingSnapshot.objects.create(
         project=project,
         snapshot_date=day,
         search_engine=engine,
-        region="Москва",
+        region=region,
         ranking_depth=20,
         topvisor_configuration_id=config,
         response_checksum=f"sum-{config}-{day}",
@@ -171,6 +179,9 @@ def test_new_snapshot_stores_flexible_report_options(client, user, project):
     assert options["geography_moscow"] is True
     assert options["geography_saint_petersburg"] is False
     assert options["topvisor_report_url"] == "https://topvisor.example/report/42"
+    assert options["topvisor_report_urls"] == {
+        "ya": "https://topvisor.example/report/42"
+    }
 
 
 def test_topvisor_report_link_requires_url(project):
@@ -180,6 +191,62 @@ def test_topvisor_report_link_requires_url(project):
     )
     assert not form.is_valid()
     assert "topvisor_report_url" in form.errors
+
+
+def test_topvisor_report_links_are_required_and_saved_per_engine_region(client, user, project):
+    mapping(
+        project,
+        [
+            {
+                "id": "ya-msk",
+                "search_engine": "yandex",
+                "region_name": "Москва",
+            },
+            {
+                "id": "ya-spb",
+                "search_engine": "yandex",
+                "region_name": "Санкт-Петербург",
+            },
+        ],
+    )
+    for day in (date(2026, 7, 1), date(2026, 7, 31)):
+        ranking(project, day, "yandex", "ya-msk", region="Москва")
+        ranking(project, day, "yandex", "ya-spb", region="Санкт-Петербург")
+    client.force_login(user)
+    list_url = reverse("reports:report-list", args=[project.id])
+    response = client.get(list_url)
+    html = response.content.decode()
+    assert "Яндекс · Москва" in html
+    assert "Яндекс · Санкт-Петербург" in html
+    assert 'name="topvisor_report_url_0"' in html
+    assert 'name="topvisor_report_url_1"' in html
+
+    invalid = ReportCreateForm(
+        {
+            "yandex_dates": ["2026-07-01", "2026-07-31"],
+            "include_topvisor_report_link": "on",
+            "topvisor_report_url_0": "https://topvisor.example/msk",
+        },
+        project=project,
+    )
+    assert not invalid.is_valid()
+    assert "topvisor_report_url_1" in invalid.errors
+
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "yandex_dates": ["2026-07-01", "2026-07-31"],
+            "include_topvisor_report_link": "on",
+            "topvisor_report_url_0": "https://topvisor.example/msk",
+            "topvisor_report_url_1": "https://topvisor.example/spb",
+        },
+    )
+    assert response.status_code == 302
+    options = ReportDatasetSnapshot.objects.get().payload["display_options"]
+    assert options["topvisor_report_urls"] == {
+        "ya-msk": "https://topvisor.example/msk",
+        "ya-spb": "https://topvisor.example/spb",
+    }
 
 
 @pytest.mark.parametrize("show_urls", [False, True])

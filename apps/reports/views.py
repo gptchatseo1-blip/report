@@ -11,6 +11,7 @@ from django.db import IntegrityError
 from django.db.models import Count, Max, OuterRef, Subquery
 from django.http import FileResponse, Http404, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
@@ -65,8 +66,6 @@ METRIC_SECTIONS = {
         (
             "geography_moscow_visits",
             "geography_saint_petersburg_visits",
-            "geography_undefined_visits",
-            "geography_area_undefined_visits",
         ),
     ),
 }
@@ -172,13 +171,23 @@ def _source_period_fields(form):
         return "периодов"
 
     fields = []
-    for name, label, short_label, description, unavailable_description in (
+    for (
+        name,
+        label,
+        short_label,
+        description,
+        unavailable_description,
+        mapping_relation,
+        sync_route,
+    ) in (
         (
             "metrika_snapshots",
             "Яндекс.Метрика",
             "Метрика",
             "Периоды для разделов «Трафик» и «Источники трафика».",
             "разделы «Трафик» и «Источники трафика» не будут заполнены.",
+            "yandex_metrika_mapping",
+            "yandex:sync",
         ),
         (
             "webmaster_snapshots",
@@ -186,6 +195,8 @@ def _source_period_fields(form):
             "Вебмастер",
             "Периоды для кликов, показов, CTR, индексации и ИКС.",
             "клики, показы, CTR, индексация и ИКС не будут заполнены.",
+            "yandex_webmaster_mapping",
+            "yandex:sync-webmaster",
         ),
     ):
         bound = form[name]
@@ -195,6 +206,9 @@ def _source_period_fields(form):
             for option in form.source_period_options.get(name, [])
         ]
         selected_months = [option["month"] for option in options if option["selected"]]
+        mapping = getattr(form.project, mapping_relation, None)
+        end = max(selected_months, default="")
+        sync_month = end or getattr(form, "report_month", timezone.localdate()).strftime("%Y-%m")
         fields.append(
             {
                 "name": name,
@@ -206,11 +220,36 @@ def _source_period_fields(form):
                 "selected_count": len(selected_months),
                 "period_word": period_word(len(selected_months)),
                 "start": min(selected_months, default=""),
-                "end": max(selected_months, default=""),
+                "end": end,
                 "errors": bound.errors,
+                "connected": mapping is not None,
+                "last_synced_at": getattr(mapping, "last_successful_sync_at", None),
+                "sync_form_id": f"sync-{name.replace('_snapshots', '')}-form",
+                "sync_url": reverse(sync_route, args=[form.project.id]),
+                "sync_month": sync_month,
             }
         )
     return fields
+
+
+def _topvisor_report_link_fields(form):
+    return [
+        {**item, "field": form[item["name"]]}
+        for item in form.topvisor_report_link_fields
+    ]
+
+
+def _topvisor_report_url(payload, source):
+    options = payload.get("display_options", {})
+    if not options.get("include_topvisor_report_link"):
+        return ""
+    urls = options.get("topvisor_report_urls") or {}
+    configuration = str(
+        source.get("configuration_id") or source.get("topvisor_configuration_id") or ""
+    )
+    if urls:
+        return urls.get(configuration, "")
+    return options.get("topvisor_report_url", "")
 
 
 @login_required
@@ -248,6 +287,7 @@ def report_list(request, project_id):
     form = ReportCreateForm(project=project, initial={"submission_token": token})
     calendar_fields = _calendar_fields(form)
     source_period_fields = _source_period_fields(form)
+    topvisor_report_link_fields = _topvisor_report_link_fields(form)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -260,6 +300,7 @@ def report_list(request, project_id):
             "form": form,
             "calendar_fields": calendar_fields,
             "source_period_fields": source_period_fields,
+            "topvisor_report_link_fields": topvisor_report_link_fields,
             "can_create": can_create,
         },
     )
@@ -303,6 +344,7 @@ def report_create(request, project_id):
                 "mime_type": screenshot.content_type,
                 "data": base64.b64encode(screenshot.read()).decode("ascii"),
             }
+        topvisor_report_urls = form.cleaned_topvisor_report_urls()
         version = create_report_version(
             report=report,
             created_by=request.user,
@@ -330,6 +372,7 @@ def report_create(request, project_id):
                             "metrika_robotness",
                             "include_metrika_sources_table",
                             "include_metrika_search_engines",
+                            "metrika_bar_search_engines",
                             "include_metrika_geography",
                             "geography_moscow",
                             "geography_saint_petersburg",
@@ -344,7 +387,11 @@ def report_create(request, project_id):
                             "include_completed_work",
                         )
                     },
-                    "topvisor_report_url": form.cleaned_data["topvisor_report_url"],
+                    "topvisor_report_urls": topvisor_report_urls,
+                    "topvisor_report_url": (
+                        next(iter(topvisor_report_urls.values()), "")
+                        or form.cleaned_data["topvisor_report_url"]
+                    ),
                     "webmaster_queries_comment": form.cleaned_data["webmaster_queries_comment"],
                     "webmaster_queries_screenshot": screenshot_payload,
                 },
@@ -365,6 +412,7 @@ def report_create(request, project_id):
     )
     calendar_fields = _calendar_fields(form)
     source_period_fields = _source_period_fields(form)
+    topvisor_report_link_fields = _topvisor_report_link_fields(form)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -377,6 +425,7 @@ def report_create(request, project_id):
             "form": form,
             "calendar_fields": calendar_fields,
             "source_period_fields": source_period_fields,
+            "topvisor_report_link_fields": topvisor_report_link_fields,
             "can_create": can_create,
         },
         status=400,
@@ -454,6 +503,7 @@ def _segment_rows(payload, code):
         row["engine_label"] = ENGINE_LABELS.get(
             source.get("search_engine"), source.get("search_engine") or "Поиск"
         )
+        row["topvisor_report_url"] = _topvisor_report_url(payload, source)
         if code in TOP_SECTION_RANGES:
             start, end = TOP_SECTION_RANGES[code]
             configuration_id = source.get("configuration_id")
@@ -609,13 +659,10 @@ def _preview_context(version, *, form_overrides=None):
                 "periods": payload.get("periods", {}),
                 "show_urls": show_urls,
                 "top_range": TOP_SECTION_RANGES.get(code),
-                "topvisor_report_url": (
-                    payload.get("display_options", {}).get("topvisor_report_url")
-                    if payload.get("display_options", {}).get("include_topvisor_report_link")
-                    else ""
-                ),
-                "modern_report": payload.get("display_options", {}).get("configuration_version")
-                == 2,
+                "modern_report": str(
+                    payload.get("display_options", {}).get("configuration_version", 0)
+                )
+                in {"2", "3"},
             }
         )
     errors = sum(i.severity == ValidationIssue.Severity.ERROR for i in issues)

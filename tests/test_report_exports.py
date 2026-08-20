@@ -17,7 +17,12 @@ from pypdf import PdfReader
 from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.metrics.synthetic import sync_synthetic_metrics
 from apps.projects.models import Project
-from apps.reports.exporting import generate_artifact
+from apps.reports.exporting import (
+    _monthly_topvisor_rows,
+    _position_fill,
+    _webmaster_query_summary_from_changes,
+    generate_artifact,
+)
 from apps.reports.models import Report, ReportDatasetSnapshot
 from apps.reports.services import create_report_version
 
@@ -76,6 +81,93 @@ def version():
 def _artifact_bytes(artifact):
     with artifact.file.open("rb") as stream:
         return stream.read()
+
+
+def test_legacy_webmaster_changes_use_provider_fidelity_summary_table_data():
+    payload = {
+        "calculated": {
+            "sources": {
+                "sources": {
+                    "yandex_webmaster": {
+                        "normalized_changes": {
+                            "search_impressions": {"previous": "335656", "current": "291167"},
+                            "search_clicks": {"previous": "16483", "current": "10264"},
+                            "search_ctr": {"previous": "4.9107", "current": "3.5251"},
+                            "average_position": {"previous": "7.6054", "current": "8.8972"},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    current, previous = _webmaster_query_summary_from_changes(payload)
+
+    assert current == {
+        "shows": "291167",
+        "clicks": "10264",
+        "ctr": "3.5251",
+        "average_position": "8.8972",
+    }
+    assert previous == {
+        "shows": "335656",
+        "clicks": "16483",
+        "ctr": "4.9107",
+        "average_position": "7.6054",
+    }
+
+
+def test_position_fill_uses_distinct_light_green_bands():
+    assert [_position_fill(position) for position in (1, 3, 4, 5, 6, 10, 11, 20, 21, 30)] == [
+        "55C98A",
+        "55C98A",
+        "8FDDB0",
+        "8FDDB0",
+        "C9EFD7",
+        "C9EFD7",
+        "E2F5E9",
+        "E2F5E9",
+        "F1F9F4",
+        "F1F9F4",
+    ]
+
+
+def test_monthly_topvisor_rows_use_one_boundary_point_per_calendar_month():
+    segment = {
+        "ranking_depth": 100,
+        "three_month_series": [
+            {"month": "2026-05-31", "visibility": "2", "distribution": {}},
+            {"month": "2026-07-01", "visibility": "5", "distribution": {}},
+            {"month": "2026-06-01", "visibility": "3", "distribution": {}},
+            {"month": "2026-05-01", "visibility": "1", "distribution": {}},
+            {"month": "2026-07-31", "visibility": "6", "distribution": {}},
+            {"month": "2026-06-30", "visibility": "4", "distribution": {}},
+        ],
+    }
+
+    rows = _monthly_topvisor_rows(segment)
+
+    assert [row[0] for row in rows] == ["Май 2026", "Июнь 2026", "Июль 2026"]
+    assert [row[1] for row in rows] == ["1%", "4%", "6%"]
+
+
+def test_monthly_topvisor_rows_collapse_duplicate_month_start_dates():
+    segment = {
+        "ranking_depth": 100,
+        "three_month_series": [
+            {"month": "2026-05-01", "visibility": "1", "distribution": {}},
+            {"month": "2026-05-01", "visibility": "2", "distribution": {}},
+            {"month": "2026-06-01", "visibility": "3", "distribution": {}},
+            {"month": "2026-06-01", "visibility": "4", "distribution": {}},
+            {"month": "2026-07-01", "visibility": "5", "distribution": {}},
+            {"month": "2026-07-01", "visibility": "6", "distribution": {}},
+        ],
+    }
+
+    rows = _monthly_topvisor_rows(segment)
+
+    assert [row[0] for row in rows] == ["Май 2026", "Июнь 2026", "Июль 2026"]
+    assert [row[1] for row in rows] == ["1%", "4%", "6%"]
 
 
 def test_full_docx_matches_reference_report_structure_and_styles(rich_version, settings, tmp_path):
@@ -175,6 +267,34 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         "Отказы, %\nСегмент A",
         "Отказы, %\nСегмент B",
     ]
+    assert search_table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Arial"
+    assert search_table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 8
+    assert search_table.rows[0].cells[1].paragraphs[0].runs[0].font.size.pt == 7
+    assert str(search_table.rows[0].cells[1].paragraphs[0].runs[0].font.color.rgb) == "7A8796"
+    assert search_table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 8
+    assert search_table.rows[1].cells[1].paragraphs[0].runs[0].font.size.pt == 8
+    assert search_table.rows[1].cells[2].paragraphs[1].runs[0].font.size.pt == 7
+    provider_tables = [
+        table
+        for table in document.tables
+        if table.rows[0].cells[0].text in {"Группа запросов", "Запрос"}
+    ]
+    assert {table.rows[0].cells[0].text for table in provider_tables} == {
+        "Группа запросов",
+        "Запрос",
+    }
+    for table in provider_tables:
+        assert table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Arial"
+        assert table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 11
+        assert table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 11
+        metric_paragraphs = table.rows[1].cells[1].paragraphs
+        assert [paragraph.runs[0].font.size.pt for paragraph in metric_paragraphs] == [
+            9,
+            7.5,
+            7.5,
+        ]
+        assert str(metric_paragraphs[1].runs[0].font.color.rgb) == "7A8796"
+        assert str(metric_paragraphs[2].runs[0].font.color.rgb) in {"26A95B", "F04444"}
     landing_tables = [
         table for table in document.tables if table.rows[0].cells[0].text == "Страница входа"
     ]
@@ -238,7 +358,54 @@ def test_modern_report_options_control_sections_and_top_tables(rich_version, set
     assert "Запросы в TOP-5 по Яндекс.Москва" in text
     assert "таблица запросов в TOP-5 сформирована" not in text
     with zipfile.ZipFile(io.BytesIO(data)) as package:
-        assert b"80DFA8" in package.read("word/document.xml")
+        assert b"55C98A" in package.read("word/document.xml")
+
+
+def test_topvisor_links_follow_their_engine_and_region_data(rich_version, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    payload = rich_version.snapshot.payload
+    config_by_engine = {"yandex": "ya-msk", "google": "go-ru"}
+    for segment in payload["calculated"]["positions"]["segments"]:
+        segment["configuration_id"] = config_by_engine[segment["search_engine"]]
+    for source in payload["ranking_sources"]:
+        source["configuration_id"] = config_by_engine[source["search_engine"]]
+    payload.setdefault("display_options", {}).update(
+        {
+            "configuration_version": 3,
+            "include_top_tables": True,
+            "include_top_10": True,
+            "include_topvisor_report_link": True,
+            "topvisor_report_urls": {
+                "ya-msk": "https://topvisor.example/yandex-moscow",
+                "go-ru": "https://topvisor.example/google-russia",
+            },
+            "topvisor_report_url": "https://topvisor.example/yandex-moscow",
+        }
+    )
+    ReportDatasetSnapshot.objects.filter(pk=rich_version.snapshot.pk).update(payload=payload)
+    rich_version.snapshot.refresh_from_db()
+
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(
+                generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
+            )
+        )
+    )
+    paragraphs = [paragraph.text for paragraph in document.paragraphs]
+    yandex_link = (
+        "Подробный отчёт Яндекс · Москва: https://topvisor.example/yandex-moscow"
+    )
+    google_link = (
+        "Подробный отчёт Google · Россия: https://topvisor.example/google-russia"
+    )
+    assert paragraphs.count(yandex_link) == 1
+    assert paragraphs.count(google_link) == 1
+    assert paragraphs.index("Запросы в TOP-10 по Яндекс.Москва") < paragraphs.index(yandex_link)
+    assert paragraphs.index(yandex_link) < paragraphs.index("Google. Россия")
+    assert paragraphs.index("Запросы в TOP-10 по Google.Россия") < paragraphs.index(
+        google_link
+    )
 
 
 @pytest.mark.parametrize(

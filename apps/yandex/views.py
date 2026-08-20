@@ -557,8 +557,16 @@ def sync(request, project_id):
         report, _ = Report.objects.get_or_create(
             project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
         )
+        if request.POST.get("return_to_reports") == "1":
+            messages.success(
+                request,
+                "Данные Яндекс.Метрики синхронизированы. Теперь можно создать новую версию отчёта.",
+            )
+            return redirect("reports:report-list", project_id=mapping.project_id)
         return redirect("reports:report-detail", report_id=report.id)
     messages.error(request, run.error_message)
+    if request.POST.get("return_to_reports") == "1":
+        return redirect("reports:report-list", project_id=mapping.project_id)
     return redirect("yandex:connection", project_id=project_id)
 
 
@@ -584,8 +592,17 @@ def sync_webmaster_view(request, project_id):
         report, _ = Report.objects.get_or_create(
             project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
         )
+        if request.POST.get("return_to_reports") == "1":
+            messages.success(
+                request,
+                "Данные Яндекс.Вебмастера синхронизированы. "
+                "Теперь можно создать новую версию отчёта.",
+            )
+            return redirect("reports:report-list", project_id=mapping.project_id)
         return redirect("reports:report-detail", report_id=report.id)
     messages.error(request, run.error_message)
+    if request.POST.get("return_to_reports") == "1":
+        return redirect("reports:report-list", project_id=mapping.project_id)
     return redirect("yandex:connection", project_id=project_id)
 
 
