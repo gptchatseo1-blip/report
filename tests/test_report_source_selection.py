@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -202,7 +203,8 @@ def test_report_page_keeps_source_period_controls_inside_each_source_card(client
         )
     client.force_login(user)
 
-    html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
+    response = client.get(reverse("reports:report-list", args=[project.id]))
+    html = response.content.decode()
 
     metrika_start = html.index('data-source-label="Метрика"')
     webmaster_start = html.index('data-source-label="Вебмастер"')
@@ -215,7 +217,63 @@ def test_report_page_keeps_source_period_controls_inside_each_source_card(client
     assert 'name="webmaster_snapshots"' not in metrika_card
     assert "Вебмастер: выбрано 3 периода." in webmaster_card
     assert 'name="webmaster_snapshots"' in webmaster_card
-    assert "По умолчанию отмечены три последних доступных периода" in html
+    assert "Перед созданием ежемесячного отчёта синхронизируйте оба источника" in html
+    assert 'form="sync-metrika-form"' in metrika_card
+    assert 'form="sync-webmaster-form"' in webmaster_card
+    assert 'action="' + reverse("yandex:sync", args=[project.id]) + '"' in html
+    assert 'action="' + reverse("yandex:sync-webmaster", args=[project.id]) + '"' in html
+    assert html.count('name="return_to_reports" value="1"') == 2
+    assert html.count('value="2026-07" data-sync-month-for=') == 2
+    assert "Не определено</label>" not in html
+    assert "Область не определена</label>" not in html
+    assert list(response.context["form"]["metrika_bar_search_engines"].value()) == [
+        "google",
+        "yandex",
+    ]
+    assert 'value="bing"' in html and 'value="yahoo"' in html
+
+
+def test_report_page_sync_buttons_return_to_report_builder(client, monkeypatch):
+    user = get_user_model().objects.create_user("source-sync")
+    project = Project.objects.create(name="Source Sync", domain="source-sync.example")
+    connection = YandexConnection.objects.create(
+        user=user,
+        access_token_encrypted=b"token",
+        active=True,
+    )
+    metrika_mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    webmaster_mapping = YandexWebmasterProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        host_id="host",
+        host_url="https://source-sync.example/",
+    )
+    success = SimpleNamespace(status="success", Status=SimpleNamespace(SUCCESS="success"))
+    monkeypatch.setattr("apps.yandex.views.sync_metrika", lambda **kwargs: success)
+    monkeypatch.setattr("apps.yandex.views.sync_webmaster", lambda **kwargs: success)
+    client.force_login(user)
+    expected = reverse("reports:report-list", args=[project.id])
+
+    metrika_response = client.post(
+        reverse("yandex:sync", args=[project.id]),
+        {"month": "2026-07", "return_to_reports": "1"},
+    )
+    webmaster_response = client.post(
+        reverse("yandex:sync-webmaster", args=[project.id]),
+        {"month": "2026-07", "return_to_reports": "1"},
+    )
+
+    assert metrika_response.url == expected
+    assert webmaster_response.url == expected
+    assert Report.objects.filter(project=project, report_month=date(2026, 7, 1)).exists()
+    assert metrika_mapping.project_id == project.id
+    assert webmaster_mapping.project_id == project.id
 
 
 def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocked(client):

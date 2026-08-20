@@ -1,4 +1,4 @@
-<section class="report-source-card" data-source-period-picker data-source-label="{{ source.short_label }}">
+<section class="report-source-card" data-source-period-picker data-source-label="{{ source.short_label }}" data-source-name="{{ source.name }}">
   <h3>{{ source.label }}</h3>
   <p class="source-help">{{ source.description }}</p>
   {% if source.options %}
@@ -21,5 +21,12 @@
   {% for error in source.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
   {% else %}
   <p class="inline-warning warning">{{ source.short_label }}: данные недоступны — {{ source.unavailable_description }}</p>
+  {% endif %}
+  {% if source.connected %}
+  <div class="source-sync-actions">
+    <p class="source-sync-status">Последняя синхронизация: <strong>{{ source.last_synced_at|date:'d.m.Y H:i'|default:'ещё не выполнялась' }}</strong></p>
+    <button type="submit" class="secondary" form="{{ source.sync_form_id }}" data-source-sync-button>Синхронизировать данные</button>
+    <small>Загрузятся выбранный последний месяц и два предыдущих.</small>
+  </div>
   {% endif %}
 </section>

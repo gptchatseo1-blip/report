@@ -79,6 +79,14 @@
     const end = root.querySelector('[data-period-end]');
     const summary = root.querySelector('[data-period-summary]');
     const label = root.dataset.sourceLabel;
+    const syncMonth = document.querySelector(`[data-sync-month-for="${root.dataset.sourceName}"]`);
+    const syncButton = root.querySelector('[data-source-sync-button]');
+
+    function updateSyncMonth() {
+      if (!syncMonth) return;
+      syncMonth.value = end.value || start.value || syncMonth.value;
+      if (syncButton) syncButton.disabled = !syncMonth.value;
+    }
 
     function periodWord(count) {
       if (count % 10 === 1 && count % 100 !== 11) return 'период';
@@ -101,6 +109,7 @@
         input.checked = (!start.value || month >= start.value) && (!end.value || month <= end.value);
       });
       updateSummary();
+      updateSyncMonth();
     }
 
     function updateRangeFromExactSelection() {
@@ -108,11 +117,13 @@
       start.value = selected[0] || '';
       end.value = selected.at(-1) || '';
       updateSummary();
+      updateSyncMonth();
     }
 
     start.addEventListener('change', () => applyRange(start));
     end.addEventListener('change', () => applyRange(end));
     checkboxes.forEach(input => input.addEventListener('change', updateRangeFromExactSelection));
     updateSummary();
+    updateSyncMonth();
   });
 })();

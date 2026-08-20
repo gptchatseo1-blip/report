@@ -302,6 +302,8 @@ def test_preview_renders_snapshot_metrics_segments_work_without_source_diagnosti
     assert "Источник данных" not in html
     assert "Показать вывод по запросам" in html
     assert "Google · Россия · 1 запрос" in html
+    assert '<details class="keyword-spoiler">' in html
+    assert '<details class="keyword-spoiler" open' not in html
     assert 'class="keyword-table with-url"' in html
     assert 'class="metric-change-table"' in html
     assert 'class="report-data-table visibility-table"' in html

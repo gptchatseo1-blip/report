@@ -78,6 +78,18 @@ class ReportCreateForm(forms.Form):
     include_metrika_search_engines = forms.BooleanField(
         label="Поисковые системы", required=False, initial=True
     )
+    metrika_bar_search_engines = forms.MultipleChoiceField(
+        label="Поисковые системы в столбчатом графике",
+        required=False,
+        initial=("google", "yandex"),
+        choices=(
+            ("google", "Google"),
+            ("yandex", "Яндекс"),
+            ("bing", "Bing"),
+            ("yahoo", "Yahoo"),
+        ),
+        widget=forms.CheckboxSelectMultiple,
+    )
     include_metrika_geography = forms.BooleanField(
         label="География посетителей", required=False, initial=True
     )
@@ -122,6 +134,7 @@ class ReportCreateForm(forms.Form):
         self.connected_sources = set()
         self.source_availability = {}
         self.source_period_options = {}
+        self.topvisor_report_link_fields = []
         if project is None:
             for name in (
                 "yandex_dates",
@@ -145,6 +158,39 @@ class ReportCreateForm(forms.Form):
             configurations = project.topvisor_mapping.selected_configurations
         except TopvisorProjectMapping.DoesNotExist:
             configurations = []
+        for index, configuration in enumerate(configurations):
+            raw_engine = str(
+                configuration.get("search_engine")
+                or configuration.get("searcher_name")
+                or configuration.get("searcher")
+                or ""
+            )
+            normalized_engine = raw_engine.casefold()
+            engine_label = (
+                "Яндекс"
+                if "yandex" in normalized_engine or "яндекс" in normalized_engine
+                else "Google"
+                if "google" in normalized_engine
+                else raw_engine or "Поисковая система"
+            )
+            region = str(
+                configuration.get("region_name") or configuration.get("region") or ""
+            ).strip()
+            field_name = f"topvisor_report_url_{index}"
+            self.fields[field_name] = forms.URLField(
+                label=f"{engine_label} · {region or 'Регион не указан'}",
+                required=False,
+                assume_scheme="https",
+                widget=forms.URLInput(attrs={"placeholder": "https://..."}),
+            )
+            self.topvisor_report_link_fields.append(
+                {
+                    "name": field_name,
+                    "configuration_id": configuration_id(configuration),
+                    "engine_label": engine_label,
+                    "region": region,
+                }
+            )
         for item in configurations:
             raw = str(
                 item.get("search_engine")
@@ -188,6 +234,7 @@ class ReportCreateForm(forms.Form):
             if latest_ranking
             else timezone.localdate().replace(day=1)
         )
+        self.report_month = report_month
         month_indexes = {
             report_month.year * 12 + report_month.month - 1 - offset for offset in range(3)
         }
@@ -251,11 +298,22 @@ class ReportCreateForm(forms.Form):
                     "синхронизируйте источник заново.",
                 )
             cleaned[field] = sorted(selected)
-        if cleaned.get("include_topvisor_report_link") and not cleaned.get("topvisor_report_url"):
-            self.add_error(
-                "topvisor_report_url",
-                "Укажите ссылку или отключите её вывод в отчёте.",
-            )
+        if cleaned.get("include_topvisor_report_link"):
+            legacy_url = cleaned.get("topvisor_report_url")
+            if self.topvisor_report_link_fields:
+                for item in self.topvisor_report_link_fields:
+                    if not cleaned.get(item["name"]) and legacy_url:
+                        cleaned[item["name"]] = legacy_url
+                    if not cleaned.get(item["name"]):
+                        self.add_error(
+                            item["name"],
+                            "Укажите ссылку для этой поисковой системы и региона.",
+                        )
+            elif not legacy_url:
+                self.add_error(
+                    "topvisor_report_url",
+                    "Укажите ссылку или отключите её вывод в отчёте.",
+                )
         if cleaned.get("include_top_tables") and not any(
             cleaned.get(name)
             for name in (
@@ -267,7 +325,21 @@ class ReportCreateForm(forms.Form):
             )
         ):
             self.add_error("include_top_tables", "Выберите хотя бы один диапазон TOP.")
+        if cleaned.get("include_metrika_search_engines") and not cleaned.get(
+            "metrika_bar_search_engines"
+        ):
+            self.add_error(
+                "metrika_bar_search_engines",
+                "Выберите минимум одну поисковую систему для столбчатого графика.",
+            )
         return cleaned
+
+    def cleaned_topvisor_report_urls(self):
+        return {
+            str(item["configuration_id"]): self.cleaned_data.get(item["name"])
+            for item in self.topvisor_report_link_fields
+            if self.cleaned_data.get(item["name"])
+        }
 
     def clean_webmaster_queries_screenshot(self):
         image = self.cleaned_data.get("webmaster_queries_screenshot")
