@@ -113,11 +113,40 @@ def test_change_templates_distinguish_directions_zero_base_percent_and_points():
     assert "2 процентного пункта" in points and "40%" not in points
 
 
+@pytest.mark.parametrize(
+    ("label", "absolute", "expected"),
+    [
+        ("Видимость", "1", "Видимость выросла"),
+        ("Видимость", "-1", "Видимость снизилась"),
+        ("Клики", "1", "Клики выросли"),
+        ("Показы", "-1", "Показы снизились"),
+        (
+            "Количество проиндексированных страниц",
+            "1",
+            "Количество проиндексированных страниц выросло",
+        ),
+    ],
+)
+def test_change_templates_use_correct_russian_grammar(label, absolute, expected):
+    text = _change_text(
+        label,
+        {
+            "current": "101",
+            "previous": "100",
+            "absolute": absolute,
+            "relative_percent": "1",
+            "percentage_points": None,
+        },
+    )
+    assert expected in text
+
+
 def test_missing_previous_period_and_missing_data_are_explicit():
     version = make_version(previous=False)
     texts = {block.section_code: block.generated_text for block in version.narrative_blocks.all()}
     assert "предыдущ" in texts["position_dynamics"].lower()
-    assert texts["traffic"] == "Данные раздела отсутствуют."
+    assert texts["traffic"].endswith("Данные раздела отсутствуют.")
+    assert "месячными итогами" in texts["traffic"]
 
 
 def test_edit_preserves_generated_facts_and_validator_replaces_issues():

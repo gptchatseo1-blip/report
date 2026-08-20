@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import date
 
 from django import forms
+from django.utils import timezone
 
 from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import configuration_id
@@ -15,6 +16,44 @@ class ReportCreateForm(forms.Form):
     yandex_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
     google_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
     show_urls = forms.BooleanField(label="Выводить URL", required=False, initial=False)
+    include_visibility = forms.BooleanField(label="Видимость сайта", required=False, initial=True)
+    include_monthly_dynamics = forms.BooleanField(
+        label="Динамика по месяцам", required=False, initial=True
+    )
+    include_top_tables = forms.BooleanField(
+        label="Таблицы запросов по позициям", required=False, initial=True
+    )
+    include_top_5 = forms.BooleanField(label="TOP-5", required=False, initial=True)
+    include_top_10 = forms.BooleanField(label="TOP-10", required=False, initial=True)
+    include_top_20 = forms.BooleanField(label="TOP-20", required=False, initial=False)
+    include_top_11_30 = forms.BooleanField(label="TOP-11–30", required=False, initial=True)
+    include_top_30 = forms.BooleanField(label="TOP-30", required=False, initial=False)
+    include_topvisor_report_link = forms.BooleanField(
+        label="Ссылка на подробный отчёт Topvisor", required=False, initial=False
+    )
+    topvisor_report_url = forms.URLField(
+        label="Ссылка на отчёт Topvisor",
+        required=False,
+        assume_scheme="https",
+        widget=forms.URLInput(attrs={"placeholder": "https://..."}),
+    )
+    include_webmaster = forms.BooleanField(
+        label="Данные Яндекс.Вебмастера", required=False, initial=True
+    )
+    include_metrika = forms.BooleanField(
+        label="Данные Яндекс.Метрики", required=False, initial=True
+    )
+    include_metrika_geography = forms.BooleanField(
+        label="География посетителей", required=False, initial=True
+    )
+    geography_moscow = forms.BooleanField(label="Москва", required=False, initial=True)
+    geography_saint_petersburg = forms.BooleanField(
+        label="Санкт-Петербург", required=False, initial=True
+    )
+    geography_undefined = forms.BooleanField(label="Не определено", required=False, initial=True)
+    geography_area_undefined = forms.BooleanField(
+        label="Область не определена", required=False, initial=True
+    )
     metrika_snapshots = forms.MultipleChoiceField(
         label="Яндекс.Метрика", required=False, widget=forms.CheckboxSelectMultiple
     )
@@ -93,7 +132,7 @@ class ReportCreateForm(forms.Form):
         report_month = (
             latest_ranking.snapshot_date.replace(day=1)
             if latest_ranking
-            else date.today().replace(day=1)
+            else timezone.localdate().replace(day=1)
         )
         month_indexes = {
             report_month.year * 12 + report_month.month - 1 - offset for offset in range(3)
@@ -158,6 +197,22 @@ class ReportCreateForm(forms.Form):
                     "синхронизируйте источник заново.",
                 )
             cleaned[field] = sorted(selected)
+        if cleaned.get("include_topvisor_report_link") and not cleaned.get("topvisor_report_url"):
+            self.add_error(
+                "topvisor_report_url",
+                "Укажите ссылку или отключите её вывод в отчёте.",
+            )
+        if cleaned.get("include_top_tables") and not any(
+            cleaned.get(name)
+            for name in (
+                "include_top_5",
+                "include_top_10",
+                "include_top_20",
+                "include_top_11_30",
+                "include_top_30",
+            )
+        ):
+            self.add_error("include_top_tables", "Выберите хотя бы один диапазон TOP.")
         return cleaned
 
 

@@ -272,6 +272,32 @@ class FakeMetrika:
         if self.fail_call == len(self.calls):
             raise YandexAPIError("Provider unavailable")
         metrics = params["metrics"]
+        if params.get("dimensions") == "ym:s:regionArea,ym:s:regionCity":
+            return {
+                "data": [
+                    {
+                        "dimensions": [
+                            {"id": "1", "name": "Москва и Московская область"},
+                            {"id": "213", "name": "Москва"},
+                        ],
+                        "metrics": [40],
+                    },
+                    {
+                        "dimensions": [
+                            {"id": "2", "name": "Санкт-Петербург и Ленинградская область"},
+                            {"id": "2", "name": "Санкт-Петербург"},
+                        ],
+                        "metrics": [20],
+                    },
+                    {
+                        "dimensions": [
+                            {"id": "0", "name": "Область не определена"},
+                            {"id": "0", "name": "Не определено"},
+                        ],
+                        "metrics": [5],
+                    },
+                ]
+            }
         if params.get("dimensions"):
             return {
                 "data": [{"dimensions": [{"id": "organic", "name": "Search"}], "metrics": [60]}]
@@ -314,6 +340,9 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     points = {p.metric_code: p for p in snapshots[0].metrics.all()}
     assert points["source_search_visits"].numeric_value == 60
     assert points["goal_7_reaches"].dimensions["label"] == "Client label"
+    assert points["geography_moscow_visits"].numeric_value == 40
+    assert points["geography_saint_petersburg_visits"].numeric_value == 20
+    assert points["geography_undefined_visits"].numeric_value == 5
     sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
     assert SourceSnapshot.objects.filter(project=mapping.project).count() == 3
     assert MetricPoint.objects.filter(snapshot__project=mapping.project).count() == len(points) * 3

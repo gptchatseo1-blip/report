@@ -1,4 +1,5 @@
 import io
+import re
 import shutil
 import zipfile
 from datetime import date
@@ -6,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from openpyxl import load_workbook
@@ -16,7 +18,7 @@ from apps.metrics.synthetic import sync_synthetic_metrics
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
 from apps.reports.models import Report, ReportDatasetSnapshot
-from apps.reports.narratives import SECTION_ORDER
+from apps.reports.narratives import SECTION_ORDER, section_enabled
 from apps.reports.services import create_report_version
 
 pytestmark = pytest.mark.django_db
@@ -85,27 +87,38 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
     document = Document(io.BytesIO(data))
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
     assert "ЧЕРНОВИК" in text
+    assert f"Версия {rich_version.number}" not in text
+    assert "Источник данных" not in text
+    assert "Сведения об источнике недоступны" not in text
     headings = [p.text for p in document.paragraphs if p.style.name == "Heading 1"]
     expected = [
         {
             "visibility": "Видимость",
             "position_distribution": "Распределение позиций",
-            "top_10": "TOP-10",
+            "top_5": "Запросы в TOP-5",
+            "top_10": "Запросы в TOP-10",
+            "top_20": "Запросы в TOP-20",
+            "top_11_30": "Запросы в TOP-11–30",
+            "top_30": "Запросы в TOP-30",
             "top_11_20": "TOP-11–20",
-            "position_dynamics": "Динамика позиций",
+            "position_dynamics": "Динамика позиций по месяцам",
             "traffic": "Трафик",
             "traffic_sources": "Источники трафика",
             "clicks_impressions": "Клики и показы",
             "ctr": "CTR",
             "indexing": "Индексация",
             "iks": "ИКС",
+            "geography": "География посетителей",
             "completed_work": "Выполненные работы",
         }[code]
         for code in SECTION_ORDER
+        if section_enabled(rich_version.snapshot.payload, code)
     ]
     assert headings == expected
     assert document.styles["Normal"].font.name == "Carlito"
-    assert document.sections[0].footer.paragraphs[0].text.startswith("demo.example")
+    footer_text = document.sections[0].footer.paragraphs[0].text
+    assert footer_text.startswith("demo.example")
+    assert "версия" not in footer_text.lower()
     assert any(section.orientation == WD_ORIENT.LANDSCAPE for section in document.sections)
     assert document.sections[-1].orientation == WD_ORIENT.LANDSCAPE
     for section in document.sections:
@@ -121,8 +134,79 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
     table_text = "\n".join(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
+    assert "Checksum / идентификатор" not in table_text
     assert "Частотность" in table_text
     assert "демо запрос 0035" in table_text
+    distribution_tables = [
+        table for table in document.tables if table.rows[0].cells[-1].text == "Доля, %"
+    ]
+    assert distribution_tables
+    for table in distribution_tables:
+        assert all(re.fullmatch(r"\d+,\d", row.cells[-1].text) for row in table.rows[1:])
+        assert all(
+            row.cells[1].text == "0" for row in table.rows[1:] if row.cells[-1].text == "0,0"
+        )
+    traffic_tables = [
+        table
+        for table in document.tables
+        if [cell.text for cell in table.rows[0].cells]
+        == ["Источник", "Количество", "Доля", "Абсолютное изменение", "Относительное изменение"]
+    ]
+    assert traffic_tables
+    assert all(
+        re.fullmatch(r"\d+,\d%", row.cells[2].text)
+        for table in traffic_tables
+        for row in table.rows[1:]
+    )
+    assert text.count("Выполненные работы отсутствуют.") == 1
+    assert (
+        sum(row.cells[0].text == "ИКС" for table in document.tables for row in table.rows[1:]) == 1
+    )
+    warning_paragraphs = [
+        paragraph.text
+        for paragraph in document.paragraphs
+        if paragraph.text.startswith("Предупреждение:")
+    ]
+    assert len(warning_paragraphs) == len(set(warning_paragraphs))
+
+
+def test_modern_report_options_control_sections_and_top_tables(rich_version, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    version = create_report_version(
+        report=rich_version.report,
+        selection={
+            "display_options": {
+                "configuration_version": 2,
+                "show_urls": False,
+                "include_visibility": False,
+                "include_monthly_dynamics": False,
+                "include_top_tables": True,
+                "include_top_5": True,
+                "include_top_10": False,
+                "include_top_20": False,
+                "include_top_11_30": False,
+                "include_top_30": False,
+                "include_topvisor_report_link": True,
+                "topvisor_report_url": "https://topvisor.example/report/42",
+                "include_webmaster": False,
+                "include_metrika": False,
+                "include_metrika_geography": False,
+            }
+        },
+    )
+    data = _artifact_bytes(generate_artifact(version=version, artifact_type="docx", is_draft=True))
+    document = Document(io.BytesIO(data))
+    headings = [p.text for p in document.paragraphs if p.style.name == "Heading 1"]
+    assert headings == [
+        "Распределение позиций",
+        "Запросы в TOP-5",
+        "Выполненные работы",
+    ]
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "https://topvisor.example/report/42" in text
+    assert "таблица запросов в TOP-5 сформирована" in text
+    with zipfile.ZipFile(io.BytesIO(data)) as package:
+        assert b"27C493" in package.read("word/document.xml")
 
 
 @pytest.mark.parametrize(
@@ -243,7 +327,15 @@ def test_xlsx_has_all_rows_native_types_and_formula_injection_protection(
         "Метрика и Вебмастер",
         "Выполненные работы",
     ]
+    assert "Provenance" not in [cell.value for cell in workbook["Позиции"][1]]
+    assert "Provenance" not in [cell.value for cell in workbook["Метрика и Вебмастер"][1]]
     assert isinstance(workbook["Метаданные"]["B3"].value, date)
+    exported_at = workbook["Метаданные"]["B6"].value
+    expected_at = rich_version.snapshot.created_at.astimezone(
+        timezone.get_current_timezone()
+    ).replace(tzinfo=None)
+    # XLSX stores datetimes with millisecond precision.
+    assert abs(exported_at - expected_at).total_seconds() < 0.001
     positions = workbook["Позиции"]
     expected = sum(
         len(source["positions"]) for source in rich_version.snapshot.payload["ranking_sources"]
@@ -344,6 +436,10 @@ def test_real_pdf_conversion_smoke(rich_version, settings, tmp_path):
         )
         assert len((page.extract_text() or "").strip()) >= 20 or list(page.images)
     texts = [page.extract_text() or "" for page in pages]
+    assert f"Версия {rich_version.number}" not in "\n".join(texts)
+    assert f"версия {rich_version.number}" not in "\n".join(texts).lower()
+    assert "Источник данных" not in "\n".join(texts)
+    assert "Checksum / идентификатор" not in "\n".join(texts)
     for heading in (
         "Трафик",
         "Источники трафика",

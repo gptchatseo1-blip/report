@@ -23,6 +23,8 @@ CORE_METRICS = (
     "ym:s:avgVisitDurationSeconds",
 )
 LAST_SIGN_TRAFFIC_SOURCE = "ym:s:lastSignTrafficSource"
+REGION_AREA = "ym:s:regionArea"
+REGION_CITY = "ym:s:regionCity"
 GOAL_REACHES = "ym:s:goal{id}reaches"
 GOAL_CONVERSION_RATE = "ym:s:goal{id}conversionRate"
 

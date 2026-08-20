@@ -6,7 +6,7 @@ import re
 import subprocess
 import tempfile
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 import matplotlib
@@ -27,7 +27,7 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt  # noqa: E402
 
 from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, ValidationIssue
-from .narratives import SECTION_ORDER
+from .narratives import SECTION_ORDER, TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
 GENERATOR_VERSION = "mvp1.1"
@@ -39,15 +39,20 @@ MIMES = {
 TITLES = {
     "visibility": "Видимость",
     "position_distribution": "Распределение позиций",
-    "top_10": "TOP-10",
+    "top_5": "Запросы в TOP-5",
+    "top_10": "Запросы в TOP-10",
+    "top_20": "Запросы в TOP-20",
+    "top_11_30": "Запросы в TOP-11–30",
+    "top_30": "Запросы в TOP-30",
     "top_11_20": "TOP-11–20",
-    "position_dynamics": "Динамика позиций",
+    "position_dynamics": "Динамика позиций по месяцам",
     "traffic": "Трафик",
     "traffic_sources": "Источники трафика",
     "clicks_impressions": "Клики и показы",
     "ctr": "CTR",
     "indexing": "Индексация",
     "iks": "ИКС",
+    "geography": "География посетителей",
     "completed_work": "Выполненные работы",
 }
 MONTHS = (
@@ -65,10 +70,6 @@ MONTHS = (
     "декабрь",
 )
 ENGINE_LABELS = {"google": "Google", "yandex": "Яндекс"}
-SOURCE_LABELS = {
-    "yandex_metrika": "Яндекс Метрика",
-    "yandex_webmaster": "Яндекс Вебмастер",
-}
 METRIC_LABELS = {
     "visits": "Визиты",
     "users": "Посетители",
@@ -82,8 +83,16 @@ METRIC_LABELS = {
     "indexed_pages": "Индексируемые страницы",
     "iks": "ИКС",
     "quality_index": "ИКС",
+    "geography_moscow_visits": "Москва",
+    "geography_saint_petersburg_visits": "Санкт-Петербург",
+    "geography_undefined_visits": "Не определено",
+    "geography_area_undefined_visits": "Область не определена",
 }
-PALETTE = ("#315B7D", "#E68A2E", "#4C956C", "#8D6A9F", "#D1495B", "#6C757D")
+CHART_PALETTES = {
+    "topvisor": ("#27B98B", "#2D8FC4", "#64D1AF", "#A3E3D1", "#CFEBE3", "#AAB7B3"),
+    "webmaster": ("#F2C94C", "#33A852", "#EF8354", "#5AA9E6", "#8D6A9F"),
+    "metrika": ("#7B3FE4", "#D13ACB", "#27A6D5", "#6BCB77", "#FF8A5B", "#B58CE8"),
+}
 
 
 class ExportBlocked(Exception):
@@ -91,7 +100,8 @@ class ExportBlocked(Exception):
 
 
 def _clean(value):
-    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(value or ""))
+    rendered = "" if value is None else str(value)
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", rendered)
 
 
 def _excel_safe(value):
@@ -100,11 +110,19 @@ def _excel_safe(value):
     return "'" + value if value.startswith(("=", "+", "-", "@")) else value
 
 
-def _number(value, suffix=""):
+def _number(value, suffix="", *, decimal_places=None):
     if value is None:
         return "Данные недоступны"
     try:
-        rendered = format(Decimal(str(value)).normalize(), "f").replace(".", ",")
+        number = Decimal(str(value))
+        if decimal_places is None:
+            rendered = format(number.normalize(), "f")
+        else:
+            quantum = Decimal("1").scaleb(-decimal_places)
+            rendered = format(
+                number.quantize(quantum, rounding=ROUND_HALF_UP), f".{decimal_places}f"
+            )
+        rendered = rendered.replace(".", ",")
     except (InvalidOperation, ValueError):
         rendered = _clean(value)
     return rendered + suffix
@@ -149,7 +167,18 @@ def _keep_small_table_together(table):
                 paragraph.paragraph_format.keep_with_next = True
 
 
-def _table(doc, headers, rows, widths=None):
+def _shade_cell(cell, color):
+    if not color:
+        return
+    properties = cell._tc.get_or_add_tcPr()
+    shading = properties.find(qn("w:shd"))
+    if shading is None:
+        shading = OxmlElement("w:shd")
+        properties.append(shading)
+    shading.set(qn("w:fill"), color.removeprefix("#"))
+
+
+def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None):
     table = doc.add_table(rows=1, cols=len(headers))
     table.style = "Report Table"
     table.autofit = False
@@ -158,45 +187,75 @@ def _table(doc, headers, rows, widths=None):
         cell.text = _clean(value)
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         _set_cell_width(cell, width)
+        _shade_cell(cell, header_fill)
     _repeat_header(table.rows[0])
     _prevent_row_split(table.rows[0])
-    for values in rows:
+    for row_index, values in enumerate(rows):
         cells = table.add_row().cells
         _prevent_row_split(table.rows[-1])
-        for cell, value, width in zip(cells, values, widths, strict=True):
+        for column_index, (cell, value, width) in enumerate(
+            zip(cells, values, widths, strict=True)
+        ):
             cell.text = _clean(value if value is not None and value != "" else "—")
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
             _set_cell_width(cell, width)
+            if cell_fills and row_index < len(cell_fills):
+                fills = cell_fills[row_index]
+                if column_index < len(fills):
+                    _shade_cell(cell, fills[column_index])
     _keep_small_table_together(table)
     return table
 
 
-def _chart(series, *, title, ylabel, kind="line"):
+def _chart(series, *, title, ylabel, kind="line", style="topvisor"):
     """Return a stable PNG, or None when no series has at least one known value."""
     useful = [(label, points) for label, points in series if any(v is not None for _, v in points)]
     if not useful:
         return None
     with plt.rc_context({"font.family": "Carlito", "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(7.2, 3.4), dpi=120)
+        figure, axis = plt.subplots(figsize=(7.2, 3.4), dpi=120, facecolor="white")
+        palette = CHART_PALETTES.get(style, CHART_PALETTES["topvisor"])
         for index, (label, points) in enumerate(useful):
             labels = [_month_short(month) for month, _ in points]
             values = [float(value) if value is not None else float("nan") for _, value in points]
-            color = PALETTE[index % len(PALETTE)]
+            color = palette[index % len(palette)]
             if kind == "bar":
                 offsets = [
                     (i - (len(useful) - 1) / 2) * 0.75 / len(useful) for i in range(len(useful))
                 ]
                 x = [position + offsets[index] for position in range(len(labels))]
-                axis.bar(x, values, width=0.75 / len(useful), color=color, label=label)
+                bars = axis.bar(x, values, width=0.75 / len(useful), color=color, label=label)
+                if style == "metrika" and index % 2:
+                    for bar in bars:
+                        bar.set_hatch("////")
+                        bar.set_edgecolor(color)
+                        bar.set_facecolor("white")
                 axis.set_xticks(range(len(labels)), labels)
             else:
-                axis.plot(labels, values, marker="o", linewidth=2, color=color, label=label)
-        axis.set_title(title)
+                axis.plot(
+                    labels,
+                    values,
+                    marker="o" if style == "metrika" else None,
+                    markersize=4,
+                    linewidth=2.2 if style == "topvisor" else 2,
+                    color=color,
+                    label=label,
+                )
+                if style == "webmaster" and len(useful) == 1:
+                    axis.fill_between(labels, values, alpha=0.14, color=color)
+        axis.set_title(title, loc="left", fontweight="bold", color="#24313D")
         axis.set_ylabel(ylabel)
-        axis.grid(axis="y", alpha=0.2)
-        if len(useful) > 1:
-            axis.legend(loc="best")
-        figure.tight_layout()
+        axis.grid(axis="y", color="#E9EDF1", linewidth=0.8)
+        axis.set_axisbelow(True)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        if len(useful) > 6:
+            axis.legend(loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=8)
+            figure.tight_layout(rect=(0, 0, 0.78, 1))
+        else:
+            if len(useful) > 1:
+                axis.legend(loc="best")
+            figure.tight_layout()
         output = io.BytesIO()
         figure.savefig(output, format="png", dpi=120, metadata={"Software": GENERATOR_VERSION})
         plt.close(figure)
@@ -214,15 +273,51 @@ def _add_chart(doc, chart, narrative):
     return True
 
 
-def _chart_narrative(text):
-    sentences = re.split(r"(?<=[.!?])\s+", _clean(text))
-    filtered = [
-        sentence
-        for sentence in sentences
-        if "Проверка позиций в Google" not in sentence
-        and "Глубина проверки позиций в Google" not in sentence
-    ]
-    return " ".join(filtered).strip() or "Данные представлены на графике."
+def _visibility_chart(points, title):
+    useful = [(month, value) for month, value in points if value is not None]
+    if not useful:
+        return None
+    with plt.rc_context({"font.family": "Carlito", "font.size": 9}):
+        figure = plt.figure(figsize=(7.2, 3.25), dpi=120, facecolor="white")
+        grid = figure.add_gridspec(1, 2, width_ratios=(3.5, 1.2), wspace=0.22)
+        axis = figure.add_subplot(grid[0, 0])
+        labels = [_month_short(month) for month, _value in useful]
+        values = [float(value) for _month, value in useful]
+        axis.plot(labels, values, color="#27B98B", linewidth=2.5)
+        axis.fill_between(labels, values, color="#27B98B", alpha=0.08)
+        axis.set_title(title, loc="left", fontweight="bold", color="#24313D")
+        axis.set_ylabel("%")
+        axis.grid(axis="y", color="#E9EDF1", linewidth=0.8)
+        axis.set_axisbelow(True)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        donut = figure.add_subplot(grid[0, 1])
+        current = max(0, min(100, values[-1]))
+        donut.pie(
+            [current, 100 - current],
+            startangle=90,
+            counterclock=False,
+            colors=("#27B98B", "#EDF3F1"),
+            wedgeprops={"width": 0.22, "edgecolor": "white"},
+        )
+        donut.text(
+            0,
+            0.05,
+            f"{current:.1f}%".replace(".", ","),
+            ha="center",
+            va="center",
+            fontsize=14,
+            fontweight="bold",
+            color="#174D3C",
+        )
+        donut.text(0, -0.22, "видимость", ha="center", va="center", fontsize=8, color="#667085")
+        donut.set_aspect("equal")
+        figure.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.16)
+        output = io.BytesIO()
+        figure.savefig(output, format="png", dpi=120, metadata={"Software": GENERATOR_VERSION})
+        plt.close(figure)
+        output.seek(0)
+        return output
 
 
 def _segment_title(segment):
@@ -234,73 +329,6 @@ def _segment_title(segment):
 
 def _metric_source(payload, source_name):
     return payload.get("calculated", {}).get("sources", {}).get("sources", {}).get(source_name, {})
-
-
-def _provenance_rows(payload, code, segment=None):
-    if code in {"visibility", "position_distribution", "top_10", "top_11_20", "position_dynamics"}:
-        sources = payload.get("ranking_sources", [])
-        if segment:
-            sources = [
-                s
-                for s in sources
-                if s.get("search_engine") == segment.get("search_engine")
-                and s.get("region") == segment.get("region")
-            ]
-    elif code in {"traffic", "traffic_sources"}:
-        sources = [
-            s for s in payload.get("source_snapshots", []) if s.get("source") == "yandex_metrika"
-        ]
-    elif code in {"clicks_impressions", "ctr", "indexing", "iks"}:
-        sources = [
-            s for s in payload.get("source_snapshots", []) if s.get("source") == "yandex_webmaster"
-        ]
-    else:
-        sources = payload.get("completed_work", [])
-    rows = []
-    for source in sources:
-        provenance = source.get("provenance") or {}
-        rows.append(
-            (
-                SOURCE_LABELS.get(
-                    source.get("source"),
-                    ENGINE_LABELS.get(
-                        source.get("search_engine"), source.get("search_engine") or "Журнал работ"
-                    ),
-                ),
-                provenance.get("method") or "worklog",
-                source.get("date")
-                or (
-                    f"{source.get('period_start')} — {source.get('period_end')}"
-                    if source.get("period_start")
-                    else source.get("date")
-                ),
-                source.get("retrieved_at")
-                or provenance.get("retrieved_at")
-                or provenance.get("generated_at")
-                or provenance.get("updated_at"),
-                source.get("checksum")
-                or provenance.get("response_checksum")
-                or provenance.get("checksum")
-                or provenance.get("import_batch_id")
-                or source.get("id")
-                or provenance.get("id"),
-            )
-        )
-    return rows
-
-
-def _add_provenance(doc, payload, code, segment=None):
-    rows = _provenance_rows(payload, code, segment)
-    doc.add_paragraph("Источник данных", style="Heading 3")
-    if not rows:
-        doc.add_paragraph("Сведения об источнике недоступны.", style="Data Missing")
-        return
-    _table(
-        doc,
-        ("Система", "Метод", "Период", "Дата получения", "Checksum / идентификатор"),
-        rows,
-        [2.7, 2.5, 3.3, 3.3, 4.2],
-    )
 
 
 def _current_position_source(payload, segment):
@@ -354,6 +382,8 @@ def _return_to_portrait(doc):
 def _render_visibility(doc, payload, segments, narrative):
     if not segments:
         doc.add_paragraph("Данные недоступны.", style="Data Missing")
+    else:
+        doc.add_paragraph(_clean(narrative))
     for segment in segments:
         doc.add_heading(_segment_title(segment), level=2)
         points = [
@@ -362,12 +392,8 @@ def _render_visibility(doc, payload, segments, narrative):
         ]
         _add_chart(
             doc,
-            _chart(
-                [("Видимость, %", points)],
-                title=f"Динамика видимости · {_segment_title(segment)}",
-                ylabel="%",
-            ),
-            _chart_narrative(narrative),
+            _visibility_chart(points, f"Видимость · {_segment_title(segment)}"),
+            f"Динамика видимости за выбранные месяцы · {_segment_title(segment)}.",
         )
         current = points[-1][1] if points else None
         doc.add_paragraph(f"Текущая видимость: {_number(current, '%')}", style="KPI")
@@ -377,12 +403,13 @@ def _render_visibility(doc, payload, segments, narrative):
             [(_month(month), _number(value)) for month, value in points],
             [8, 8],
         )
-        _add_provenance(doc, payload, "visibility", segment)
 
 
 def _render_distribution(doc, payload, segments, narrative):
     if not segments:
         doc.add_paragraph("Данные недоступны.", style="Data Missing")
+    else:
+        doc.add_paragraph(_clean(narrative))
     for segment in segments:
         doc.add_heading(_segment_title(segment), level=2)
         distribution = segment.get("distribution") or {}
@@ -397,15 +424,28 @@ def _render_distribution(doc, payload, segments, narrative):
             title=f"Распределение запросов · {_segment_title(segment)}",
             ylabel="Количество",
             kind="bar",
+            style="topvisor",
         )
-        _add_chart(doc, chart, _chart_narrative(narrative))
+        _add_chart(
+            doc,
+            chart,
+            f"Распределение запросов по позициям · {_segment_title(segment)}.",
+        )
+        fill_palette = ("268BD2", "28B98B", "62CFB0", "A7E5D4", "DCEEE9", "EEF4F2")
         _table(
             doc,
             ("Диапазон", "Количество", "Доля, %"),
-            [(name, ranges[name], _number(share)) for name, share in current],
+            [(name, ranges[name], _number(share, decimal_places=1)) for name, share in current],
             [6, 5, 5],
+            header_fill="E7F6EF",
+            cell_fills=[(fill, fill, fill) for fill in fill_palette[: len(current)]],
         )
-        _add_provenance(doc, payload, "position_distribution", segment)
+    options = payload.get("display_options", {})
+    if options.get("include_topvisor_report_link") and options.get("topvisor_report_url"):
+        doc.add_paragraph(
+            "Подробный отчёт Topvisor: " + _clean(options["topvisor_report_url"]),
+            style="Depth Note",
+        )
 
 
 def _render_top(doc, payload, segments, narrative, start, end, code):
@@ -421,7 +461,8 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
         ):
             continue
         any_segment = True
-        doc.add_heading(_segment_title(segment), level=2)
+        range_label = f"TOP-{end}" if start == 1 else f"TOP-{start}–{end}"
+        doc.add_heading(f"{_segment_title(segment)} · {range_label}", level=2)
         if code == "top_10":
             history = segment.get("three_month_series") or []
             top_series = [
@@ -449,8 +490,9 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
                     top_series,
                     title=f"Динамика TOP · {_segment_title(segment)}",
                     ylabel="Количество запросов",
+                    style="topvisor",
                 ),
-                _chart_narrative(narrative),
+                f"Динамика количества запросов · {_segment_title(segment)}.",
             )
             distribution = segment.get("distribution") or {}
             kpi = f"TOP-10: {_number(distribution.get('top_10'))}"
@@ -463,13 +505,35 @@ def _render_top(doc, payload, segments, narrative, start, end, code):
                 if show_urls
                 else ("Запрос", "Частотность", "Позиция", "Группа")
             )
+            position_colors = []
+            for row in rows:
+                position = row[2]
+                color = (
+                    "27C493"
+                    if position <= 3
+                    else "62D8B5"
+                    if position <= 5
+                    else "91E2C9"
+                    if position <= 10
+                    else "C2EDDF"
+                    if position <= 20
+                    else "E6F6F1"
+                )
+                fills = [None] * len(headers)
+                fills[2] = color
+                position_colors.append(fills)
             _table(
-                doc, headers, rows, [5.0, 2.3, 2.0, 3.0, 4.0] if show_urls else [7.0, 2.5, 2.5, 4.0]
+                doc,
+                headers,
+                rows,
+                [5.0, 2.3, 2.0, 3.0, 4.0] if show_urls else [7.0, 2.5, 2.5, 4.0],
+                header_fill="E7F6EF",
+                cell_fills=position_colors,
             )
         else:
             doc.add_paragraph("Запросы в диапазоне отсутствуют.", style="Data Missing")
+    if any_segment:
         doc.add_paragraph(_clean(narrative))
-        _add_provenance(doc, payload, code, segment)
     return any_segment
 
 
@@ -477,6 +541,8 @@ def _render_position_dynamics(doc, payload, segments, narrative):
     show_urls = payload.get("display_options", {}).get("show_urls", True)
     if not segments:
         doc.add_paragraph("Данные недоступны.", style="Data Missing")
+    else:
+        doc.add_paragraph(_clean(narrative))
     for segment in segments:
         doc.add_heading(_segment_title(segment), level=2)
         series = segment.get("three_month_series") or []
@@ -511,8 +577,9 @@ def _render_position_dynamics(doc, payload, segments, narrative):
                 title=f"Трёхмесячная динамика позиций · {_segment_title(segment)}",
                 ylabel="Количество",
                 kind="line",
+                style="topvisor",
             ),
-            _chart_narrative(narrative),
+            f"Динамика распределения запросов · {_segment_title(segment)}.",
         )
         history_rows = []
         for row in series:
@@ -556,7 +623,6 @@ def _render_position_dynamics(doc, payload, segments, narrative):
         else:
             doc.add_paragraph("Данные недоступны.", style="Data Missing")
         _return_to_portrait(doc)
-        _add_provenance(doc, payload, "position_dynamics", segment)
     google = [s for s in segments if s.get("search_engine") == "google" and s.get("ranking_depth")]
     if google:
         configurations = "; ".join(
@@ -579,6 +645,17 @@ def _metric_series(payload, source, codes):
         ]
         result.append((METRIC_LABELS.get(code, code), points))
     return result
+
+
+def _metric_has_data(payload, source, code):
+    facts = _metric_source(payload, source)
+    change = (facts.get("normalized_changes") or {}).get(code) or {}
+    if any(change.get(field) is not None for field in ("current", "previous")):
+        return True
+    return any(
+        point.get("value") is not None
+        for point in (facts.get("three_month_series") or {}).get(code, [])
+    )
 
 
 def _change_rows(payload, source, codes):
@@ -635,16 +712,49 @@ def _render_metrics(doc, payload, code, narrative):
         "ctr": ("yandex_webmaster", ("search_ctr",), "CTR", "%"),
         "indexing": ("yandex_webmaster", ("indexed_pages",), "Индексируемые страницы", "Страницы"),
         "iks": ("yandex_webmaster", ("iks", "quality_index"), "ИКС", "Значение"),
+        "geography": (
+            "yandex_metrika",
+            (
+                "geography_moscow_visits",
+                "geography_saint_petersburg_visits",
+                "geography_undefined_visits",
+                "geography_area_undefined_visits",
+            ),
+            "География посетителей",
+            "Визиты",
+        ),
     }
     source, codes, title, ylabel = configs[code]
     if code == "traffic":
         available = _metric_source(payload, source).get("three_month_series", {})
         codes = (*codes, *(key for key in sorted(available) if key.startswith("goal_")))
-    series = _metric_series(payload, source, codes)
-    if code == "iks" and not any(points for _, points in series[:1]):
-        series = series[1:]
-        codes = ("quality_index",)
-    _add_chart(doc, _chart(series, title=title, ylabel=ylabel), narrative)
+    if code == "iks":
+        codes = tuple(metric for metric in codes if _metric_has_data(payload, source, metric))[:1]
+    if code == "geography":
+        options = payload.get("display_options", {})
+        flags = {
+            "geography_moscow_visits": "geography_moscow",
+            "geography_saint_petersburg_visits": "geography_saint_petersburg",
+            "geography_undefined_visits": "geography_undefined",
+            "geography_area_undefined_visits": "geography_area_undefined",
+        }
+        codes = tuple(metric for metric in codes if options.get(flags[metric], True))
+    chart_codes = codes
+    chart_kind = "line"
+    if code == "traffic":
+        chart_codes = tuple(
+            metric
+            for metric in codes
+            if metric in {"visits", "users", "new_users"} or metric.endswith("_reaches")
+        )
+        chart_kind = "bar"
+    series = _metric_series(payload, source, chart_codes)
+    style = "metrika" if source == "yandex_metrika" else "webmaster"
+    _add_chart(
+        doc,
+        _chart(series, title=title, ylabel=ylabel, style=style, kind=chart_kind),
+        narrative,
+    )
     _table(
         doc,
         (
@@ -656,8 +766,8 @@ def _render_metrics(doc, payload, code, narrative):
         ),
         _change_rows(payload, source, codes),
         [3.7, 3.1, 3.1, 3.1, 3.0],
+        header_fill="EFE7FF" if style == "metrika" else "FFF4C9",
     )
-    _add_provenance(doc, payload, code)
 
 
 def _render_traffic_sources(doc, payload, narrative):
@@ -670,7 +780,14 @@ def _render_traffic_sources(doc, payload, narrative):
         for name, fact in facts.items()
     ]
     _add_chart(
-        doc, _chart(series, title="Структура источников трафика", ylabel="Визиты"), narrative
+        doc,
+        _chart(
+            series,
+            title="Структура источников трафика",
+            ylabel="Визиты",
+            style="metrika",
+        ),
+        narrative,
     )
     rows = []
     for name, fact in facts.items():
@@ -679,7 +796,7 @@ def _render_traffic_sources(doc, payload, narrative):
             (
                 name,
                 _number(change.get("current")),
-                _number(fact.get("share_percent"), "%"),
+                _number(fact.get("share_percent"), "%", decimal_places=1),
                 _number(change.get("absolute")),
                 _number(change.get("relative_percent"), "%"),
             )
@@ -690,10 +807,10 @@ def _render_traffic_sources(doc, payload, narrative):
             ("Источник", "Количество", "Доля", "Абсолютное изменение", "Относительное изменение"),
             rows,
             [4.2, 2.8, 2.5, 3.3, 3.2],
+            header_fill="EFE7FF",
         )
     else:
         doc.add_paragraph("Данные недоступны.", style="Data Missing")
-    _add_provenance(doc, payload, "traffic_sources")
 
 
 def _render_work(doc, payload, narrative):
@@ -731,13 +848,14 @@ def _render_work(doc, payload, narrative):
             headers.append("Результат")
             widths = [2.2, 3.0, 4.5, 2.5, 4.2, 2.0, 3.2, 4.2, 4.2]
         _table(doc, headers, rows, widths)
+        doc.add_paragraph(_clean(narrative))
     else:
-        doc.add_paragraph("Выполненные работы отсутствуют.", style="Data Missing")
-    doc.add_paragraph(_clean(narrative))
-    _add_provenance(doc, payload, "completed_work")
+        doc.add_paragraph(
+            _clean(narrative) or "Выполненные работы отсутствуют.", style="Data Missing"
+        )
 
 
-def _configure_document(doc, domain, period, version_number):
+def _configure_document(doc, domain, period):
     section = doc.sections[0]
     section.orientation = WD_ORIENT.PORTRAIT
     section.page_width, section.page_height = Cm(21), Cm(29.7)
@@ -770,7 +888,7 @@ def _configure_document(doc, domain, period, version_number):
     table_style._element.rPr.rFonts.set(qn("w:eastAsia"), "Carlito")
     table_style.font.size = Pt(8.5)
     footer = section.footer.paragraphs[0]
-    footer.text = f"{_clean(domain)} · {_month(period)} · версия {version_number} · стр. "
+    footer.text = f"{_clean(domain)} · {_month(period)} · стр. "
     field = OxmlElement("w:fldSimple")
     field.set(qn("w:instr"), "PAGE")
     footer._p.append(field)
@@ -781,7 +899,7 @@ def _docx(snapshot, narratives, issues, draft):
     project = payload.get("project", {})
     period = payload.get("periods", {}).get("report", {}).get("start")
     doc = Document()
-    _configure_document(doc, project.get("domain"), period, snapshot.version.number)
+    _configure_document(doc, project.get("domain"), period)
     if draft:
         paragraph = doc.add_paragraph("ЧЕРНОВИК")
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -791,13 +909,21 @@ def _docx(snapshot, narratives, issues, draft):
     title = f"Отчёт по поисковому продвижению сайта {project.get('domain')} за {_month(period)}"
     doc.add_heading(_clean(title), 0)
     doc.add_paragraph(_clean(project.get("name")))
-    doc.add_paragraph(f"Версия {snapshot.version.number}")
     doc.add_paragraph(f"Дата формирования: {timezone.localdate():%d.%m.%Y}")
     doc.add_page_break()
     blocks = {block.section_code: block.effective_text for block in narratives}
-    segments = payload.get("calculated", {}).get("positions", {}).get("segments", [])
+    engine_order = {"yandex": 0, "google": 1}
+    segments = sorted(
+        payload.get("calculated", {}).get("positions", {}).get("segments", []),
+        key=lambda item: (
+            engine_order.get(item.get("search_engine"), 99),
+            item.get("region") or "",
+        ),
+    )
     top_mode = project.get("top_11_20_mode", "auto")
     for code in SECTION_ORDER:
+        if not section_enabled(payload, code):
+            continue
         if code == "top_11_20" and top_mode == "disabled":
             continue
         narrative = blocks.get(code) or "Данные раздела отсутствуют."
@@ -808,29 +934,39 @@ def _docx(snapshot, narratives, issues, draft):
         ):
             continue
         if code == "completed_work":
-            # This is the final report section. Keep its heading, table, conclusion and
-            # provenance in one landscape section and do not create a trailing portrait page.
+            # This is the final report section. Keep its heading, table and conclusion
+            # in one landscape section and do not create a trailing portrait page.
             _start_landscape(doc)
         doc.add_heading(TITLES[code], level=1)
         if code == "visibility":
             _render_visibility(doc, payload, segments, narrative)
         elif code == "position_distribution":
             _render_distribution(doc, payload, segments, narrative)
-        elif code == "top_10":
-            _render_top(doc, payload, segments, narrative, 1, 10, code)
-        elif code == "top_11_20":
-            _render_top(doc, payload, segments, narrative, 11, 20, code)
+        elif code in TOP_SECTION_RANGES:
+            start, end = TOP_SECTION_RANGES[code]
+            _render_top(doc, payload, segments, narrative, start, end, code)
         elif code == "position_dynamics":
             _render_position_dynamics(doc, payload, segments, narrative)
         elif code == "traffic_sources":
             _render_traffic_sources(doc, payload, narrative)
-        elif code in {"traffic", "clicks_impressions", "ctr", "indexing", "iks"}:
+        elif code in {
+            "traffic",
+            "clicks_impressions",
+            "ctr",
+            "indexing",
+            "iks",
+            "geography",
+        }:
             _render_metrics(doc, payload, code, narrative)
         elif code == "completed_work":
             _render_work(doc, payload, narrative)
-        for issue in issues:
-            if issue.severity == "warning" and issue.section_code == code:
-                doc.add_paragraph("Предупреждение: " + _clean(issue.message), style="Depth Note")
+        warning_messages = {
+            _clean(issue.message)
+            for issue in issues
+            if issue.severity == "warning" and issue.section_code == code
+        }
+        for message in sorted(warning_messages):
+            doc.add_paragraph("Предупреждение: " + message, style="Depth Note")
     output = io.BytesIO()
     doc.save(output)
     return output.getvalue()
@@ -858,7 +994,7 @@ def _xlsx(snapshot, draft):
         ("месяц", date.fromisoformat(str(period)[:10])),
         ("версия", snapshot.version.number),
         ("checksum snapshot", snapshot.checksum),
-        ("дата создания", snapshot.created_at.replace(tzinfo=None)),
+        ("дата создания", timezone.localtime(snapshot.created_at).replace(tzinfo=None)),
         ("formula_version", snapshot.formula_version),
         ("глубины", depths),
         ("черновик", draft),
@@ -875,15 +1011,20 @@ def _xlsx(snapshot, draft):
         "Статус",
         "Группа",
         "Фактическая глубина",
-        "Provenance",
     ]
     if show_urls:
         position_headers.insert(8, "Релевантный URL")
     positions.append(position_headers)
-    for source in payload.get("ranking_sources", []):
-        provenance = (source.get("provenance") or {}).get("method") or (
-            source.get("provenance") or {}
-        ).get("import_batch_id")
+    engine_order = {"yandex": 0, "google": 1}
+    ranking_sources = sorted(
+        payload.get("ranking_sources", []),
+        key=lambda item: (
+            engine_order.get(item.get("search_engine"), 99),
+            item.get("region") or "",
+            item.get("date") or "",
+        ),
+    )
+    for source in ranking_sources:
         for row in source.get("positions", []):
             values = [
                 source.get("search_engine"),
@@ -895,7 +1036,6 @@ def _xlsx(snapshot, draft):
                 row.get("status"),
                 row.get("group"),
                 source.get("ranking_depth"),
-                provenance,
             ]
             if show_urls:
                 values.insert(8, row.get("target_url"))
@@ -915,9 +1055,7 @@ def _xlsx(snapshot, draft):
                 )
             )
     metrics = workbook.create_sheet("Метрика и Вебмастер")
-    metrics.append(
-        ("Источник", "Начало", "Конец", "Показатель", "Значение", "Единица", "Provenance")
-    )
+    metrics.append(("Источник", "Начало", "Конец", "Показатель", "Значение", "Единица"))
     for source in payload.get("source_snapshots", []):
         for metric in source.get("metrics", []):
             metrics.append(
@@ -930,7 +1068,6 @@ def _xlsx(snapshot, draft):
                         metric.get("code"),
                         float(metric["value"]) if metric.get("value") is not None else None,
                         metric.get("unit"),
-                        (source.get("provenance") or {}).get("method"),
                     )
                 )
             )
@@ -942,10 +1079,9 @@ def _xlsx(snapshot, draft):
                     "yandex_metrika",
                     date.fromisoformat(point["month"]),
                     date.fromisoformat(point["month"]),
-                    f"traffic_source_{_excel_safe(name)}_normalized_per_day",
+                    f"traffic_source_{_excel_safe(name)}_monthly_total",
                     float(point["value"]) if point.get("value") is not None else None,
-                    "count_per_day",
-                    "calculated snapshot fact",
+                    "count",
                 )
             )
     work = workbook.create_sheet("Выполненные работы")
@@ -1019,7 +1155,7 @@ def _pdf(docx_bytes):
             or not pdf.read_bytes().startswith(b"%PDF-")
         ):
             raise RuntimeError(f"LibreOffice conversion failed (code {result.returncode})")
-        return pdf.read_bytes(), _clean((result.stdout + " " + result.stderr)[:1000])
+        return pdf.read_bytes()
 
 
 def generate_artifact(*, version, artifact_type, is_draft=False, created_by=None):
@@ -1046,8 +1182,7 @@ def generate_artifact(*, version, artifact_type, is_draft=False, created_by=None
         elif artifact_type == "xlsx":
             data = _xlsx(snapshot, is_draft)
         elif artifact_type == "pdf":
-            data, conversion_log = _pdf(_docx(snapshot, narratives, issues, is_draft))
-            log = "; ".join(filter(None, (log, conversion_log)))
+            data = _pdf(_docx(snapshot, narratives, issues, is_draft))
         else:
             raise ValueError("Unsupported artifact type")
         domain = (

@@ -141,6 +141,47 @@ def test_new_snapshot_stores_url_option(client, user, project, checkbox, expecte
     assert ReportDatasetSnapshot.objects.get().payload["display_options"]["show_urls"] is expected
 
 
+def test_new_snapshot_stores_flexible_report_options(client, user, project):
+    mapping(project, [{"id": "ya", "search_engine": "yandex"}])
+    for day in (date(2026, 7, 1), date(2026, 7, 2)):
+        ranking(project, day, "yandex", "ya")
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "yandex_dates": ["2026-07-01", "2026-07-02"],
+            "include_top_tables": "on",
+            "include_top_5": "on",
+            "include_top_11_30": "on",
+            "include_webmaster": "on",
+            "include_metrika": "on",
+            "include_metrika_geography": "on",
+            "geography_moscow": "on",
+            "include_topvisor_report_link": "on",
+            "topvisor_report_url": "https://topvisor.example/report/42",
+        },
+    )
+    assert response.status_code == 302
+    options = ReportDatasetSnapshot.objects.get().payload["display_options"]
+    assert options["configuration_version"] == 2
+    assert options["include_visibility"] is False
+    assert options["include_top_5"] is True
+    assert options["include_top_10"] is False
+    assert options["include_top_11_30"] is True
+    assert options["geography_moscow"] is True
+    assert options["geography_saint_petersburg"] is False
+    assert options["topvisor_report_url"] == "https://topvisor.example/report/42"
+
+
+def test_topvisor_report_link_requires_url(project):
+    form = ReportCreateForm(
+        {"include_topvisor_report_link": "on"},
+        project=project,
+    )
+    assert not form.is_valid()
+    assert "topvisor_report_url" in form.errors
+
+
 @pytest.mark.parametrize("show_urls", [False, True])
 def test_xlsx_url_policy_covers_positions_and_work(project, tmp_path, settings, show_urls):
     settings.MEDIA_ROOT = tmp_path
@@ -278,6 +319,19 @@ def test_stale_is_failed_but_fresh_generating_cannot_delete(client, user, projec
     assert stale.status == "failed"
     client.post(reverse("reports:artifact-delete", args=[fresh.id]))
     assert GeneratedArtifact.objects.filter(pk=fresh.id).exists()
+
+
+def test_version_with_active_export_cannot_delete(client, user, project):
+    version = create_report_version(
+        report=Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    )
+    fresh = artifact(version, "generating", with_file=False)
+    client.force_login(user)
+    response = client.post(reverse("reports:version-delete", args=[version.id]), follow=True)
+    assert response.status_code == 200
+    assert "Нельзя удалить версию, пока для неё формируется файл" in response.content.decode()
+    assert GeneratedArtifact.objects.filter(pk=fresh.id).exists()
+    assert ReportDatasetSnapshot.objects.filter(version=version).exists()
 
 
 def test_delete_is_post_login_csrf_and_missing_file_safe(user, project):

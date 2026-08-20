@@ -6,10 +6,10 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date
 from typing import Any
 
 from django.conf import settings
+from django.utils import timezone
 
 
 class TopvisorError(Exception):
@@ -219,7 +219,7 @@ class TopvisorClient:
             project_id,
             regions_indexes=regions_indexes,
             date1="2000-01-01",
-            date2=date.today().isoformat(),
+            date2=timezone.localdate().isoformat(),
             fields=fields,
             positions_fields=positions_fields,
             page_size=1,

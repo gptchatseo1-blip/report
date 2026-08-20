@@ -7,7 +7,22 @@
 <h3>Выберите даты для вывода видимости</h3>
 <div class="calendar-pair">{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}</div>
 {% if not form.yandex_dates.field.choices and not form.google_dates.field.choices %}<p>Нет синхронизированных данных. <a href="{% url 'topvisor:connection' project.id %}">Перейти к синхронизации</a></p>{% endif %}
-<fieldset class="report-options"><legend>Параметры отчёта</legend><label class="url-option" for="{{ form.show_urls.id_for_label }}">{{ form.show_urls }} <span><strong>Выводить URL</strong><small>Добавить релевантные URL в предпросмотр и файлы отчёта.</small></span></label></fieldset>
+<fieldset class="report-options report-builder"><legend>Параметры отчёта</legend>
+<div class="report-config-grid">
+<section class="option-card"><h4>Topvisor</h4>
+<label class="url-option">{{ form.include_visibility }} <span><strong>Видимость сайта</strong><small>Первый график видимости.</small></span></label>
+<label class="url-option">{{ form.include_monthly_dynamics }} <span><strong>Динамика по месяцам</strong><small>График и таблица изменений за выбранные месяцы.</small></span></label>
+<label class="url-option">{{ form.include_top_tables }} <span><strong>Таблицы запросов</strong><small>Можно выбрать несколько диапазонов.</small></span></label>
+<div class="top-range-options">{% for field in form %}{% if field.name == 'include_top_5' or field.name == 'include_top_10' or field.name == 'include_top_20' or field.name == 'include_top_11_30' or field.name == 'include_top_30' %}<label>{{ field }} {{ field.label }}</label>{% endif %}{% endfor %}</div>{{ form.include_top_tables.errors }}
+<label class="url-option">{{ form.show_urls }} <span><strong>Выводить URL</strong><small>Добавить релевантные URL в предпросмотр и файлы отчёта.</small></span></label>
+<label class="url-option">{{ form.include_topvisor_report_link }} <span><strong>Ссылка на подробный отчёт</strong><small>Добавить гостевую ссылку Topvisor.</small></span></label>
+<label for="{{ form.topvisor_report_url.id_for_label }}">{{ form.topvisor_report_url.label }}{{ form.topvisor_report_url }}</label>{{ form.topvisor_report_url.errors }}
+</section>
+<section class="option-card"><h4>Яндекс.Вебмастер</h4><label class="url-option">{{ form.include_webmaster }} <span><strong>Выводить блок Вебмастера</strong><small>Показы, клики, CTR, индексация и ИКС.</small></span></label></section>
+<section class="option-card"><h4>Яндекс.Метрика</h4><label class="url-option">{{ form.include_metrika }} <span><strong>Выводить блок Метрики</strong><small>Месячные итоги по трафику и источникам.</small></span></label>
+<label class="url-option">{{ form.include_metrika_geography }} <span><strong>География посетителей</strong><small>Отдельный график и таблица.</small></span></label>
+<div class="geography-options"><label>{{ form.geography_moscow }} Москва</label><label>{{ form.geography_saint_petersburg }} Санкт-Петербург</label><label>{{ form.geography_undefined }} Не определено</label><label>{{ form.geography_area_undefined }} Область не определена</label></div></section>
+</div></fieldset>
 <h3>Данные сервисов Яндекса</h3>
 <p>Выберите месяцы, данные которых попадут в отчёт. По умолчанию отмечены три последних доступных периода.</p>
 <div class="report-source-grid">{% for source in source_period_fields %}{% include "reports/_source_period_picker.html" with source=source %}{% endfor %}</div>

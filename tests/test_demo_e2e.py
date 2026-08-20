@@ -16,7 +16,7 @@ from apps.projects.models import Project
 from apps.reports.demo import DEMO_DOMAIN, create_demo_project
 from apps.reports.exporting import generate_artifact
 from apps.reports.models import Report, ReportVersion
-from apps.reports.narratives import SECTION_ORDER
+from apps.reports.narratives import SECTION_ORDER, section_enabled
 
 pytestmark = [
     pytest.mark.django_db,
@@ -127,18 +127,25 @@ def test_reproducible_offline_demo_complete_e2e(monkeypatch, settings, tmp_path)
     expected_titles = {
         "visibility": "Видимость",
         "position_distribution": "Распределение позиций",
-        "top_10": "TOP-10",
+        "top_5": "Запросы в TOP-5",
+        "top_10": "Запросы в TOP-10",
+        "top_20": "Запросы в TOP-20",
+        "top_11_30": "Запросы в TOP-11–30",
+        "top_30": "Запросы в TOP-30",
         "top_11_20": "TOP-11–20",
-        "position_dynamics": "Динамика позиций",
+        "position_dynamics": "Динамика позиций по месяцам",
         "traffic": "Трафик",
         "traffic_sources": "Источники трафика",
         "clicks_impressions": "Клики и показы",
         "ctr": "CTR",
         "indexing": "Индексация",
         "iks": "ИКС",
+        "geography": "География посетителей",
         "completed_work": "Выполненные работы",
     }
-    assert runs[0][0] == [expected_titles[code] for code in SECTION_ORDER]
+    assert runs[0][0] == [
+        expected_titles[code] for code in SECTION_ORDER if section_enabled(payload, code)
+    ]
     assert "TOP-11–20" in runs[0][0] and "Частотность" in runs[0][2]
     assert "TOP-30" not in google["depth_comment"]
     assert runs[0] == runs[1]

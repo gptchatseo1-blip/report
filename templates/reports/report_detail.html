@@ -1,2 +1,51 @@
-{% extends 'reports/base.html' %}{% block title %}{{ report.report_month|date:'F Y' }} — {{ report.project.name }}{% endblock %}{% block content %}<h1>{{ report.report_month|date:'F Y' }}</h1><p>{{ report.project.name }} · {{ report.project.domain }}</p><section class="card warning"><h2>Зафиксировать новую версию</h2><p>Версия фиксирует текущие данные проекта. Snapshot после создания не изменяется.</p><form method="post" action="{% url 'reports:version-create' report.id %}" onsubmit="this.querySelector('button').disabled=true">{% csrf_token %}<input type="hidden" name="token" value="{{ version_token }}"><button>Зафиксировать новую версию</button></form></section>
-<h2>История версий</h2>{% if versions %}<div class="table-wrap"><table><thead><tr><th>№</th><th>Создана</th><th>Автор</th><th>Checksum</th><th>Ошибок</th><th>Предупреждений</th><th></th></tr></thead><tbody>{% for version in versions %}<tr><td>{{ version.number }}</td><td>{{ version.created_at|date:'d.m.Y H:i' }}</td><td>{{ version.created_by|default:'—' }}</td><td><code>{{ version.snapshot.checksum|slice:':12' }}…</code></td><td>{{ version.error_count }}</td><td>{{ version.warning_count }}</td><td><a href="{% url 'reports:version-detail' version.id %}">Предпросмотр</a></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">Версий пока нет.</div>{% endif %}{% endblock %}
+{% extends 'reports/base.html' %}
+{% block title %}{{ report.report_month|date:'F Y' }} — {{ report.project.name }}{% endblock %}
+{% block content %}
+<h1>{{ report.report_month|date:'F Y' }}</h1>
+<p>{{ report.project.name }} · {{ report.project.domain }}</p>
+<section class="card warning">
+  <h2>Зафиксировать новую версию</h2>
+  <p>Версия фиксирует текущие данные проекта. Snapshot после создания не изменяется.</p>
+  <form method="post" action="{% url 'reports:version-create' report.id %}" onsubmit="this.querySelector('button').disabled=true">
+    {% csrf_token %}
+    <input type="hidden" name="token" value="{{ version_token }}">
+    <button>Зафиксировать новую версию</button>
+  </form>
+</section>
+
+<h2>История версий</h2>
+{% if versions %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>№</th><th>Создана</th><th>Автор</th><th>Checksum</th><th>Ошибок</th><th>Предупреждений</th><th>Действия</th></tr>
+    </thead>
+    <tbody>
+      {% for version in versions %}
+      <tr>
+        <td>{{ version.number }}</td>
+        <td>{{ version.created_at|date:'d.m.Y H:i' }}</td>
+        <td>{{ version.created_by|default:'—' }}</td>
+        <td><code>{{ version.snapshot.checksum|slice:':12' }}…</code></td>
+        <td>{{ version.error_count }}</td>
+        <td>{{ version.warning_count }}</td>
+        <td>
+          <div class="version-actions">
+            <a href="{% url 'reports:version-detail' version.id %}">Предпросмотр</a>
+            <form method="post" action="{% url 'reports:version-delete' version.id %}" onsubmit="return confirm('Удалить версию №{{ version.number }} и все сформированные для неё файлы? Действие нельзя отменить.')">
+              {% csrf_token %}
+              <button type="submit" class="version-delete-button" aria-label="Удалить версию №{{ version.number }}" title="Удалить версию №{{ version.number }}">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-1 11H8L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z"/></svg>
+              </button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty">Версий пока нет.</div>
+{% endif %}
+{% endblock %}
