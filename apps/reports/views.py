@@ -1,3 +1,4 @@
+import base64
 import calendar
 import logging
 import secrets
@@ -38,7 +39,15 @@ SECTION_TITLES = {
     "ctr": "CTR",
     "indexing": "Индексация",
     "iks": "ИКС",
+    "webmaster_popular_queries": "Самые кликабельные запросы",
     "geography": "География посетителей",
+    "metrika_search_engines": "Поисковые системы",
+    "metrika_landing_pages": "Популярные страницы входа",
+    "metrika_landing_page_comparison": "Страницы входа: Яндекс и Google",
+    "metrika_url_groups": "Информационные и коммерческие страницы",
+    "metrika_sections": "Данные по разделам",
+    "metrika_categories": "Прорабатываемые категории",
+    "metrika_goals": "Цели Метрики",
     "completed_work": "Выполненные работы",
 }
 ENGINE_LABELS = {"google": "Google", "yandex": "Яндекс"}
@@ -261,7 +270,7 @@ def report_create(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
     project = get_object_or_404(Project, pk=project_id)
-    form = ReportCreateForm(request.POST, project=project)
+    form = ReportCreateForm(request.POST, request.FILES, project=project)
     if form.is_valid():
         submitted_token = form.cleaned_data.get("submission_token")
         token_key = f"report_create_token:{project.id}"
@@ -285,13 +294,22 @@ def report_create(request, project_id):
         )
         month = form.cleaned_data.get("month") or endpoint.replace(day=1)
         report, created = Report.objects.get_or_create(project=project, report_month=month)
+        screenshot = form.cleaned_data.get("webmaster_queries_screenshot")
+        screenshot_payload = None
+        if screenshot:
+            screenshot.seek(0)
+            screenshot_payload = {
+                "name": screenshot.name,
+                "mime_type": screenshot.content_type,
+                "data": base64.b64encode(screenshot.read()).decode("ascii"),
+            }
         version = create_report_version(
             report=report,
             created_by=request.user,
             selection={
                 "topvisor": selected_by_engine,
                 "display_options": {
-                    "configuration_version": 2,
+                    "configuration_version": 3,
                     **{
                         name: form.cleaned_data[name]
                         for name in (
@@ -306,15 +324,29 @@ def report_create(request, project_id):
                             "include_top_30",
                             "include_topvisor_report_link",
                             "include_webmaster",
+                            "webmaster_chart_period",
+                            "include_webmaster_popular_queries",
                             "include_metrika",
+                            "metrika_robotness",
+                            "include_metrika_sources_table",
+                            "include_metrika_search_engines",
                             "include_metrika_geography",
                             "geography_moscow",
                             "geography_saint_petersburg",
                             "geography_undefined",
                             "geography_area_undefined",
+                            "include_metrika_landing_pages",
+                            "include_metrika_landing_page_comparison",
+                            "include_metrika_url_groups",
+                            "include_metrika_sections",
+                            "include_metrika_categories",
+                            "include_metrika_goals",
+                            "include_completed_work",
                         )
                     },
                     "topvisor_report_url": form.cleaned_data["topvisor_report_url"],
+                    "webmaster_queries_comment": form.cleaned_data["webmaster_queries_comment"],
+                    "webmaster_queries_screenshot": screenshot_payload,
                 },
                 "yandex_metrika": form.cleaned_data["metrika_snapshots"],
                 "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],

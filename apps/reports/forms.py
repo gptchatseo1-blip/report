@@ -40,8 +40,43 @@ class ReportCreateForm(forms.Form):
     include_webmaster = forms.BooleanField(
         label="Данные Яндекс.Вебмастера", required=False, initial=True
     )
+    webmaster_chart_period = forms.ChoiceField(
+        label="Период графиков Вебмастера",
+        required=False,
+        initial="report_month",
+        choices=(
+            ("report_month", "Только отчётный месяц"),
+            ("selected", "Весь выбранный диапазон"),
+        ),
+    )
+    include_webmaster_popular_queries = forms.BooleanField(
+        label="Самые кликабельные запросы", required=False, initial=True
+    )
+    webmaster_queries_screenshot = forms.ImageField(
+        label="Скриншот таблицы запросов",
+        required=False,
+        help_text="Используется, если API не вернул список популярных запросов.",
+    )
+    webmaster_queries_comment = forms.CharField(
+        label="Комментарий к самым кликабельным запросам",
+        required=False,
+        max_length=5000,
+        widget=forms.Textarea(attrs={"rows": 4}),
+    )
     include_metrika = forms.BooleanField(
         label="Данные Яндекс.Метрики", required=False, initial=True
+    )
+    metrika_robotness = forms.ChoiceField(
+        label="Роботность",
+        required=False,
+        initial="humans",
+        choices=(("humans", "Только люди"), ("all", "Люди и роботы")),
+    )
+    include_metrika_sources_table = forms.BooleanField(
+        label="Таблица по всем источникам", required=False, initial=False
+    )
+    include_metrika_search_engines = forms.BooleanField(
+        label="Поисковые системы", required=False, initial=True
     )
     include_metrika_geography = forms.BooleanField(
         label="География посетителей", required=False, initial=True
@@ -53,6 +88,25 @@ class ReportCreateForm(forms.Form):
     geography_undefined = forms.BooleanField(label="Не определено", required=False, initial=True)
     geography_area_undefined = forms.BooleanField(
         label="Область не определена", required=False, initial=True
+    )
+    include_metrika_landing_pages = forms.BooleanField(
+        label="Популярные страницы входа", required=False, initial=True
+    )
+    include_metrika_landing_page_comparison = forms.BooleanField(
+        label="Страницы входа по Яндексу и Google в сравнении", required=False, initial=False
+    )
+    include_metrika_url_groups = forms.BooleanField(
+        label="Информационные и коммерческие разделы", required=False, initial=False
+    )
+    include_metrika_sections = forms.BooleanField(
+        label="Данные по разделам", required=False, initial=False
+    )
+    include_metrika_categories = forms.BooleanField(
+        label="Основные прорабатываемые категории", required=False, initial=False
+    )
+    include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
+    include_completed_work = forms.BooleanField(
+        label="Выполненные работы", required=False, initial=True
     )
     metrika_snapshots = forms.MultipleChoiceField(
         label="Яндекс.Метрика", required=False, widget=forms.CheckboxSelectMultiple
@@ -214,6 +268,12 @@ class ReportCreateForm(forms.Form):
         ):
             self.add_error("include_top_tables", "Выберите хотя бы один диапазон TOP.")
         return cleaned
+
+    def clean_webmaster_queries_screenshot(self):
+        image = self.cleaned_data.get("webmaster_queries_screenshot")
+        if image and image.size > 5 * 1024 * 1024:
+            raise forms.ValidationError("Размер скриншота не должен превышать 5 МБ.")
+        return image
 
 
 class NarrativeEditForm(forms.ModelForm):

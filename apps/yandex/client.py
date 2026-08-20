@@ -26,6 +26,7 @@ LAST_SIGN_TRAFFIC_SOURCE = "ym:s:lastSignTrafficSource"
 REGION_AREA = "ym:s:regionArea"
 REGION_CITY = "ym:s:regionCity"
 GOAL_REACHES = "ym:s:goal{id}reaches"
+GOAL_VISITS = "ym:s:goal{id}visits"
 GOAL_CONVERSION_RATE = "ym:s:goal{id}conversionRate"
 
 
@@ -250,6 +251,33 @@ class WebmasterClient(MetrikaClient):
             self._host_path(user_id, host_id, "/search-urls/in-search/history"), params
         )
 
+    def search_urls_samples(self, user_id, host_id, *, max_rows=5000):
+        """Return a bounded URL sample used for the in-search path legend."""
+        offset = 0
+        rows = []
+        available = None
+        while len(rows) < max_rows:
+            limit = min(100, max_rows - len(rows))
+            response = self._request(
+                self._host_path(user_id, host_id, "/search-urls/in-search/samples"),
+                {"offset": offset, "limit": limit},
+            )
+            batch = response.get("samples", [])
+            available = response.get("count", available)
+            rows.extend(batch)
+            if (
+                not batch
+                or len(batch) < limit
+                or (available is not None and len(rows) >= available)
+            ):
+                break
+            offset += len(batch)
+        return {
+            "count": available if available is not None else len(rows),
+            "samples": rows,
+            "truncated": available is not None and len(rows) < available,
+        }
+
     def indexing_history(self, user_id, host_id, **params):
         return self._request(
             self._host_path(user_id, host_id, "/search-urls/events/history"), params
@@ -259,3 +287,6 @@ class WebmasterClient(MetrikaClient):
         return self._request(
             self._host_path(user_id, host_id, "/search-queries/all/history"), params
         )
+
+    def popular_search_queries(self, user_id, host_id, **params):
+        return self._request(self._host_path(user_id, host_id, "/search-queries/popular"), params)
