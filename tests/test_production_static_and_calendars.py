@@ -17,6 +17,10 @@ from apps.topvisor.models import TopvisorProjectMapping
 pytestmark = pytest.mark.django_db
 
 
+def test_moscow_timezone_is_the_application_default(settings):
+    assert settings.TIME_ZONE == "Europe/Moscow"
+
+
 def _calendar_page(client):
     user = get_user_model().objects.create_user("static-reviewer")
     project = Project.objects.create(name="Static review", domain="example.test")

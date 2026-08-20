@@ -1,11 +1,14 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.test import Client
 from django.urls import reverse
 
 from apps.projects.models import Project
-from apps.reports.models import Report, ReportVersion
+from apps.reports.models import GeneratedArtifact, Report, ReportDatasetSnapshot, ReportVersion
+from apps.reports.services import create_report_version
 
 
 @pytest.fixture
@@ -49,6 +52,58 @@ def test_version_creation_is_post_only_and_idempotent(client, user, project):
     assert client.post(url, {"token": token}).status_code == 302
     assert client.post(url, {"token": token}).status_code == 302
     assert ReportVersion.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_version_delete_is_accessible_post_only_and_removes_only_selected_version(
+    client,
+    user,
+    project,
+    settings,
+    tmp_path,
+    django_capture_on_commit_callbacks,
+):
+    settings.MEDIA_ROOT = tmp_path
+    report = Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    old_version = create_report_version(report=report, created_by=user)
+    current_version = create_report_version(report=report, created_by=user)
+    old_snapshot_id = old_version.snapshot.pk
+    artifact = GeneratedArtifact.objects.create(
+        report_version=old_version,
+        artifact_type=GeneratedArtifact.Type.PDF,
+        status=GeneratedArtifact.Status.READY,
+    )
+    artifact.file.save("old.pdf", ContentFile(b"old-version"))
+    artifact_storage, artifact_name = artifact.file.storage, artifact.file.name
+    delete_url = reverse("reports:version-delete", args=[old_version.id])
+
+    client.force_login(user)
+    detail_html = client.get(reverse("reports:report-detail", args=[report.id])).content.decode()
+    assert f'action="{delete_url}"' in detail_html
+    assert 'aria-label="Удалить версию №1"' in detail_html
+    assert client.get(delete_url).status_code == 405
+
+    with django_capture_on_commit_callbacks(execute=True):
+        response = client.post(delete_url)
+    assert response.status_code == 302
+    assert response.url == reverse("reports:report-detail", args=[report.id])
+    assert not ReportVersion.objects.filter(pk=old_version.pk).exists()
+    assert not ReportDatasetSnapshot.objects.filter(pk=old_snapshot_id).exists()
+    assert not GeneratedArtifact.objects.filter(pk=artifact.pk).exists()
+    assert not artifact_storage.exists(artifact_name)
+    assert ReportVersion.objects.filter(pk=current_version.pk).exists()
+    assert Report.objects.filter(pk=report.pk).exists()
+
+
+@pytest.mark.django_db
+def test_version_delete_requires_login_and_csrf(user, project):
+    report = Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    version = create_report_version(report=report, created_by=user)
+    url = reverse("reports:version-delete", args=[version.id])
+    assert Client().post(url).status_code == 302
+    protected_client = Client(enforce_csrf_checks=True)
+    protected_client.force_login(user)
+    assert protected_client.post(url).status_code == 403
 
 
 @pytest.fixture
@@ -219,7 +274,7 @@ def preview_version(db, user, project):
 
 
 @pytest.mark.django_db
-def test_preview_renders_snapshot_metrics_segments_work_and_safe_provenance(
+def test_preview_renders_snapshot_metrics_segments_work_without_source_diagnostics(
     client, user, preview_version
 ):
     client.force_login(user)
@@ -239,13 +294,33 @@ def test_preview_renders_snapshot_metrics_segments_work_and_safe_provenance(
         "https://example.test/report/",
         "2026-05-01",
         "Обновление страницы",
-        "safe-checksum",
         "Универсальный проект",
     ):
         assert expected in html
     assert "21-30" not in html and "31-50" not in html and "51-100" not in html
-    assert "must-not-render" not in html
+    assert "must-not-render" not in html and "safe-checksum" not in html
+    assert "Источник данных" not in html
+    assert "Показать вывод по запросам" in html
+    assert "Google · Россия · 1 запрос" in html
+    assert 'class="keyword-table with-url"' in html
+    assert 'class="metric-change-table"' in html
+    assert 'class="report-data-table visibility-table"' in html
+    assert 'class="report-data-table position-dynamics-table"' in html
+    assert 'class="report-data-table completed-work-table"' in html
+    assert "80,0%" in html
     assert "<title>Версия 1 — Универсальный проект</title>" in html
+
+
+@pytest.mark.django_db
+def test_report_times_are_rendered_in_moscow_timezone(client, user, project):
+    report = Report.objects.create(project=project, report_month=date(2026, 7, 1))
+    version = create_report_version(report=report, created_by=user)
+    ReportVersion.objects.filter(pk=version.pk).update(
+        created_at=datetime(2026, 8, 20, 4, 52, tzinfo=UTC)
+    )
+    client.force_login(user)
+    html = client.get(reverse("reports:report-detail", args=[report.id])).content.decode()
+    assert "20.08.2026 07:52" in html
 
 
 @pytest.mark.django_db

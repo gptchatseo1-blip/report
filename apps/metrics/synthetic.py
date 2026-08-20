@@ -68,6 +68,22 @@ def _metrika_payload(project, month):
         (f"source_{name}_visits", value, MetricPoint.Unit.COUNT)
         for name, value in source_values.items()
     )
+    metrics.extend(
+        (
+            ("geography_moscow_visits", round(visits * 0.42), MetricPoint.Unit.COUNT),
+            (
+                "geography_saint_petersburg_visits",
+                round(visits * 0.09),
+                MetricPoint.Unit.COUNT,
+            ),
+            ("geography_undefined_visits", round(visits * 0.025), MetricPoint.Unit.COUNT),
+            (
+                "geography_area_undefined_visits",
+                round(visits * 0.015),
+                MetricPoint.Unit.COUNT,
+            ),
+        )
+    )
     return metrics
 
 

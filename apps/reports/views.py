@@ -18,22 +18,27 @@ from apps.projects.models import Project
 from .exporting import ExportBlocked, generate_artifact
 from .forms import NarrativeEditForm, ReportCreateForm
 from .models import GeneratedArtifact, NarrativeBlock, Report, ReportVersion, ValidationIssue
-from .narratives import SECTION_ORDER
-from .services import create_report_version
+from .narratives import SECTION_ORDER, TOP_SECTION_RANGES, section_enabled
+from .services import ReportVersionDeleteBlocked, create_report_version, delete_report_version
 from .validation import validate_report_version
 
 SECTION_TITLES = {
     "visibility": "Видимость",
     "position_distribution": "Распределение позиций",
-    "top_10": "TOP-10",
+    "top_5": "Запросы в TOP-5",
+    "top_10": "Запросы в TOP-10",
+    "top_20": "Запросы в TOP-20",
+    "top_11_30": "Запросы в TOP-11–30",
+    "top_30": "Запросы в TOP-30",
     "top_11_20": "Запросы в TOP-11–20",
-    "position_dynamics": "Динамика позиций",
+    "position_dynamics": "Динамика позиций по месяцам",
     "traffic": "Трафик",
     "traffic_sources": "Источники трафика",
     "clicks_impressions": "Клики и показы",
     "ctr": "CTR",
     "indexing": "Индексация",
     "iks": "ИКС",
+    "geography": "География посетителей",
     "completed_work": "Выполненные работы",
 }
 ENGINE_LABELS = {"google": "Google", "yandex": "Яндекс"}
@@ -45,7 +50,16 @@ METRIC_SECTIONS = {
     "clicks_impressions": ("yandex_webmaster", ("search_clicks", "search_impressions")),
     "ctr": ("yandex_webmaster", ("search_ctr",)),
     "indexing": ("yandex_webmaster", ("indexed_pages",)),
-    "iks": ("yandex_webmaster", ("iks",)),
+    "iks": ("yandex_webmaster", ("iks", "quality_index")),
+    "geography": (
+        "yandex_metrika",
+        (
+            "geography_moscow_visits",
+            "geography_saint_petersburg_visits",
+            "geography_undefined_visits",
+            "geography_area_undefined_visits",
+        ),
+    ),
 }
 METRIC_LABELS = {
     "visits": "Визиты",
@@ -59,6 +73,10 @@ METRIC_LABELS = {
     "search_ctr": "CTR",
     "indexed_pages": "Проиндексированные страницы",
     "iks": "ИКС",
+    "geography_moscow_visits": "Москва",
+    "geography_saint_petersburg_visits": "Санкт-Петербург",
+    "geography_undefined_visits": "Не определено",
+    "geography_area_undefined_visits": "Область не определена",
 }
 logger = logging.getLogger(__name__)
 
@@ -272,7 +290,32 @@ def report_create(request, project_id):
             created_by=request.user,
             selection={
                 "topvisor": selected_by_engine,
-                "display_options": {"show_urls": form.cleaned_data["show_urls"]},
+                "display_options": {
+                    "configuration_version": 2,
+                    **{
+                        name: form.cleaned_data[name]
+                        for name in (
+                            "show_urls",
+                            "include_visibility",
+                            "include_monthly_dynamics",
+                            "include_top_tables",
+                            "include_top_5",
+                            "include_top_10",
+                            "include_top_20",
+                            "include_top_11_30",
+                            "include_top_30",
+                            "include_topvisor_report_link",
+                            "include_webmaster",
+                            "include_metrika",
+                            "include_metrika_geography",
+                            "geography_moscow",
+                            "geography_saint_petersburg",
+                            "geography_undefined",
+                            "geography_area_undefined",
+                        )
+                    },
+                    "topvisor_report_url": form.cleaned_data["topvisor_report_url"],
+                },
                 "yandex_metrika": form.cleaned_data["metrika_snapshots"],
                 "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
             },
@@ -355,6 +398,22 @@ def version_create(request, report_id):
     return redirect("reports:version-detail", version_id=version.id)
 
 
+@login_required
+@require_POST
+def version_delete(request, version_id):
+    version = get_object_or_404(
+        ReportVersion.objects.select_related("report__project"), pk=version_id
+    )
+    report_id = version.report_id
+    try:
+        number = delete_report_version(version=version)
+    except ReportVersionDeleteBlocked as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, f"Версия №{number} удалена.")
+    return redirect("reports:report-detail", report_id=report_id)
+
+
 def _segment_rows(payload, code):
     segments = payload.get("calculated", {}).get("positions", {}).get("segments", [])
     rows = []
@@ -363,10 +422,66 @@ def _segment_rows(payload, code):
         row["engine_label"] = ENGINE_LABELS.get(
             source.get("search_engine"), source.get("search_engine") or "Поиск"
         )
-        if code == "top_11_20":
-            row["rows"] = source.get("top_11_20", [])
+        if code in TOP_SECTION_RANGES:
+            start, end = TOP_SECTION_RANGES[code]
+            configuration_id = source.get("configuration_id")
+            candidates = [
+                item
+                for item in payload.get("ranking_sources", [])
+                if item.get("search_engine") == source.get("search_engine")
+                and item.get("region") == source.get("region")
+                and (not configuration_id or item.get("configuration_id") == configuration_id)
+            ]
+            latest = max(
+                candidates,
+                key=lambda item: (item.get("date") or "", item.get("id") or ""),
+                default={},
+            )
+            if code == "top_11_20":
+                row["rows"] = source.get("top_11_20", [])
+            else:
+                depth = latest.get("ranking_depth") or 0
+                row["rows"] = [
+                    {
+                        **item,
+                        "position_tone": (
+                            "position-top-3"
+                            if item.get("position") and item["position"] <= 3
+                            else "position-top-5"
+                            if item.get("position") and item["position"] <= 5
+                            else "position-top-10"
+                            if item.get("position") and item["position"] <= 10
+                            else "position-top-20"
+                            if item.get("position") and item["position"] <= 20
+                            else "position-top-30"
+                        ),
+                    }
+                    for item in latest.get("positions", [])
+                    if item.get("position") is not None
+                    and item["position"] <= depth
+                    and start <= item["position"] <= end
+                ]
+                row["rows"].sort(
+                    key=lambda item: (item.get("position"), str(item.get("query", "")).casefold())
+                )
+            row_count = len(row["rows"])
+            row["row_count"] = row_count
+            row["row_word"] = (
+                "запрос"
+                if row_count % 10 == 1 and row_count % 100 != 11
+                else "запроса"
+                if row_count % 10 in {2, 3, 4} and row_count % 100 not in {12, 13, 14}
+                else "запросов"
+            )
         rows.append(row)
-    return rows
+    engine_order = {"yandex": 0, "google": 1}
+    return sorted(
+        rows,
+        key=lambda item: (
+            engine_order.get(item.get("search_engine"), 99),
+            item.get("region") or "",
+        ),
+    )
 
 
 def _metric_rows(payload, code):
@@ -376,8 +491,27 @@ def _metric_rows(payload, code):
     facts = payload.get("calculated", {}).get("sources", {}).get("sources", {}).get(source, {})
     changes = facts.get("normalized_changes", {})
     series = facts.get("three_month_series", {})
+    if code == "iks":
+        codes = tuple(
+            metric_code
+            for metric_code in codes
+            if any(
+                (changes.get(metric_code) or {}).get(field) is not None
+                for field in ("current", "previous")
+            )
+            or any(point.get("value") is not None for point in series.get(metric_code, []))
+        )[:1]
     if code == "traffic":
         codes = (*codes, *(key for key in sorted(series) if key.startswith("goal_")))
+    if code == "geography":
+        options = payload.get("display_options", {})
+        selected = {
+            "geography_moscow_visits": options.get("geography_moscow", True),
+            "geography_saint_petersburg_visits": options.get("geography_saint_petersburg", True),
+            "geography_undefined_visits": options.get("geography_undefined", True),
+            "geography_area_undefined_visits": options.get("geography_area_undefined", True),
+        }
+        codes = tuple(metric_code for metric_code in codes if selected[metric_code])
     return [
         {
             "code": metric_code,
@@ -422,6 +556,8 @@ def _preview_context(version, *, form_overrides=None):
     show_urls = payload.get("display_options", {}).get("show_urls", True)
     form_overrides = form_overrides or {}
     for code in SECTION_ORDER:
+        if not section_enabled(payload, code):
+            continue
         block = blocks.get(code)
         if not block:
             continue
@@ -440,32 +576,14 @@ def _preview_context(version, *, form_overrides=None):
                 "work_rows": payload.get("completed_work", []) if code == "completed_work" else [],
                 "periods": payload.get("periods", {}),
                 "show_urls": show_urls,
-            }
-        )
-    provenance = []
-    for item in payload.get("ranking_sources", []):
-        source = item.get("provenance", {})
-        provenance.append(
-            {
-                "source": item.get("search_engine"),
-                "region": item.get("region"),
-                "method": source.get("method"),
-                "period": item.get("date"),
-                "retrieved_at": source.get("retrieved_at"),
-                "checksum": source.get("response_checksum"),
-                "identifier": source.get("import_batch_id") or item.get("id"),
-            }
-        )
-    for item in payload.get("source_snapshots", []):
-        source = item.get("provenance", {})
-        provenance.append(
-            {
-                "source": item.get("source"),
-                "method": source.get("method"),
-                "period": f"{item.get('period_start')} — {item.get('period_end')}",
-                "retrieved_at": item.get("retrieved_at"),
-                "checksum": item.get("checksum"),
-                "identifier": item.get("id"),
+                "top_range": TOP_SECTION_RANGES.get(code),
+                "topvisor_report_url": (
+                    payload.get("display_options", {}).get("topvisor_report_url")
+                    if payload.get("display_options", {}).get("include_topvisor_report_link")
+                    else ""
+                ),
+                "modern_report": payload.get("display_options", {}).get("configuration_version")
+                == 2,
             }
         )
     errors = sum(i.severity == ValidationIssue.Severity.ERROR for i in issues)
@@ -480,7 +598,6 @@ def _preview_context(version, *, form_overrides=None):
         "errors": errors,
         "warnings": warnings,
         "can_publish": not errors,
-        "provenance": provenance,
         "show_urls": show_urls,
     }
 

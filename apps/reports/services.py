@@ -1,13 +1,17 @@
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 
+from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.db.models import Max
+from django.utils import timezone
 
 from apps.metrics.models import MetricPoint, RankingSnapshot, SourceSnapshot
 from apps.worklog.models import WorkLogItem
@@ -23,21 +27,30 @@ from .calculations import (
     check_ctr,
     compare_semantics,
     depth_comment,
-    normalize_count_per_day,
     shift_month,
     top_11_20_rows,
 )
-from .models import Report, ReportDatasetSnapshot, ReportVersion, ValidationIssue
+from .models import (
+    GeneratedArtifact,
+    Report,
+    ReportDatasetSnapshot,
+    ReportVersion,
+    ValidationIssue,
+)
 
 SNAPSHOT_SCHEMA_VERSION = "mvp1.1"
+logger = logging.getLogger(__name__)
 
-DAILY_NORMALIZED_CODES = {
-    "visits",
-    "users",
-    "new_users",
-    "search_clicks",
-    "search_impressions",
-}
+
+class ReportVersionDeleteBlocked(Exception):
+    """Raised when deleting a version would race with an active export."""
+
+
+def _delete_artifact_file(storage, name):
+    try:
+        storage.delete(name)
+    except Exception:
+        logger.exception("Failed to remove artifact file after report version deletion")
 
 
 def build_position_facts(*, project, report_month, selected_dates=None):
@@ -72,7 +85,10 @@ def build_position_facts(*, project, report_month, selected_dates=None):
         if existing_key is None or snapshot_key > existing_key:
             grouped[segment_key][month] = snapshot
     facts = []
-    for (engine, region, configuration_id), values in sorted(grouped.items()):
+    engine_order = {"yandex": 0, "google": 1}
+    for (engine, region, configuration_id), values in sorted(
+        grouped.items(), key=lambda item: (engine_order.get(item[0][0], 99), item[0][1], item[0][2])
+    ):
         months = (
             tuple(selected_by_engine.get(engine, ()))
             if selected_by_engine
@@ -219,28 +235,21 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
         first = points[0][1] if len(points) >= 2 else {}
         current = points[-1][1] if points else {}
 
-        def normalized(point, snapshot):
+        def monthly_total(point, snapshot):
             if point is None:
                 return None
-            value = point.numeric_value
-            if point.metric_code in DAILY_NORMALIZED_CODES or point.metric_code.startswith(
-                "source_"
-            ):
-
-                class SelectedPeriod:
-                    start = snapshot.period_start
-                    end = snapshot.period_end
-                    days = (end - start).days + 1
-
-                value = normalize_count_per_day(value, SelectedPeriod)
-            return value
+            # Metrika and Webmaster snapshots already contain totals for the
+            # selected calendar month. Report comparisons must use those totals
+            # directly; dividing by the number of days obscures the figures that
+            # users see in the provider interfaces.
+            return point.numeric_value
 
         codes = sorted({code for _snapshot, metrics in points for code in metrics})
         series = {
             code: [
                 {
                     "month": snapshot.period_start,
-                    "value": normalized(metrics.get(code), snapshot),
+                    "value": monthly_total(metrics.get(code), snapshot),
                 }
                 for snapshot, metrics in points
             ]
@@ -256,8 +265,8 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
                 else ChangeKind.VALUE
             )
             changes[code] = calculate_change(
-                normalized(new, points[-1][0]) if points else None,
-                normalized(old, points[0][0]) if points else None,
+                monthly_total(new, points[-1][0]) if points else None,
+                monthly_total(old, points[0][0]) if points else None,
                 kind=kind,
             )
         extra = {}
@@ -605,6 +614,38 @@ def create_report_version(*, report, created_by=None, selection=None):
 
     generate_narratives(version)
     return version
+
+
+@transaction.atomic
+def delete_report_version(*, version):
+    """Delete one explicitly selected version without touching live source snapshots."""
+    locked_report = Report.objects.select_for_update().get(pk=version.report_id)
+    locked_version = (
+        ReportVersion.objects.select_for_update()
+        .select_related("snapshot")
+        .get(pk=version.pk, report=locked_report)
+    )
+    active_after = timezone.now() - timedelta(seconds=settings.REPORT_ARTIFACT_STALE_SECONDS)
+    if locked_version.generated_artifacts.filter(
+        status=GeneratedArtifact.Status.GENERATING,
+        created_at__gte=active_after,
+    ).exists():
+        raise ReportVersionDeleteBlocked(
+            "Нельзя удалить версию, пока для неё формируется файл. Повторите после завершения."
+        )
+
+    artifact_files = [
+        (artifact.file.storage, artifact.file.name)
+        for artifact in locked_version.generated_artifacts.exclude(file="")
+        if artifact.file.name
+    ]
+    # Normal snapshot deletion stays forbidden. This explicit workflow removes the
+    # protected child first and then lets the version cascade delete its own rows.
+    ReportDatasetSnapshot.objects.filter(version=locked_version).delete()
+    locked_version.delete()
+    for storage, name in artifact_files:
+        transaction.on_commit(partial(_delete_artifact_file, storage, name))
+    return locked_version.number
 
 
 def get_report_version_data(version):

@@ -118,13 +118,13 @@ def test_ctr_arithmetic_check():
 
 
 @pytest.mark.django_db
-def test_source_service_normalizes_counts_and_builds_source_facts():
+def test_source_service_uses_monthly_totals_and_builds_source_facts():
     project = Project.objects.create(name="Demo", domain="example.com")
     sync_synthetic_metrics(project=project, report_month=date(2026, 7, 1))
     facts = build_source_facts(project=project, report_month=date(2026, 7, 1))
     metrika = facts["sources"][SourceSnapshot.Source.METRIKA]
     webmaster = facts["sources"][SourceSnapshot.Source.WEBMASTER]
-    assert facts["formula_version"] == "mvp1.3-position-metadata"
+    assert facts["formula_version"] == "mvp1.4-monthly-totals"
     assert metrika["normalized_changes"]["visits"].current is not None
     assert metrika["traffic_sources"].warning is None
     assert [item["month"] for item in metrika["three_month_series"]["visits"]] == [
@@ -133,6 +133,16 @@ def test_source_service_normalizes_counts_and_builds_source_facts():
         date(2026, 7, 1),
     ]
     assert all(item["value"] is not None for item in metrika["three_month_series"]["visits"])
+    july_visits = (
+        SourceSnapshot.objects.get(
+            project=project,
+            source=SourceSnapshot.Source.METRIKA,
+            period_start=date(2026, 7, 1),
+        )
+        .metrics.get(metric_code="visits")
+        .numeric_value
+    )
+    assert metrika["three_month_series"]["visits"][-1]["value"] == july_visits
     assert webmaster["ctr_check"].valid is True
     assert "indexed_pages" in webmaster["normalized_changes"]
     assert "quality_index" in webmaster["normalized_changes"]
@@ -175,11 +185,11 @@ def test_position_service_separates_search_engine_and_region(tmp_path, settings)
         )
     facts = build_position_facts(project=project, report_month=date(2026, 7, 1))
     assert [(item["search_engine"], item["region"]) for item in facts["segments"]] == [
-        ("google", "Россия"),
         ("yandex", "Москва"),
+        ("google", "Россия"),
     ]
-    assert facts["segments"][0]["distribution"].ranges["11-20"] == 1
-    assert facts["segments"][1]["distribution"].ranges["1-3"] == 1
+    assert facts["segments"][0]["distribution"].ranges["1-3"] == 1
+    assert facts["segments"][1]["distribution"].ranges["11-20"] == 1
 
 
 @pytest.mark.django_db

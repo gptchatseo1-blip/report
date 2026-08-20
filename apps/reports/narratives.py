@@ -1,4 +1,4 @@
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.db import transaction
 
@@ -7,17 +7,56 @@ from .models import NarrativeBlock, ReportDatasetSnapshot
 SECTION_ORDER = (
     "visibility",
     "position_distribution",
-    "top_10",
-    "top_11_20",
     "position_dynamics",
-    "traffic",
-    "traffic_sources",
+    "top_5",
+    "top_10",
+    "top_20",
+    "top_11_30",
+    "top_30",
+    "top_11_20",
     "clicks_impressions",
     "ctr",
     "indexing",
     "iks",
+    "traffic",
+    "traffic_sources",
+    "geography",
     "completed_work",
 )
+
+TOP_SECTION_RANGES = {
+    "top_5": (1, 5),
+    "top_10": (1, 10),
+    "top_20": (1, 20),
+    "top_11_30": (11, 30),
+    "top_30": (1, 30),
+    "top_11_20": (11, 20),
+}
+
+
+def section_enabled(payload, code):
+    """Apply frozen report options while keeping legacy snapshots exportable."""
+    options = payload.get("display_options", {})
+    if options.get("configuration_version") != 2:
+        return code not in {"top_5", "top_20", "top_11_30", "top_30", "geography"}
+    if code == "visibility":
+        return options.get("include_visibility", True)
+    if code == "position_dynamics":
+        return options.get("include_monthly_dynamics", True)
+    if code == "top_11_20":
+        return False
+    if code in TOP_SECTION_RANGES:
+        return options.get("include_top_tables", True) and options.get(f"include_{code}", False)
+    if code in {"clicks_impressions", "ctr", "indexing", "iks"}:
+        return options.get("include_webmaster", True)
+    if code in {"traffic", "traffic_sources"}:
+        return options.get("include_metrika", True)
+    if code == "geography":
+        return options.get("include_metrika", True) and options.get(
+            "include_metrika_geography", False
+        )
+    return True
+
 
 METRIC_LABELS = {
     "visibility": "Видимость",
@@ -28,6 +67,31 @@ METRIC_LABELS = {
     "indexed_pages": "Количество проиндексированных страниц",
     "iks": "ИКС",
     "quality_index": "ИКС",
+    "geography_moscow_visits": "Москва",
+    "geography_saint_petersburg_visits": "Санкт-Петербург",
+    "geography_undefined_visits": "Не определено",
+    "geography_area_undefined_visits": "Область не определена",
+}
+CHANGE_VERBS = {
+    "видимость": ("выросла", "снизилась"),
+    "клики": ("выросли", "снизились"),
+    "показы": ("выросли", "снизились"),
+    "количество проиндексированных страниц": ("выросло", "снизилось"),
+}
+SECTION_INTROS = {
+    "clicks_impressions": (
+        "Данные по показам и кликам сайта в поиске Яндекса за выбранные месяцы."
+    ),
+    "ctr": "CTR показывает долю кликов от общего количества показов в поиске Яндекса.",
+    "indexing": "Индексация сайта по данным Яндекс.Вебмастера.",
+    "iks": "Динамика индекса качества сайта по данным Яндекс.Вебмастера.",
+    "traffic": (
+        "Сводная информация по переходам на сайт по данным Яндекс.Метрики. "
+        "Показатели представлены месячными итогами."
+    ),
+    "geography": (
+        "Распределение месячного количества визитов по выбранным географическим группам."
+    ),
 }
 
 
@@ -40,6 +104,28 @@ def _number(value):
         return str(value)
     rendered = format(number.normalize(), "f")
     return rendered.replace(".", ",")
+
+
+def _share(value):
+    if value is None:
+        return "—"
+    try:
+        number = Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return str(value)
+    return format(number, ".1f").replace(".", ",")
+
+
+def _query_count(value):
+    word = (
+        "запрос"
+        if value % 10 == 1 and value % 100 != 11
+        else "запроса"
+        if value % 10 in {2, 3, 4} and value % 100 not in {12, 13, 14}
+        else "запросов"
+    )
+    verb = "находится" if word == "запрос" else "находятся"
+    return f"{verb} {value} {word}"
 
 
 def _change_text(label, change, *, unit=""):
@@ -59,7 +145,8 @@ def _change_text(label, change, *, unit=""):
     delta = Decimal(str(absolute))
     if delta == 0:
         return f"{label}: {_number(current)}{display_unit}; существенного изменения нет."
-    direction = "вырос" if delta > 0 else "снизился"
+    increased, decreased = CHANGE_VERBS.get(label.casefold(), ("вырос", "снизился"))
+    direction = increased if delta > 0 else decreased
     magnitude = _number(abs(delta))
     if points is not None:
         return (
@@ -89,10 +176,26 @@ def _source_changes(payload, source):
 
 def _metric_block(payload, section, source, codes):
     changes = _source_changes(payload, source)
+    if section == "iks":
+        codes = tuple(
+            code
+            for code in codes
+            if code in changes
+            and any(changes[code].get(field) is not None for field in ("current", "previous"))
+        )[:1]
     selected = {code: changes[code] for code in codes if code in changes}
+    intro = SECTION_INTROS.get(section, "")
     if not selected:
-        return {"section": section, "text": "Данные раздела отсутствуют.", "facts": {}}
-    text = " ".join(_change_text(METRIC_LABELS[code], value) for code, value in selected.items())
+        text = f"{intro} Данные раздела отсутствуют.".strip()
+        return {"section": section, "text": text, "facts": {}}
+    text = " ".join(
+        part
+        for part in (
+            intro,
+            " ".join(_change_text(METRIC_LABELS[code], value) for code, value in selected.items()),
+        )
+        if part
+    )
     return {"section": section, "text": text, "facts": {"changes": selected}}
 
 
@@ -128,7 +231,12 @@ def build_narrative_specs(payload):
     specs = []
     segments = payload.get("calculated", {}).get("positions", {}).get("segments", [])
     if not segments:
-        for section in ("visibility", "position_distribution", "top_10", "position_dynamics"):
+        for section in (
+            "visibility",
+            "position_distribution",
+            "position_dynamics",
+            *TOP_SECTION_RANGES,
+        ):
             specs.append({"section": section, "text": "Данные раздела отсутствуют.", "facts": {}})
     else:
         visibility_facts = []
@@ -172,16 +280,26 @@ def build_narrative_specs(payload):
         specs.append(
             {
                 "section": "visibility",
-                "text": " ".join(
-                    f"{_segment_name(item)}: {_change_text('видимость', item['change'])}"
-                    for item in visible
+                "text": (
+                    "Видимость сайта — доля показов сайта в поисковых системах, которая "
+                    "зависит от частотности и позиций отслеживаемых запросов. "
                 )
-                if visible
-                else "Данные раздела отсутствуют.",
+                + (
+                    " ".join(
+                        f"{_segment_name(item)}: {_change_text('видимость', item['change'])}"
+                        for item in visible
+                    )
+                    if visible
+                    else "Данные для расчёта видимости отсутствуют."
+                ),
                 "facts": {"segments": visible},
             }
         )
-        distribution_text = []
+        distribution_text = [
+            "График показывает распределение основных ключевых запросов по диапазонам "
+            "позиций за отчётный период. Он отражает количество запросов в каждом TOP и "
+            "не учитывает их частотность. Данные по количеству и доле запросов в TOP:"
+        ]
         for item in distribution_facts:
             ranges = item["distribution"].get("ranges", {})
             rendered = ", ".join(f"{key}: {value}" for key, value in ranges.items())
@@ -199,16 +317,31 @@ def build_narrative_specs(payload):
                 "facts": {"segments": distribution_facts, "depth_notes": depth_notes},
             }
         )
-        specs.append(
-            {
-                "section": "top_10",
-                "text": " ".join(
-                    f"{_segment_name(item)}: в TOP-10 находится {item['top_10']} запросов."
-                    for item in top_facts
-                ),
-                "facts": {"segments": top_facts, "range_start": 1, "range_end": 10},
-            }
-        )
+        for section, (start, end) in TOP_SECTION_RANGES.items():
+            if section == "top_11_20":
+                continue
+            specs.append(
+                {
+                    "section": section,
+                    "text": " ".join(
+                        (
+                            f"{_segment_name(item)}: таблица запросов в диапазоне "
+                            f"TOP-{start}–{end} сформирована."
+                            if start != 1
+                            else (
+                                f"{_segment_name(item)}: таблица запросов в TOP-{end} сформирована."
+                            )
+                        )
+                        for item in top_facts
+                    )
+                    or "Данные раздела отсутствуют.",
+                    "facts": {
+                        "segments": top_facts,
+                        "range_start": start,
+                        "range_end": end,
+                    },
+                }
+            )
         if top_11_facts:
             specs.append(
                 {
@@ -250,7 +383,6 @@ def build_narrative_specs(payload):
 
     specs.extend(
         (
-            _metric_block(payload, "traffic", "yandex_metrika", ("visits",)),
             _metric_block(
                 payload,
                 "clicks_impressions",
@@ -260,6 +392,7 @@ def build_narrative_specs(payload):
             _metric_block(payload, "ctr", "yandex_webmaster", ("search_ctr",)),
             _metric_block(payload, "indexing", "yandex_webmaster", ("indexed_pages",)),
             _metric_block(payload, "iks", "yandex_webmaster", ("iks", "quality_index")),
+            _metric_block(payload, "traffic", "yandex_metrika", ("visits",)),
         )
     )
     traffic = (
@@ -276,11 +409,33 @@ def build_narrative_specs(payload):
             if not traffic or traffic.get("total") is None
             else "Источники трафика: "
             + ", ".join(
-                f"{key} — {_number(value)}%" for key, value in traffic.get("shares", {}).items()
+                f"{key} — {_share(value)}%" for key, value in traffic.get("shares", {}).items()
             )
             + ".",
-            "facts": traffic or {},
+            "facts": (
+                {
+                    **traffic,
+                    "display_shares": {
+                        key: _share(value) for key, value in traffic.get("shares", {}).items()
+                    },
+                }
+                if traffic
+                else {}
+            ),
         }
+    )
+    specs.append(
+        _metric_block(
+            payload,
+            "geography",
+            "yandex_metrika",
+            (
+                "geography_moscow_visits",
+                "geography_saint_petersburg_visits",
+                "geography_undefined_visits",
+                "geography_area_undefined_visits",
+            ),
+        )
     )
     works = payload.get("completed_work", [])
     specs.append(

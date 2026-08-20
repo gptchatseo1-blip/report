@@ -12,6 +12,7 @@ urlpatterns = [
     path("reports/<uuid:report_id>/", views.report_detail, name="report-detail"),
     path("reports/<uuid:report_id>/versions/create/", views.version_create, name="version-create"),
     path("versions/<uuid:version_id>/", views.version_detail, name="version-detail"),
+    path("versions/<uuid:version_id>/delete/", views.version_delete, name="version-delete"),
     path("versions/<uuid:version_id>/validate/", views.version_validate, name="validate"),
     path(
         "versions/<uuid:version_id>/export/<str:artifact_type>/",

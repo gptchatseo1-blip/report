@@ -15,6 +15,8 @@ from .client import (
     GOAL_CONVERSION_RATE,
     GOAL_REACHES,
     LAST_SIGN_TRAFFIC_SOURCE,
+    REGION_AREA,
+    REGION_CITY,
     MetrikaClient,
     WebmasterClient,
     YandexAPIError,
@@ -43,6 +45,12 @@ TRAFFIC_SOURCE_CODES = {
     "saved": "other",
     "undefined": "other",
 }
+GEOGRAPHY_CODES = (
+    "moscow",
+    "saint_petersburg",
+    "undefined",
+    "area_undefined",
+)
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
 
@@ -59,6 +67,28 @@ def month_end(value):
 def _value(row, index):
     values = row.get("metrics", [])
     return Decimal(str(values[index] if index < len(values) and values[index] is not None else 0))
+
+
+def _dimension_name(item, index):
+    dimensions = item.get("dimensions") or []
+    if index >= len(dimensions) or not isinstance(dimensions[index], dict):
+        return ""
+    return str(dimensions[index].get("name") or "").strip().casefold()
+
+
+def _geography_code(item):
+    area = _dimension_name(item, 0)
+    city = _dimension_name(item, 1)
+    if city in {"москва", "moscow"}:
+        return "moscow"
+    if city in {"санкт-петербург", "saint petersburg", "st. petersburg"}:
+        return "saint_petersburg"
+    undefined = {"", "не определено", "undefined", "not defined"}
+    if city in undefined:
+        return "undefined"
+    if area in undefined | {"область не определена", "area not defined"}:
+        return "area_undefined"
+    return None
 
 
 def _fetch_month(client, mapping, month):
@@ -98,6 +128,38 @@ def _fetch_month(client, mapping, month):
                 "dimensions": {},
             }
         )
+    geography = client.stat(
+        **common,
+        metrics="ym:s:visits",
+        dimensions=f"{REGION_AREA},{REGION_CITY}",
+        limit=10000,
+        lang="ru",
+    )
+    geography_totals = {code: Decimal(0) for code in GEOGRAPHY_CODES}
+    geography_rows = []
+    for item in geography.get("data", []):
+        code = _geography_code(item)
+        if code is None:
+            continue
+        value = _value(item, 0)
+        geography_totals[code] += value
+        geography_rows.append(
+            {
+                "code": code,
+                "area": _dimension_name(item, 0),
+                "city": _dimension_name(item, 1),
+                "visits": str(value),
+            }
+        )
+    for code in GEOGRAPHY_CODES:
+        points.append(
+            {
+                "code": f"geography_{code}_visits",
+                "value": str(geography_totals[code]),
+                "unit": "count",
+                "dimensions": {"region_code": code},
+            }
+        )
     cleaned_goals = []
     for goal in mapping.selected_goals:
         goal_id = str(goal["id"])
@@ -135,6 +197,7 @@ def _fetch_month(client, mapping, month):
         "period_end": month_end(month).isoformat(),
         "metrics": points,
         "traffic_sources": cleaned_sources,
+        "geography": geography_rows,
         "goals": cleaned_goals,
         "sampled": bool(totals.get("sampled")),
         "sample_share": totals.get("sample_share"),
