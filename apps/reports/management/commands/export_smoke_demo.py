@@ -20,7 +20,9 @@ class Command(BaseCommand):
         parser.add_argument("--output", default="demo-artifacts")
 
     def handle(self, *args, **options):
-        if not shutil.which("libreoffice") or not shutil.which("pdftoppm"):
+        if not (shutil.which("libreoffice") or shutil.which("soffice")) or not shutil.which(
+            "pdftoppm"
+        ):
             raise CommandError("LibreOffice and pdftoppm are required")
         output = Path(options["output"]).resolve()
         output.mkdir(parents=True, exist_ok=True)

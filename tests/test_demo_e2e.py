@@ -7,7 +7,6 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from docx import Document
-from docx.enum.section import WD_ORIENT
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
@@ -16,11 +15,13 @@ from apps.projects.models import Project
 from apps.reports.demo import DEMO_DOMAIN, create_demo_project
 from apps.reports.exporting import generate_artifact
 from apps.reports.models import Report, ReportVersion
-from apps.reports.narratives import SECTION_ORDER, section_enabled
 
 pytestmark = [
     pytest.mark.django_db,
-    pytest.mark.skipif(shutil.which("libreoffice") is None, reason="requires LibreOffice"),
+    pytest.mark.skipif(
+        shutil.which("libreoffice") is None and shutil.which("soffice") is None,
+        reason="requires LibreOffice",
+    ),
 ]
 
 
@@ -36,7 +37,10 @@ def _docx_content(data):
     tables = "\n".join(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
-    assert document.sections[-1].orientation == WD_ORIENT.LANDSCAPE
+    assert all(
+        (round(section.page_width.cm, 1), round(section.page_height.cm, 1)) == (21.0, 29.7)
+        for section in document.sections
+    )
     return headings, text, tables
 
 
@@ -124,28 +128,15 @@ def test_reproducible_offline_demo_complete_e2e(monkeypatch, settings, tmp_path)
         assert all((page.extract_text() or "").strip() for page in pdf.pages)
         runs.append((headings, text, tables, workbook_signature))
 
-    expected_titles = {
-        "visibility": "Видимость",
-        "position_distribution": "Распределение позиций",
-        "top_5": "Запросы в TOP-5",
-        "top_10": "Запросы в TOP-10",
-        "top_20": "Запросы в TOP-20",
-        "top_11_30": "Запросы в TOP-11–30",
-        "top_30": "Запросы в TOP-30",
-        "top_11_20": "TOP-11–20",
-        "position_dynamics": "Динамика позиций по месяцам",
-        "traffic": "Трафик",
-        "traffic_sources": "Источники трафика",
-        "clicks_impressions": "Клики и показы",
-        "ctr": "CTR",
-        "indexing": "Индексация",
-        "iks": "ИКС",
-        "geography": "География посетителей",
-        "completed_work": "Выполненные работы",
-    }
     assert runs[0][0] == [
-        expected_titles[code] for code in SECTION_ORDER if section_enabled(payload, code)
+        "1) Видимость сайта в поисковых системах Яндекс и Google по основным ключевым словам",
+        "2) Индексация сайта (Яндекс.Вебмастер)",
+        "3) Сводная информация по переходам на сайт (Яндекс.Метрика)",
+        "Выполненные работы",
     ]
-    assert "TOP-11–20" in runs[0][0] and "Частотность" in runs[0][2]
+    assert "Самые кликабельные запросы" in runs[0][1]
+    assert "Популярные страницы входа" in runs[0][1]
+    assert "Сводная информация по конверсии" in runs[0][1]
+    assert "WS" in runs[0][2]
     assert "TOP-30" not in google["depth_comment"]
     assert runs[0] == runs[1]

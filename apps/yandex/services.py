@@ -2,8 +2,10 @@ import hashlib
 import json
 import logging
 from calendar import monthrange
-from datetime import date
+from collections import Counter
+from datetime import date, timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from django.db import transaction
 from django.utils import timezone
@@ -14,6 +16,7 @@ from .client import (
     CORE_METRICS,
     GOAL_CONVERSION_RATE,
     GOAL_REACHES,
+    GOAL_VISITS,
     LAST_SIGN_TRAFFIC_SOURCE,
     REGION_AREA,
     REGION_CITY,
@@ -51,6 +54,11 @@ GEOGRAPHY_CODES = (
     "undefined",
     "area_undefined",
 )
+LAST_SIGN_SEARCH_ENGINE = "ym:s:lastSignSearchEngineRoot"
+START_URL = "ym:s:startURL"
+SEARCH_HUMANS_FILTER = "ym:s:lastSignTrafficSource=='organic' AND ym:s:isRobot=='No'"
+SEARCH_ALL_FILTER = "ym:s:lastSignTrafficSource=='organic'"
+SEARCH_DETAIL_METRICS = "ym:s:visits,ym:s:users,ym:s:bounceRate"
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
 
@@ -74,6 +82,28 @@ def _dimension_name(item, index):
     if index >= len(dimensions) or not isinstance(dimensions[index], dict):
         return ""
     return str(dimensions[index].get("name") or "").strip().casefold()
+
+
+def _dimension(item, index):
+    dimensions = item.get("dimensions") or []
+    if index >= len(dimensions) or not isinstance(dimensions[index], dict):
+        return {"id": "", "name": ""}
+    value = dimensions[index]
+    return {"id": str(value.get("id") or ""), "name": str(value.get("name") or "").strip()}
+
+
+def _detail_rows(response, dimension_count):
+    rows = []
+    for item in response.get("data", []):
+        rows.append(
+            {
+                "dimensions": [_dimension(item, index) for index in range(dimension_count)],
+                "visits": str(_value(item, 0)),
+                "users": str(_value(item, 1)),
+                "bounce_rate": str(_value(item, 2)),
+            }
+        )
+    return rows
 
 
 def _geography_code(item):
@@ -160,45 +190,124 @@ def _fetch_month(client, mapping, month):
                 "dimensions": {"region_code": code},
             }
         )
+
+    search_details = {}
+    for robotness, filter_value in (
+        ("humans", SEARCH_HUMANS_FILTER),
+        ("all", SEARCH_ALL_FILTER),
+    ):
+        search_details[robotness] = {
+            "search_engines": _detail_rows(
+                client.stat(
+                    **common,
+                    metrics=SEARCH_DETAIL_METRICS,
+                    dimensions=LAST_SIGN_SEARCH_ENGINE,
+                    filters=filter_value,
+                    limit=100,
+                    sort="-ym:s:visits",
+                    lang="ru",
+                ),
+                1,
+            ),
+            "search_geography": _detail_rows(
+                client.stat(
+                    **common,
+                    metrics=SEARCH_DETAIL_METRICS,
+                    dimensions=f"{REGION_AREA},{REGION_CITY}",
+                    filters=filter_value,
+                    limit=10000,
+                    sort="-ym:s:visits",
+                    lang="ru",
+                ),
+                2,
+            ),
+            "landing_pages": _detail_rows(
+                client.stat(
+                    **common,
+                    metrics=SEARCH_DETAIL_METRICS,
+                    dimensions=f"{LAST_SIGN_SEARCH_ENGINE},{START_URL}",
+                    filters=filter_value,
+                    limit=10000,
+                    sort="-ym:s:visits",
+                    lang="ru",
+                ),
+                2,
+            ),
+        }
     cleaned_goals = []
+    goals_by_robotness = {"humans": [], "all": []}
     for goal in mapping.selected_goals:
         goal_id = str(goal["id"])
-        response = client.stat(
-            **common,
-            metrics=f"{GOAL_REACHES.format(id=goal_id)},{GOAL_CONVERSION_RATE.format(id=goal_id)}",
-        )
-        goal_row = (response.get("data") or [{"metrics": response.get("totals", [])}])[0]
         dimensions = {
             "goal_id": goal_id,
             "name": goal.get("name", ""),
             "label": goal.get("label", goal.get("name", "")),
+            "identifier": goal.get("identifier", ""),
         }
+        goal_values = {}
+        for robotness, filter_value in (
+            ("humans", SEARCH_HUMANS_FILTER),
+            ("all", SEARCH_ALL_FILTER),
+        ):
+            response = client.stat(
+                **common,
+                metrics=(
+                    f"{GOAL_CONVERSION_RATE.format(id=goal_id)},"
+                    f"{GOAL_VISITS.format(id=goal_id)},"
+                    f"{GOAL_REACHES.format(id=goal_id)}"
+                ),
+                filters=filter_value,
+            )
+            goal_row = (response.get("data") or [{"metrics": response.get("totals", [])}])[0]
+            goal_values[robotness] = {
+                **dimensions,
+                "conversion_rate": str(_value(goal_row, 0)),
+                "visits": str(_value(goal_row, 1)),
+                "reaches": str(_value(goal_row, 2)),
+            }
+            goals_by_robotness[robotness].append(goal_values[robotness])
         points.extend(
             (
                 {
+                    "code": f"goal_{goal_id}_visits",
+                    "value": goal_values["humans"]["visits"],
+                    "unit": "count",
+                    "dimensions": dimensions,
+                },
+                {
                     "code": f"goal_{goal_id}_reaches",
-                    "value": str(_value(goal_row, 0)),
+                    "value": goal_values["humans"]["reaches"],
                     "unit": "count",
                     "dimensions": dimensions,
                 },
                 {
                     "code": f"goal_{goal_id}_conversion_rate",
-                    "value": str(_value(goal_row, 1)),
+                    "value": goal_values["humans"]["conversion_rate"],
                     "unit": "percent",
                     "dimensions": dimensions,
                 },
             )
         )
-        cleaned_goals.append(
-            {**dimensions, "reaches": points[-2]["value"], "conversion_rate": points[-1]["value"]}
-        )
+        cleaned_goals.append(goal_values["humans"])
     return {
         "period_start": month.isoformat(),
         "period_end": month_end(month).isoformat(),
         "metrics": points,
         "traffic_sources": cleaned_sources,
         "geography": geography_rows,
+        "search_details": search_details,
+        # Keep direct aliases for older exporters; detailed reports select the
+        # requested robotness variant from search_details.
+        "search_engines": search_details["humans"]["search_engines"],
+        "search_geography": search_details["humans"]["search_geography"],
+        "landing_pages": search_details["humans"]["landing_pages"],
+        "search_segment": {
+            "traffic_source": "organic",
+            "robotness": "humans",
+            "attribution": "lastsign",
+        },
         "goals": cleaned_goals,
+        "goals_by_robotness": goals_by_robotness,
         "sampled": bool(totals.get("sampled")),
         "sample_share": totals.get("sample_share"),
     }
@@ -412,6 +521,121 @@ def _optional_webmaster_resource(mapping, resource, fetch):
         raise
 
 
+def _dated_series(response, name, start, end):
+    return [
+        {"date": day.isoformat(), "value": str(value)}
+        for day, value in _valid_dated_values(_series(response, name), start, end)
+    ]
+
+
+def _webmaster_daily_queries(response, start, end):
+    indicators = {
+        name: dict(_valid_dated_values(_series(response, name), start, end))
+        for name in ("TOTAL_SHOWS", "TOTAL_CLICKS", "AVG_SHOW_POSITION")
+    }
+    days = sorted({day for values in indicators.values() for day in values})
+    rows = []
+    for day in days:
+        shows = indicators["TOTAL_SHOWS"].get(day)
+        clicks = indicators["TOTAL_CLICKS"].get(day)
+        ctr = (
+            clicks * Decimal(100) / shows if shows not in (None, 0) and clicks is not None else None
+        )
+        rows.append(
+            {
+                "date": day.isoformat(),
+                "shows": str(shows) if shows is not None else None,
+                "clicks": str(clicks) if clicks is not None else None,
+                "ctr": str(ctr) if ctr is not None else None,
+                "average_position": (
+                    str(indicators["AVG_SHOW_POSITION"][day])
+                    if day in indicators["AVG_SHOW_POSITION"]
+                    else None
+                ),
+            }
+        )
+    return rows
+
+
+def _query_summary(response, start, end):
+    daily = _webmaster_daily_queries(response, start, end)
+    shows = sum(
+        (Decimal(row["shows"]) for row in daily if row.get("shows") is not None), Decimal(0)
+    )
+    clicks = sum(
+        (Decimal(row["clicks"]) for row in daily if row.get("clicks") is not None), Decimal(0)
+    )
+    weighted = [
+        (Decimal(row["shows"]), Decimal(row["average_position"]))
+        for row in daily
+        if row.get("shows") is not None and row.get("average_position") is not None
+    ]
+    position_base = sum((item[0] for item in weighted), Decimal(0))
+    return {
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "shows": str(shows) if daily else None,
+        "clicks": str(clicks) if daily else None,
+        "ctr": str(clicks * Decimal(100) / shows) if shows else None,
+        "average_position": (
+            str(sum((count * position for count, position in weighted), Decimal(0)) / position_base)
+            if position_base
+            else None
+        ),
+        "daily": daily,
+    }
+
+
+def _popular_queries(response):
+    rows = []
+    for item in response.get("queries", []):
+        indicators = item.get("indicators") or {}
+        rows.append(
+            {
+                "query_id": str(item.get("query_id") or ""),
+                "query": str(item.get("query_text") or "").strip(),
+                "shows": str(indicators.get("TOTAL_SHOWS"))
+                if indicators.get("TOTAL_SHOWS") is not None
+                else None,
+                "clicks": str(indicators.get("TOTAL_CLICKS"))
+                if indicators.get("TOTAL_CLICKS") is not None
+                else None,
+                "average_position": str(indicators.get("AVG_SHOW_POSITION"))
+                if indicators.get("AVG_SHOW_POSITION") is not None
+                else None,
+                "average_click_position": str(indicators.get("AVG_CLICK_POSITION"))
+                if indicators.get("AVG_CLICK_POSITION") is not None
+                else None,
+            }
+        )
+    for row in rows:
+        shows = _number(row.get("shows"))
+        clicks = _number(row.get("clicks"))
+        row["ctr"] = (
+            str(clicks * Decimal(100) / shows) if shows not in (None, 0) and clicks else "0"
+        )
+    return rows
+
+
+def _path_distribution(response):
+    paths = Counter()
+    for item in response.get("samples", []):
+        path = urlsplit(str(item.get("url") or "")).path.strip("/")
+        label = "/" + path.split("/", 1)[0] if path else "/"
+        paths[label] += 1
+    rows = [{"path": key, "count": value} for key, value in paths.most_common(8)]
+    known = sum(paths.values())
+    available = int(response.get("count") or known)
+    if available > known:
+        rows.append({"path": "Статус неизвестен", "count": available - known})
+    return {
+        "rows": rows,
+        "sample_count": known,
+        "available_count": available,
+        "truncated": bool(response.get("truncated")),
+    }
+
+
 def _webmaster_month(
     client, mapping, user_id, month, *, host=None, summary=None, include_current=False
 ):
@@ -444,6 +668,78 @@ def _webmaster_month(
         "sqi",
         lambda: client.squ_history(user_id, mapping.host_id, **params),
     )
+    query_summary = _query_summary(queries, start, end)
+    previous_query_summary = None
+    popular = []
+    previous_popular = []
+    path_distribution = None
+    if include_current:
+        day_count = (end - start).days + 1
+        comparison_end = start - timedelta(days=1)
+        comparison_start = comparison_end - timedelta(days=day_count - 1)
+        comparison_params = {
+            "date_from": comparison_start.isoformat(),
+            "date_to": comparison_end.isoformat(),
+        }
+        previous_queries = _optional_webmaster_resource(
+            mapping,
+            "search_queries_comparison",
+            lambda: client.search_query_history(
+                user_id,
+                mapping.host_id,
+                **comparison_params,
+                device_type_indicator="ALL",
+                query_indicator=["TOTAL_SHOWS", "TOTAL_CLICKS", "AVG_SHOW_POSITION"],
+            ),
+        )
+        previous_query_summary = _query_summary(previous_queries, comparison_start, comparison_end)
+        if hasattr(client, "popular_search_queries"):
+            query_indicators = [
+                "TOTAL_SHOWS",
+                "TOTAL_CLICKS",
+                "AVG_SHOW_POSITION",
+                "AVG_CLICK_POSITION",
+            ]
+            popular = _popular_queries(
+                _optional_webmaster_resource(
+                    mapping,
+                    "popular_search_queries",
+                    lambda: client.popular_search_queries(
+                        user_id,
+                        mapping.host_id,
+                        **params,
+                        order_by="TOTAL_CLICKS",
+                        query_indicator=query_indicators,
+                        device_type_indicator="ALL",
+                        offset=0,
+                        limit=50,
+                    ),
+                )
+            )
+            previous_popular = _popular_queries(
+                _optional_webmaster_resource(
+                    mapping,
+                    "popular_search_queries_comparison",
+                    lambda: client.popular_search_queries(
+                        user_id,
+                        mapping.host_id,
+                        **comparison_params,
+                        order_by="TOTAL_CLICKS",
+                        query_indicator=query_indicators,
+                        device_type_indicator="ALL",
+                        offset=0,
+                        limit=50,
+                    ),
+                )
+            )
+        if hasattr(client, "search_urls_samples"):
+            path_distribution = _path_distribution(
+                _optional_webmaster_resource(
+                    mapping,
+                    "search_urls_samples",
+                    lambda: client.search_urls_samples(user_id, mapping.host_id),
+                )
+            )
     impressions_values = [
         value for _, value in _valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end)
     ]
@@ -519,7 +815,22 @@ def _webmaster_month(
         "site_problems": (summary or {}).get("site_problems", {}),
         "actual_period": actual_period,
         "availability_reason": None if response_dates else "API не вернул данные за период.",
-        "raw": {"queries": queries, "pages": pages, "indexing": indexing, "sqi": sqi},
+        "daily": {
+            "queries": query_summary.get("daily", []),
+            "indexed_pages": [
+                {"date": day.isoformat(), "value": str(value)}
+                for day, value in _valid_dated_values(pages.get("history", []), start, end)
+            ],
+            "iks": [
+                {"date": day.isoformat(), "value": str(value)}
+                for day, value in _valid_dated_values(sqi.get("points", []), start, end)
+            ],
+        },
+        "query_summary": {key: value for key, value in query_summary.items() if key != "daily"},
+        "comparison_query_summary": previous_query_summary,
+        "popular_queries": popular,
+        "comparison_popular_queries": previous_popular,
+        "path_distribution": path_distribution,
         "host": host or {},
     }
 
@@ -578,6 +889,12 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
                     "availability_reason": data["availability_reason"],
                     "site_problems": data["site_problems"],
                     "metrics": {key: str(value[0]) for key, value in data["metrics"].items()},
+                    "daily": data["daily"],
+                    "query_summary": data["query_summary"],
+                    "comparison_query_summary": data["comparison_query_summary"],
+                    "popular_queries": data["popular_queries"],
+                    "comparison_popular_queries": data["comparison_popular_queries"],
+                    "path_distribution": data["path_distribution"],
                     "contains_sensitive_data": False,
                 }
                 checksum = hashlib.sha256(

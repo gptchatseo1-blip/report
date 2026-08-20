@@ -38,8 +38,11 @@ def _project_rules(project):
         )
     groups = (
         ("Приоритетные услуги", "priority-services", 100, "/services/"),
-        ("Коммерческие страницы", "commercial", 90, "/services/priority/"),
+        ("Информационные страницы", "informational", 90, "/blog/"),
     )
+    project.url_groups.exclude(
+        slug__in={slug for _name, slug, _priority, _pattern in groups}
+    ).delete()
     for name, slug, priority, pattern in groups:
         group, _ = ProjectUrlGroup.objects.update_or_create(
             project=project,
@@ -189,6 +192,67 @@ def _worklog(project):
     WorkLogItem.objects.filter(project=project).update(updated_at=FIXED_AT)
 
 
+def _report_selection(project):
+    rankings = RankingSnapshot.objects.filter(project=project).order_by("snapshot_date")
+    sources = SourceSnapshot.objects.filter(project=project).order_by("source", "period_start")
+    return {
+        "topvisor": {
+            engine: [
+                value.isoformat()
+                for value in rankings.filter(search_engine=engine).values_list(
+                    "snapshot_date", flat=True
+                )
+            ]
+            for engine, _depth in ENGINES
+        },
+        "yandex_metrika": [
+            str(value)
+            for value in sources.filter(source=SourceSnapshot.Source.METRIKA).values_list(
+                "id", flat=True
+            )
+        ],
+        "yandex_webmaster": [
+            str(value)
+            for value in sources.filter(source=SourceSnapshot.Source.WEBMASTER).values_list(
+                "id", flat=True
+            )
+        ],
+        "display_options": {
+            "configuration_version": 3,
+            "show_urls": False,
+            "include_visibility": True,
+            "include_monthly_dynamics": True,
+            "include_top_tables": True,
+            "include_top_5": True,
+            "include_top_10": True,
+            "include_top_20": False,
+            "include_top_11_30": True,
+            "include_top_30": False,
+            "include_topvisor_report_link": True,
+            "topvisor_report_url": "https://topvisor.example/report/demo",
+            "include_webmaster": True,
+            "webmaster_chart_period": "report_month",
+            "include_webmaster_popular_queries": True,
+            "include_metrika": True,
+            "metrika_robotness": "humans",
+            "include_metrika_sources_table": False,
+            "include_metrika_search_engines": True,
+            "include_metrika_geography": True,
+            "geography_moscow": True,
+            "geography_saint_petersburg": True,
+            "geography_undefined": True,
+            "geography_area_undefined": True,
+            "include_metrika_landing_pages": True,
+            "include_metrika_landing_page_comparison": True,
+            "include_metrika_url_groups": True,
+            "include_metrika_sections": False,
+            "include_metrika_categories": False,
+            "include_metrika_goals": True,
+            "include_completed_work": True,
+        },
+    }
+
+
 @transaction.atomic
 def create_demo_project():
     """Create/update stable inputs and return one reusable frozen report version."""
@@ -210,10 +274,11 @@ def create_demo_project():
     _sources(project)
     _worklog(project)
     report, _ = Report.objects.get_or_create(project=project, report_month=DEMO_MONTH)
-    payload_checksum = snapshot_checksum(build_report_snapshot(report=report))
+    selection = _report_selection(project)
+    payload_checksum = snapshot_checksum(build_report_snapshot(report=report, selection=selection))
     latest = report.versions.select_related("snapshot").order_by("-number").first()
     version = latest if latest and latest.snapshot.checksum == payload_checksum else None
     if version is None:
-        version = create_report_version(report=report)
+        version = create_report_version(report=report, selection=selection)
     validate_report_version(version)
     return project, report, version

@@ -163,7 +163,7 @@ def test_new_snapshot_stores_flexible_report_options(client, user, project):
     )
     assert response.status_code == 302
     options = ReportDatasetSnapshot.objects.get().payload["display_options"]
-    assert options["configuration_version"] == 2
+    assert options["configuration_version"] == 3
     assert options["include_visibility"] is False
     assert options["include_top_5"] is True
     assert options["include_top_10"] is False
@@ -257,7 +257,7 @@ def test_legacy_segment_without_configuration_exports_from_frozen_snapshot(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
     workbook = load_workbook(io.BytesIO(xlsx.file.read()), read_only=True)
-    assert "ключ" in doc_text and "https://example.test/page" in doc_text
+    assert "ключ" in doc_text and "https://example.test/page" not in doc_text
     assert list(workbook["Позиции"].values)[1][3] == "ключ"
     assert "Релевантный URL" in list(workbook["Позиции"].values)[0]
 

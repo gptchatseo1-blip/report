@@ -18,9 +18,17 @@ SECTION_ORDER = (
     "ctr",
     "indexing",
     "iks",
+    "webmaster_popular_queries",
     "traffic",
     "traffic_sources",
+    "metrika_search_engines",
     "geography",
+    "metrika_landing_pages",
+    "metrika_landing_page_comparison",
+    "metrika_url_groups",
+    "metrika_sections",
+    "metrika_categories",
+    "metrika_goals",
     "completed_work",
 )
 
@@ -37,7 +45,7 @@ TOP_SECTION_RANGES = {
 def section_enabled(payload, code):
     """Apply frozen report options while keeping legacy snapshots exportable."""
     options = payload.get("display_options", {})
-    if options.get("configuration_version") != 2:
+    if options.get("configuration_version") not in {2, 3}:
         return code not in {"top_5", "top_20", "top_11_30", "top_30", "geography"}
     if code == "visibility":
         return options.get("include_visibility", True)
@@ -49,12 +57,20 @@ def section_enabled(payload, code):
         return options.get("include_top_tables", True) and options.get(f"include_{code}", False)
     if code in {"clicks_impressions", "ctr", "indexing", "iks"}:
         return options.get("include_webmaster", True)
+    if code == "webmaster_popular_queries":
+        return options.get("include_webmaster", True) and options.get(
+            "include_webmaster_popular_queries", True
+        )
     if code in {"traffic", "traffic_sources"}:
         return options.get("include_metrika", True)
     if code == "geography":
         return options.get("include_metrika", True) and options.get(
             "include_metrika_geography", False
         )
+    if code.startswith("metrika_"):
+        return options.get("include_metrika", True) and options.get(f"include_{code}", False)
+    if code == "completed_work":
+        return options.get("include_completed_work", True)
     return True
 
 
@@ -435,6 +451,56 @@ def build_narrative_specs(payload):
                 "geography_undefined_visits",
                 "geography_area_undefined_visits",
             ),
+        )
+    )
+    options = payload.get("display_options", {})
+    specs.extend(
+        (
+            {
+                "section": "webmaster_popular_queries",
+                "text": options.get("webmaster_queries_comment")
+                or (
+                    "Запросы в таблице отсортированы по кликабельности. Красным шрифтом "
+                    "представлен спад относительно предыдущего периода, зелёным — рост, "
+                    "серым — отсутствие изменений."
+                ),
+                "facts": {},
+            },
+            {
+                "section": "metrika_search_engines",
+                "text": "Сравнение поискового трафика за два последних месяца.",
+                "facts": {},
+            },
+            {
+                "section": "metrika_landing_pages",
+                "text": "Популярные страницы входа из поисковых систем.",
+                "facts": {},
+            },
+            {
+                "section": "metrika_landing_page_comparison",
+                "text": "Сравнение страниц входа из Яндекса и Google.",
+                "facts": {},
+            },
+            {
+                "section": "metrika_url_groups",
+                "text": "Сравнение трафика по URL-группам проекта.",
+                "facts": {},
+            },
+            {
+                "section": "metrika_sections",
+                "text": "Данные по разделам сайта.",
+                "facts": {},
+            },
+            {
+                "section": "metrika_categories",
+                "text": "Данные по основным прорабатываемым категориям.",
+                "facts": {},
+            },
+            {
+                "section": "metrika_goals",
+                "text": "Цели по поисковому трафику с выбранной роботностью.",
+                "facts": {},
+            },
         )
     )
     works = payload.get("completed_work", [])

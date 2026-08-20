@@ -9,7 +9,8 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from docx import Document
-from docx.enum.section import WD_ORIENT
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
@@ -18,7 +19,6 @@ from apps.metrics.synthetic import sync_synthetic_metrics
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
 from apps.reports.models import Report, ReportDatasetSnapshot
-from apps.reports.narratives import SECTION_ORDER, section_enabled
 from apps.reports.services import create_report_version
 
 pytestmark = pytest.mark.django_db
@@ -78,7 +78,7 @@ def _artifact_bytes(artifact):
         return stream.read()
 
 
-def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, settings, tmp_path):
+def test_full_docx_matches_reference_report_structure_and_styles(rich_version, settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     data = _artifact_bytes(
         generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
@@ -91,42 +91,26 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
     assert "Источник данных" not in text
     assert "Сведения об источнике недоступны" not in text
     headings = [p.text for p in document.paragraphs if p.style.name == "Heading 1"]
-    expected = [
-        {
-            "visibility": "Видимость",
-            "position_distribution": "Распределение позиций",
-            "top_5": "Запросы в TOP-5",
-            "top_10": "Запросы в TOP-10",
-            "top_20": "Запросы в TOP-20",
-            "top_11_30": "Запросы в TOP-11–30",
-            "top_30": "Запросы в TOP-30",
-            "top_11_20": "TOP-11–20",
-            "position_dynamics": "Динамика позиций по месяцам",
-            "traffic": "Трафик",
-            "traffic_sources": "Источники трафика",
-            "clicks_impressions": "Клики и показы",
-            "ctr": "CTR",
-            "indexing": "Индексация",
-            "iks": "ИКС",
-            "geography": "География посетителей",
-            "completed_work": "Выполненные работы",
-        }[code]
-        for code in SECTION_ORDER
-        if section_enabled(rich_version.snapshot.payload, code)
+    assert headings == [
+        "1) Видимость сайта в поисковых системах Яндекс и Google по основным ключевым словам",
+        "2) Индексация сайта (Яндекс.Вебмастер)",
+        "3) Сводная информация по переходам на сайт (Яндекс.Метрика)",
+        "Выполненные работы",
     ]
-    assert headings == expected
-    assert document.styles["Normal"].font.name == "Carlito"
+    assert document.styles["Normal"].font.name == "Arial"
+    paragraph_text = [paragraph.text for paragraph in document.paragraphs]
+    yandex_index = paragraph_text.index("Яндекс. Москва")
+    google_index = paragraph_text.index("Google. Россия")
+    assert yandex_index < paragraph_text.index("Запросы в TOP-10 по Яндекс.Москва") < google_index
+    assert google_index < paragraph_text.index("Запросы в TOP-10 по Google.Россия")
     footer_text = document.sections[0].footer.paragraphs[0].text
-    assert footer_text.startswith("demo.example")
-    assert "версия" not in footer_text.lower()
-    assert any(section.orientation == WD_ORIENT.LANDSCAPE for section in document.sections)
-    assert document.sections[-1].orientation == WD_ORIENT.LANDSCAPE
+    assert footer_text == ""
     for section in document.sections:
         dimensions = (round(section.page_width.cm, 1), round(section.page_height.cm, 1))
-        assert dimensions in {(21.0, 29.7), (29.7, 21.0)}
+        assert dimensions == (21.0, 29.7)
     with zipfile.ZipFile(io.BytesIO(data)) as package:
         images = [name for name in package.namelist() if name.startswith("word/media/")]
-        assert len(images) >= 10
+        assert len(images) >= 8
         xml = package.read("word/document.xml")
         assert b"w:tblHeader" in xml
         assert b"w:cantSplit" in xml
@@ -135,33 +119,81 @@ def test_full_docx_has_charts_ordered_sections_tables_and_carlito(rich_version, 
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
     assert "Checksum / идентификатор" not in table_text
-    assert "Частотность" in table_text
-    assert "демо запрос 0035" in table_text
-    distribution_tables = [
-        table for table in document.tables if table.rows[0].cells[-1].text == "Доля, %"
+    assert "WS" in table_text
+    assert "демо запрос 0019" in table_text
+    yandex_table = next(
+        table for table in document.tables if table.rows[0].cells[2].text == "Yandex"
+    )
+    google_table = next(
+        table for table in document.tables if table.rows[0].cells[2].text == "Google"
+    )
+    assert [round(cell.width.cm, 2) for cell in yandex_table.rows[0].cells] == [
+        7.74,
+        1.5,
+        1.56,
+        8.25,
     ]
-    assert distribution_tables
-    for table in distribution_tables:
-        assert all(re.fullmatch(r"\d+,\d", row.cells[-1].text) for row in table.rows[1:])
-        assert all(
-            row.cells[1].text == "0" for row in table.rows[1:] if row.cells[-1].text == "0,0"
-        )
-    traffic_tables = [
+    assert [round(cell.width.cm, 2) for cell in google_table.rows[0].cells] == [
+        8.63,
+        1.17,
+        1.52,
+        7.42,
+    ]
+    monthly_tables = [
         table
         for table in document.tables
-        if [cell.text for cell in table.rows[0].cells]
-        == ["Источник", "Количество", "Доля", "Абсолютное изменение", "Относительное изменение"]
+        if [cell.text for cell in table.rows[0].cells[:4]]
+        == ["Месяц", "Видимость", "в топ 3", "в топ 10"]
     ]
-    assert traffic_tables
+    assert len(monthly_tables) == 2
     assert all(
-        re.fullmatch(r"\d+,\d%", row.cells[2].text)
-        for table in traffic_tables
+        re.fullmatch(r"\d+%", row.cells[1].text)
+        for table in monthly_tables
         for row in table.rows[1:]
     )
-    assert text.count("Выполненные работы отсутствуют.") == 1
-    assert (
-        sum(row.cells[0].text == "ИКС" for table in document.tables for row in table.rows[1:]) == 1
+    assert all(
+        row.cells[column].paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+        for table in monthly_tables
+        for row in table.rows
+        for column in range(1, 5)
     )
+    assert all(
+        cell.vertical_alignment == WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        for table in document.tables
+        for row in table.rows
+        for cell in row.cells
+    )
+    search_table = next(
+        table for table in document.tables if table.rows[0].cells[0].text == "Поисковая система"
+    )
+    assert [cell.text for cell in search_table.rows[0].cells] == [
+        "Поисковая система",
+        "Визиты\nСегмент A",
+        "Визиты\nСегмент B",
+        "Посетители\nСегмент A",
+        "Посетители\nСегмент B",
+        "Отказы, %\nСегмент A",
+        "Отказы, %\nСегмент B",
+    ]
+    landing_tables = [
+        table for table in document.tables if table.rows[0].cells[0].text == "Страница входа"
+    ]
+    assert landing_tables
+    assert all(
+        "Ур. 1" not in [cell.text for cell in table.rows[0].cells] for table in landing_tables
+    )
+    assert any(
+        "ID request" in table.rows[0].cells[0].text
+        and "идентификатор: request_form" in table.rows[0].cells[0].text
+        for table in document.tables
+    )
+    assert text.index("Динамика по поисковым системам за квартал:") < text.index(
+        "Период сравнения:"
+    )
+    assert "Трафик из региона «Не определено»" not in text
+    assert "Трафик из региона «Область не определена»" not in text
+    assert text.count("Выполненные работы отсутствуют.") == 1
+    assert "Индекс качества сайта" in text
     warning_paragraphs = [
         paragraph.text
         for paragraph in document.paragraphs
@@ -198,15 +230,15 @@ def test_modern_report_options_control_sections_and_top_tables(rich_version, set
     document = Document(io.BytesIO(data))
     headings = [p.text for p in document.paragraphs if p.style.name == "Heading 1"]
     assert headings == [
-        "Распределение позиций",
-        "Запросы в TOP-5",
+        "1) Видимость сайта в поисковых системах Яндекс и Google по основным ключевым словам",
         "Выполненные работы",
     ]
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
     assert "https://topvisor.example/report/42" in text
-    assert "таблица запросов в TOP-5 сформирована" in text
+    assert "Запросы в TOP-5 по Яндекс.Москва" in text
+    assert "таблица запросов в TOP-5 сформирована" not in text
     with zipfile.ZipFile(io.BytesIO(data)) as package:
-        assert b"27C493" in package.read("word/document.xml")
+        assert b"80DFA8" in package.read("word/document.xml")
 
 
 @pytest.mark.parametrize(
@@ -246,7 +278,7 @@ def test_google_depth_note_is_single_and_top_30_not_rendered_for_top_20(settings
     text += "\n" + "\n".join(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
-    assert text.count("Глубина проверки Google:") == 1
+    assert text.count("Глубина проверки Google —") == 1
     assert "TOP-30" not in text
 
 
@@ -268,7 +300,7 @@ def test_top_30_is_rendered_only_when_confirmed(depth, settings, tmp_path):
     text += "\n" + "\n".join(
         cell.text for table in document.tables for row in table.rows for cell in row.cells
     )
-    assert "TOP-30" in text
+    assert "в топ 11-30" in text
 
 
 @pytest.mark.parametrize(
@@ -305,8 +337,8 @@ def test_top_11_20_project_modes(mode, position, present, settings, tmp_path):
             _artifact_bytes(generate_artifact(version=version, artifact_type="docx", is_draft=True))
         )
     )
-    headings = [p.text for p in document.paragraphs if p.style.name == "Heading 1"]
-    assert ("TOP-11–20" in headings) is present
+    text = "\n".join(p.text for p in document.paragraphs)
+    assert ("Запросы в TOP-11–20" in text) is present
 
 
 def test_xlsx_has_all_rows_native_types_and_formula_injection_protection(
@@ -381,6 +413,7 @@ def test_visibility_and_traffic_render_only_precalculated_series(rich_version, s
         "traffic_source_dynamics"
     ]
     expected_current = next(iter(traffic.values()))["change"]["current"]
+    payload.setdefault("display_options", {})["include_metrika_sources_table"] = True
     for source in payload["source_snapshots"]:
         if source.get("source") == "yandex_metrika":
             source["metrics"] = []
@@ -440,14 +473,7 @@ def test_real_pdf_conversion_smoke(rich_version, settings, tmp_path):
     assert f"версия {rich_version.number}" not in "\n".join(texts).lower()
     assert "Источник данных" not in "\n".join(texts)
     assert "Checksum / идентификатор" not in "\n".join(texts)
-    for heading in (
-        "Трафик",
-        "Источники трафика",
-        "Клики и показы",
-        "CTR",
-        "Индексация",
-        "ИКС",
-    ):
+    for heading in ("Яндекс.Вебмастер", "Яндекс.Метрика"):
         section_text = next(text for text in texts if heading in text)
         for unavailable in (
             "Данные раздела отсутствуют",
@@ -456,9 +482,8 @@ def test_real_pdf_conversion_smoke(rich_version, settings, tmp_path):
             "Сведения об источнике недоступны",
         ):
             assert unavailable not in section_text
-    for heading in ("TOP-11–20", "Все запросы отчётного периода"):
-        page_text = next(text for text in texts if heading in text)
-        assert "Запрос" in page_text and "Частотность" in page_text
+    page_text = next(text for text in texts if "TOP-11–20" in text)
+    assert "Запросы" in page_text and "WS" in page_text
 
 
 def _number_text(value):

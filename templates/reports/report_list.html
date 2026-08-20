@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Отчёты проекта «{{ project.name }}»</h1>
 <p><a class="button secondary" href="{% url 'topvisor:connection' project.id %}">Topvisor</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Метрика и Вебмастер</a></p>
-<section class="card"><h2>Создать отчёт</h2><form method="post" action="{% url 'reports:report-create' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
+<section class="card"><h2>Создать отчёт</h2><form method="post" enctype="multipart/form-data" action="{% url 'reports:report-create' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
 <h3>Выберите даты для вывода видимости</h3>
 <div class="calendar-pair">{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}</div>
 {% if not form.yandex_dates.field.choices and not form.google_dates.field.choices %}<p>Нет синхронизированных данных. <a href="{% url 'topvisor:connection' project.id %}">Перейти к синхронизации</a></p>{% endif %}
@@ -18,10 +18,28 @@
 <label class="url-option">{{ form.include_topvisor_report_link }} <span><strong>Ссылка на подробный отчёт</strong><small>Добавить гостевую ссылку Topvisor.</small></span></label>
 <label for="{{ form.topvisor_report_url.id_for_label }}">{{ form.topvisor_report_url.label }}{{ form.topvisor_report_url }}</label>{{ form.topvisor_report_url.errors }}
 </section>
-<section class="option-card"><h4>Яндекс.Вебмастер</h4><label class="url-option">{{ form.include_webmaster }} <span><strong>Выводить блок Вебмастера</strong><small>Показы, клики, CTR, индексация и ИКС.</small></span></label></section>
+<section class="option-card"><h4>Яндекс.Вебмастер</h4><label class="url-option">{{ form.include_webmaster }} <span><strong>Выводить блок Вебмастера</strong><small>ИКС, страницы в поиске и статистика запросов.</small></span></label>
+<details class="option-details"><summary>Настроить блоки и период</summary>
+<label for="{{ form.webmaster_chart_period.id_for_label }}">{{ form.webmaster_chart_period.label }}{{ form.webmaster_chart_period }}</label>
+<label class="url-option">{{ form.include_webmaster_popular_queries }} <span><strong>Самые кликабельные запросы</strong><small>Скрывается отдельно от общей статистики запросов.</small></span></label>
+<label for="{{ form.webmaster_queries_screenshot.id_for_label }}">{{ form.webmaster_queries_screenshot.label }}{{ form.webmaster_queries_screenshot }}<small>{{ form.webmaster_queries_screenshot.help_text }}</small></label>{{ form.webmaster_queries_screenshot.errors }}
+<label for="{{ form.webmaster_queries_comment.id_for_label }}">{{ form.webmaster_queries_comment.label }}{{ form.webmaster_queries_comment }}</label>
+</details></section>
 <section class="option-card"><h4>Яндекс.Метрика</h4><label class="url-option">{{ form.include_metrika }} <span><strong>Выводить блок Метрики</strong><small>Месячные итоги по трафику и источникам.</small></span></label>
-<label class="url-option">{{ form.include_metrika_geography }} <span><strong>География посетителей</strong><small>Отдельный график и таблица.</small></span></label>
-<div class="geography-options"><label>{{ form.geography_moscow }} Москва</label><label>{{ form.geography_saint_petersburg }} Санкт-Петербург</label><label>{{ form.geography_undefined }} Не определено</label><label>{{ form.geography_area_undefined }} Область не определена</label></div></section>
+<details class="option-details"><summary>Настроить блоки и сегмент</summary>
+<label for="{{ form.metrika_robotness.id_for_label }}">{{ form.metrika_robotness.label }}{{ form.metrika_robotness }}</label>
+<label class="url-option">{{ form.include_metrika_sources_table }} <span><strong>Таблица по всем источникам</strong><small>По умолчанию скрыта; график «Все источники» остаётся.</small></span></label>
+<label class="url-option">{{ form.include_metrika_search_engines }} <span><strong>Поисковые системы</strong><small>График, детальная таблица и расчёт изменений.</small></span></label>
+<label class="url-option">{{ form.include_metrika_geography }} <span><strong>География поискового трафика</strong><small>Сравнение двух последних месяцев.</small></span></label>
+<div class="geography-options"><label>{{ form.geography_moscow }} Москва</label><label>{{ form.geography_saint_petersburg }} Санкт-Петербург</label><label>{{ form.geography_undefined }} Не определено</label><label>{{ form.geography_area_undefined }} Область не определена</label></div>
+<label class="url-option">{{ form.include_metrika_landing_pages }} <span><strong>Популярные страницы входа</strong><small>Включены по умолчанию.</small></span></label>
+<label class="url-option">{{ form.include_metrika_landing_page_comparison }} <span><strong>Страницы входа: Яндекс и Google</strong><small>Сравнение двух месяцев; по умолчанию скрыто.</small></span></label>
+<label class="url-option">{{ form.include_metrika_url_groups }} <span><strong>Информационные и коммерческие страницы</strong><small>Используются URL-группы проекта.</small></span></label>
+<label class="url-option">{{ form.include_metrika_sections }} <span><strong>Данные по разделам</strong><small>Вывод по настроенным URL-группам.</small></span></label>
+<label class="url-option">{{ form.include_metrika_categories }} <span><strong>Прорабатываемые категории</strong><small>Детализация по активным URL-группам.</small></span></label>
+<label class="url-option">{{ form.include_metrika_goals }} <span><strong>Цели Метрики</strong><small>Поисковый трафик с выбранной роботностью.</small></span></label>
+</details></section>
+<section class="option-card"><h4>Работы</h4><label class="url-option">{{ form.include_completed_work }} <span><strong>Выполненные работы</strong><small>Нумерованный список с вложенными пунктами.</small></span></label></section>
 </div></fieldset>
 <h3>Данные сервисов Яндекса</h3>
 <p>Выберите месяцы, данные которых попадут в отчёт. По умолчанию отмечены три последних доступных периода.</p>

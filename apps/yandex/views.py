@@ -456,15 +456,28 @@ def select_goals(request, project_id):
         return HttpResponseBadRequest("Некорректные цели.")
     selected = set(form.cleaned_data["goals"])
     previous = {str(g["id"]): g for g in mapping.selected_goals}
-    mapping.selected_goals = [
-        {
-            "id": str(g["id"]),
-            "name": g.get("name", ""),
-            "label": previous.get(str(g["id"]), {}).get("label", g.get("name", "")),
+    mapping.selected_goals = []
+    for goal in available:
+        goal_id = str(goal["id"])
+        if goal_id not in selected:
+            continue
+        condition = next(
+            (
+                str(item.get("url") or "")
+                for item in (goal.get("conditions") or [])
+                if item.get("url")
+            ),
+            "",
+        )
+        selected_goal = {
+            "id": goal_id,
+            "name": goal.get("name", ""),
+            "label": previous.get(goal_id, {}).get("label", goal.get("name", "")),
         }
-        for g in available
-        if str(g["id"]) in selected
-    ]
+        identifier = goal.get("identifier") or condition
+        if identifier:
+            selected_goal["identifier"] = identifier
+        mapping.selected_goals.append(selected_goal)
     mapping.save(update_fields=["selected_goals", "updated_at"])
     return redirect("yandex:connection", project_id=project_id)
 

@@ -270,6 +270,14 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
                 kind=kind,
             )
         extra = {}
+        extra["period_details"] = [
+            {
+                "period_start": snapshot.period_start,
+                "period_end": snapshot.period_end,
+                "payload": snapshot.payload,
+            }
+            for snapshot, _metrics in points
+        ]
         if source == SourceSnapshot.Source.METRIKA:
             sources = {
                 code.removeprefix("source_").removesuffix("_visits"): point.numeric_value
