@@ -308,9 +308,7 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
                 for code, point in current.items()
                 if code.startswith("source_")
             }
-            extra["traffic_sources"] = calculate_source_shares(
-                all_traffic_total, sources
-            )
+            extra["traffic_sources"] = calculate_source_shares(all_traffic_total, sources)
             extra["traffic_source_series"] = {
                 code.removeprefix("source_").removesuffix("_visits"): series[code]
                 for code in codes
