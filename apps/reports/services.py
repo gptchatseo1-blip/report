@@ -1,6 +1,9 @@
+import base64
 import hashlib
+import io
 import json
 import logging
+import urllib.request
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timedelta
@@ -12,6 +15,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
+from PIL import Image
 
 from apps.metrics.models import MetricPoint, RankingSnapshot, SourceSnapshot
 from apps.worklog.models import WorkLogItem
@@ -40,6 +44,31 @@ from .models import (
 
 SNAPSHOT_SCHEMA_VERSION = "mvp1.1"
 logger = logging.getLogger(__name__)
+
+
+def _project_favicon(domain):
+    """Freeze a small public favicon in the snapshot; test domains never trigger I/O."""
+    if not getattr(settings, "REPORT_FAVICON_FETCH_ENABLED", True):
+        return None
+    domain = str(domain or "").strip().casefold()
+    if not domain or domain.endswith((".example", ".test", ".invalid", ".localhost")):
+        return None
+    url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+    request = urllib.request.Request(url, headers={"User-Agent": "SEO-Report/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            raw = response.read(128 * 1024 + 1)
+        if not raw or len(raw) > 128 * 1024:
+            return None
+        with Image.open(io.BytesIO(raw)) as source:
+            source.load()
+            icon = source.convert("RGBA")
+            output = io.BytesIO()
+            icon.save(output, format="PNG")
+        return {"mime_type": "image/png", "data": base64.b64encode(output.getvalue()).decode()}
+    except (OSError, ValueError):
+        logger.info("Project favicon was not available for %s", domain)
+        return None
 
 
 class ReportVersionDeleteBlocked(Exception):
@@ -506,6 +535,7 @@ def build_report_snapshot(*, report, selection=None):
             "timezone": project.timezone,
             "language": project.language,
             "top_11_20_mode": project.top_11_20_mode,
+            "favicon": _project_favicon(project.normalized_domain),
             "brand_rules": list(
                 project.brand_rules.order_by("kind", "pattern", "priority", "id").values(
                     "kind", "pattern", "priority", "active"

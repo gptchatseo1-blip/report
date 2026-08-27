@@ -125,6 +125,10 @@ def test_project_report_settings_autosave_and_restore_are_isolated(client, user,
                 "metrika_search_segment": False,
                 "metrika_info_url_groups": ("Статьи | https://calendar.example/articles/*\n*smas*"),
                 "metrika_bar_search_engines": ["google", "bing"],
+                "completed_work_text": (
+                    "<p><strong>Аудит</strong></p><script>alert(1)</script>"
+                    '<a href="javascript:alert(1)">опасная ссылка</a>'
+                ),
             }
         ),
         content_type="application/json",
@@ -139,6 +143,9 @@ def test_project_report_settings_autosave_and_restore_are_isolated(client, user,
     assert restored["metrika_search_segment"].value() is False
     assert restored["metrika_info_url_groups"].value().startswith("Статьи |")
     assert list(restored["metrika_bar_search_engines"].value()) == ["google", "bing"]
+    completed_work = restored["completed_work_text"].value()
+    assert "<strong>Аудит</strong>" in completed_work
+    assert "<script" not in completed_work and "javascript:" not in completed_work
     untouched = ReportCreateForm(project=other)
     assert untouched["include_top_10"].value() is True
     assert untouched["metrika_search_segment"].value() is True

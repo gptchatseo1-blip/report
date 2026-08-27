@@ -9,6 +9,7 @@ from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import configuration_id
 
 from .models import NarrativeBlock
+from .rich_text import sanitize_report_html
 
 PERSISTED_REPORT_FIELDS = (
     "show_urls",
@@ -44,6 +45,7 @@ PERSISTED_REPORT_FIELDS = (
     "metrika_commercial_url_groups",
     "metrika_category_url_groups",
     "include_completed_work",
+    "completed_work_text",
 )
 
 BOOLEAN_REPORT_FIELDS = frozenset(
@@ -226,6 +228,12 @@ class ReportCreateForm(forms.Form):
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
     include_completed_work = forms.BooleanField(
         label="Выполненные работы", required=False, initial=True
+    )
+    completed_work_text = forms.CharField(
+        label="Текст выполненных работ",
+        required=False,
+        max_length=20_000,
+        widget=forms.Textarea(attrs={"rows": 8, "class": "rich-text-source"}),
     )
     metrika_snapshots = forms.MultipleChoiceField(
         label="Яндекс.Метрика", required=False, widget=forms.CheckboxSelectMultiple
@@ -483,6 +491,9 @@ class ReportCreateForm(forms.Form):
         value = self.cleaned_data.get("metrika_category_url_groups", "")
         parse_named_url_groups(value)
         return value
+
+    def clean_completed_work_text(self):
+        return sanitize_report_html(self.cleaned_data.get("completed_work_text"))
 
 
 class NarrativeEditForm(forms.ModelForm):
