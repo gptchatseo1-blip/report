@@ -195,6 +195,13 @@ def test_metrika_search_segment_changes_traffic_but_not_source_breakdown():
         search_facts["normalized_changes"]["source_search_visits"].current
         == all_facts["normalized_changes"]["source_search_visits"].current
     )
+    assert search_facts["traffic_source_dynamics"]["search"]["share_percent"] == Decimal(
+        "33.33333333333333333333333333"
+    )
+    assert (
+        search_facts["traffic_source_dynamics"]["search"]["share_percent"]
+        == all_facts["traffic_source_dynamics"]["search"]["share_percent"]
+    )
 
 
 def test_single_source_period_has_no_previous_value_or_zero_change():

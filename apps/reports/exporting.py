@@ -2734,7 +2734,9 @@ def _render_metrika(doc, payload, blocks):
             )
         current_goals = goal_periods[-1]["rows"]
         if current_goals:
-            doc.add_paragraph("Сводная информация по конверсии", style="Table Heading")
+            doc.add_heading(
+                "4) Сводная информация по конверсии (Яндекс.Метрика).", level=1
+            )
             first_date = date.fromisoformat(str(period_details[0]["period_start"])[:10])
             last_date = date.fromisoformat(str(period_details[-1]["period_end"])[:10])
             robotness_label = "только люди" if robotness == "humans" else "все визиты"

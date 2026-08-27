@@ -134,10 +134,10 @@ def _geography_code(item):
     if city in {"санкт-петербург", "saint petersburg", "st. petersburg"}:
         return "saint_petersburg"
     undefined = {"", "не определено", "undefined", "not defined"}
-    if city in undefined:
-        return "undefined"
     if area in undefined | {"область не определена", "area not defined"}:
         return "area_undefined"
+    if city in undefined:
+        return "undefined"
     return None
 
 

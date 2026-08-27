@@ -188,6 +188,7 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         "1) Видимость сайта в поисковых системах Яндекс и Google по основным ключевым словам",
         "2) Индексация сайта (Яндекс.Вебмастер)",
         "3) Сводная информация по переходам на сайт (Яндекс.Метрика)",
+        "4) Сводная информация по конверсии (Яндекс.Метрика).",
         "Выполненные работы",
     ]
     assert document.styles["Normal"].font.name == "Arial"
@@ -310,6 +311,7 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
     )
     assert "Записаться на приём" in goal_table.rows[0].cells[0].text
     assert "идентификатор: request_form" in goal_table.rows[0].cells[2].text
+    assert "4) Сводная информация по конверсии (Яндекс.Метрика)." in text
     assert "Ниже приведены диаграммы конверсии" in text
     assert text.index("Динамика по поисковым системам за квартал:") < text.index(
         "Период сравнения:"

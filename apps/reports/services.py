@@ -228,12 +228,14 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             rows.prefetch_related("metrics").order_by("period_start", "period_end", "id")
         )
         points = []
+        all_traffic_totals = []
         options = display_options or {}
         segment = "search" if options.get("metrika_search_segment", True) else "all"
         robotness = options.get("metrika_robotness", "humans")
         prefix = f"segment_{segment}_{robotness}_"
         for snapshot in snapshots:
             raw_metrics = {point.metric_code: point for point in snapshot.metrics.all()}
+            all_traffic_totals.append(raw_metrics.get("visits"))
             metrics = {
                 code: point
                 for code, point in raw_metrics.items()
@@ -296,13 +298,18 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             for snapshot, _metrics in points
         ]
         if source == SourceSnapshot.Source.METRIKA:
+            all_traffic_total = (
+                all_traffic_totals[-1].numeric_value
+                if all_traffic_totals and all_traffic_totals[-1]
+                else None
+            )
             sources = {
                 code.removeprefix("source_").removesuffix("_visits"): point.numeric_value
                 for code, point in current.items()
                 if code.startswith("source_")
             }
             extra["traffic_sources"] = calculate_source_shares(
-                current.get("visits").numeric_value if current.get("visits") else None, sources
+                all_traffic_total, sources
             )
             extra["traffic_source_series"] = {
                 code.removeprefix("source_").removesuffix("_visits"): series[code]
@@ -312,11 +319,10 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             extra["traffic_source_dynamics"] = {}
             for name, values in extra["traffic_source_series"].items():
                 raw = sources.get(name)
-                total = current.get("visits").numeric_value if current.get("visits") else None
                 extra["traffic_source_dynamics"][name] = {
                     "series": values,
-                    "share_percent": raw * Decimal("100") / total
-                    if raw is not None and total not in (None, 0)
+                    "share_percent": raw * Decimal("100") / all_traffic_total
+                    if raw is not None and all_traffic_total not in (None, 0)
                     else None,
                     "change": calculate_change(
                         values[-1]["value"] if values else None,
