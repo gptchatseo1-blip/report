@@ -209,7 +209,7 @@ def build_position_facts(*, project, report_month, selected_dates=None):
     return {"formula_version": FORMULA_VERSION, "periods": periods, "segments": facts}
 
 
-def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
+def build_source_facts(*, project, report_month, selected_snapshot_ids=None, display_options=None):
     """Calculate each source exclusively from its independently selected snapshots."""
     periods = calculate_periods(report_month)
     selected_snapshot_ids = selected_snapshot_ids or {}
@@ -227,10 +227,27 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None):
         snapshots = list(
             rows.prefetch_related("metrics").order_by("period_start", "period_end", "id")
         )
-        points = [
-            (snapshot, {point.metric_code: point for point in snapshot.metrics.all()})
-            for snapshot in snapshots
-        ]
+        points = []
+        options = display_options or {}
+        segment = "search" if options.get("metrika_search_segment", True) else "all"
+        robotness = options.get("metrika_robotness", "humans")
+        prefix = f"segment_{segment}_{robotness}_"
+        for snapshot in snapshots:
+            raw_metrics = {point.metric_code: point for point in snapshot.metrics.all()}
+            metrics = {
+                code: point
+                for code, point in raw_metrics.items()
+                if not code.startswith("segment_")
+            }
+            if source == SourceSnapshot.Source.METRIKA:
+                metrics.update(
+                    {
+                        code.removeprefix(prefix): point
+                        for code, point in raw_metrics.items()
+                        if code.startswith(prefix)
+                    }
+                )
+            points.append((snapshot, metrics))
         # One point has no comparison period: do not manufacture a zero change.
         first = points[0][1] if len(points) >= 2 else {}
         current = points[-1][1] if points else {}
@@ -469,6 +486,11 @@ def build_report_snapshot(*, report, selection=None):
     selected_source_ids = tuple(selection.get("yandex_metrika", ())) + tuple(
         selection.get("yandex_webmaster", ())
     )
+    display_options = (
+        selection.get("display_options", {"show_urls": False})
+        if explicit_selection
+        else {"show_urls": True}
+    )
     payload = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "formula_version": FORMULA_VERSION,
@@ -504,9 +526,7 @@ def build_report_snapshot(*, report, selection=None):
             "provenance": {"method": "project_database", "updated_at": project.updated_at},
         },
         "periods": periods,
-        "display_options": selection.get("display_options", {"show_urls": False})
-        if explicit_selection
-        else {"show_urls": True},
+        "display_options": display_options,
         "source_selection": {
             "topvisor": (
                 {
@@ -547,6 +567,7 @@ def build_report_snapshot(*, report, selection=None):
                 }
                 if explicit_selection
                 else None,
+                display_options=display_options,
             ),
         },
         "completed_work": [

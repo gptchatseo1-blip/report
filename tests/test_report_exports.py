@@ -4,6 +4,7 @@ import shutil
 import zipfile
 from datetime import date
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -302,11 +303,14 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
     assert all(
         "Ур. 1" not in [cell.text for cell in table.rows[0].cells] for table in landing_tables
     )
-    assert any(
-        "ID request" in table.rows[0].cells[0].text
-        and "идентификатор: request_form" in table.rows[0].cells[0].text
+    goal_table = next(
+        table
         for table in document.tables
+        if len(table.rows[0].cells) == 3 and "ID request" in table.rows[0].cells[1].text
     )
+    assert "Записаться на приём" in goal_table.rows[0].cells[0].text
+    assert "идентификатор: request_form" in goal_table.rows[0].cells[2].text
+    assert "Ниже приведены диаграммы конверсии" in text
     assert text.index("Динамика по поисковым системам за квартал:") < text.index(
         "Период сравнения:"
     )
@@ -320,6 +324,98 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         if paragraph.text.startswith("Предупреждение:")
     ]
     assert len(warning_paragraphs) == len(set(warning_paragraphs))
+
+
+def test_modern_geography_keeps_undefined_rows_out_of_chart_narrative(
+    rich_version, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    payload = rich_version.snapshot.payload
+    payload["display_options"] = {
+        "configuration_version": 3,
+        "include_metrika": True,
+        "include_metrika_geography": True,
+        "geography_moscow": True,
+        "geography_saint_petersburg": True,
+    }
+    ReportDatasetSnapshot.objects.filter(pk=rich_version.snapshot.pk).update(payload=payload)
+    rich_version.snapshot.refresh_from_db()
+
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(
+                generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
+            )
+        )
+    )
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    geography = next(table for table in document.tables if table.rows[0].cells[0].text == "Регион")
+    labels = [row.cells[0].text for row in geography.rows[1:]]
+
+    assert "Не определено" in labels
+    assert "Область не определена" in labels
+    assert "Трафик из региона «Не определено»" not in text
+    assert "Трафик из региона «Область не определена»" not in text
+
+
+def test_configured_url_segments_render_three_level_tables_and_separate_charts(
+    rich_version, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    payload = rich_version.snapshot.payload
+    payload["display_options"] = {
+        "configuration_version": 3,
+        "include_metrika": True,
+        "metrika_search_segment": True,
+        "include_metrika_landing_page_comparison": True,
+        "include_metrika_url_groups": True,
+        "include_metrika_sections": True,
+        "include_metrika_categories": True,
+        "metrika_url_segments": {
+            "information": [{"name": "Статьи", "patterns": ["https://demo.example/blog/*"]}],
+            "commercial": [
+                {"name": "Лечение", "patterns": ["https://demo.example/services/*"]},
+                {
+                    "name": "Диагностика",
+                    "patterns": ["https://demo.example/catalog/diagnostics/*"],
+                },
+                {"name": "Реабилитация", "patterns": ["*rehabilitation*"]},
+            ],
+            "categories": [
+                {
+                    "name": "Приоритетные услуги",
+                    "patterns": ["https://demo.example/services/priority/*"],
+                }
+            ],
+        },
+    }
+    ReportDatasetSnapshot.objects.filter(pk=rich_version.snapshot.pk).update(payload=payload)
+    rich_version.snapshot.refresh_from_db()
+
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(
+                generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
+            )
+        )
+    )
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    landing_tables = [
+        table for table in document.tables if table.rows[0].cells[0].text == "Страница входа"
+    ]
+    landing_urls = [row.cells[0].text for table in landing_tables for row in table.rows[1:]]
+
+    assert "Данные по разделам" in text
+    assert "Информационные разделы" in text
+    assert "Коммерческие разделы" in text
+    assert "Приоритетные услуги" in text
+    assert "Коммерческий раздел «Лечение»" in text
+    assert "Коммерческий раздел «Диагностика»" in text
+    assert "Коммерческий раздел «Реабилитация»" in text
+    assert "https://demo.example/services/priority/" in landing_urls
+    assert all(
+        len([part for part in urlsplit(url).path.split("/") if part]) <= 2 for url in landing_urls
+    )
 
 
 def test_modern_report_options_control_sections_and_top_tables(rich_version, settings, tmp_path):
@@ -393,19 +489,13 @@ def test_topvisor_links_follow_their_engine_and_region_data(rich_version, settin
         )
     )
     paragraphs = [paragraph.text for paragraph in document.paragraphs]
-    yandex_link = (
-        "Подробный отчёт Яндекс · Москва: https://topvisor.example/yandex-moscow"
-    )
-    google_link = (
-        "Подробный отчёт Google · Россия: https://topvisor.example/google-russia"
-    )
+    yandex_link = "Подробный отчёт Яндекс · Москва: https://topvisor.example/yandex-moscow"
+    google_link = "Подробный отчёт Google · Россия: https://topvisor.example/google-russia"
     assert paragraphs.count(yandex_link) == 1
     assert paragraphs.count(google_link) == 1
     assert paragraphs.index("Запросы в TOP-10 по Яндекс.Москва") < paragraphs.index(yandex_link)
     assert paragraphs.index(yandex_link) < paragraphs.index("Google. Россия")
-    assert paragraphs.index("Запросы в TOP-10 по Google.Россия") < paragraphs.index(
-        google_link
-    )
+    assert paragraphs.index("Запросы в TOP-10 по Google.Россия") < paragraphs.index(google_link)
 
 
 @pytest.mark.parametrize(

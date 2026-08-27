@@ -40,6 +40,27 @@ class Report(models.Model):
         return f"{self.project} — {self.report_month:%m.%Y}"
 
 
+class ProjectReportSettings(models.Model):
+    """Mutable report-builder preferences, isolated per project.
+
+    Report snapshots remain immutable.  These values only prefill the next
+    report and are copied into a snapshot when a new version is created.
+    """
+
+    project = models.OneToOneField(
+        Project, on_delete=models.CASCADE, related_name="report_settings"
+    )
+    values = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Настройки конструктора отчёта"
+        verbose_name_plural = "Настройки конструктора отчётов"
+
+    def __str__(self):
+        return f"Настройки отчёта: {self.project}"
+
+
 class ReportVersion(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     report = models.ForeignKey(Report, on_delete=models.CASCADE, related_name="versions")

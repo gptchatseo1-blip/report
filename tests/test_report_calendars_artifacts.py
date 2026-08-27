@@ -1,21 +1,29 @@
 import io
+import json
 from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 from docx import Document
 from openpyxl import load_workbook
+from PIL import Image
 
 from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
-from apps.reports.forms import ReportCreateForm
-from apps.reports.models import GeneratedArtifact, Report, ReportDatasetSnapshot
+from apps.reports.forms import ReportCreateForm, parse_named_url_groups
+from apps.reports.models import (
+    GeneratedArtifact,
+    ProjectReportSettings,
+    Report,
+    ReportDatasetSnapshot,
+)
 from apps.reports.services import create_report_version
 from apps.topvisor.models import TopvisorProjectMapping
 
@@ -91,6 +99,98 @@ def test_engines_have_independent_complete_date_sets(project):
         "2026-07-02",
         "2026-07-01",
     ]
+
+
+def test_report_defaults_select_only_top_10_and_search_segment(project):
+    form = ReportCreateForm(project=project)
+
+    assert form["include_top_5"].value() is False
+    assert form["include_top_10"].value() is True
+    assert form["include_top_20"].value() is False
+    assert form["include_top_11_30"].value() is False
+    assert form["include_top_30"].value() is False
+    assert form["metrika_search_segment"].value() is True
+    assert form["include_metrika_sources_table"].value() is False
+
+
+def test_project_report_settings_autosave_and_restore_are_isolated(client, user, project):
+    other = Project.objects.create(name="Other", domain="other-settings.example")
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:report-settings-save", args=[project.id]),
+        data=json.dumps(
+            {
+                "include_top_10": False,
+                "include_top_20": True,
+                "metrika_search_segment": False,
+                "metrika_info_url_groups": ("Статьи | https://calendar.example/articles/*\n*smas*"),
+                "metrika_bar_search_engines": ["google", "bing"],
+            }
+        ),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert ProjectReportSettings.objects.filter(project=project).exists()
+    restored = ReportCreateForm(project=project)
+    assert restored["include_top_10"].value() is False
+    assert restored["include_top_20"].value() is True
+    assert restored["metrika_search_segment"].value() is False
+    assert restored["metrika_info_url_groups"].value().startswith("Статьи |")
+    assert list(restored["metrika_bar_search_engines"].value()) == ["google", "bing"]
+    untouched = ReportCreateForm(project=other)
+    assert untouched["include_top_10"].value() is True
+    assert untouched["metrika_search_segment"].value() is True
+
+
+def test_named_url_groups_accept_masks_and_repeated_labels():
+    groups = parse_named_url_groups(
+        "Лечение | https://example.test/treatment/*\n"
+        "Лечение | *smas*\n"
+        "https://example.test/diagnostics/*"
+    )
+
+    assert groups == [
+        {
+            "name": "Лечение",
+            "patterns": ["https://example.test/treatment/*", "*smas*"],
+        },
+        {
+            "name": "Diagnostics",
+            "patterns": ["https://example.test/diagnostics/*"],
+        },
+    ]
+
+
+def test_uploaded_webmaster_query_screenshot_is_frozen_and_rendered(
+    client, user, project, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    image_data = io.BytesIO()
+    Image.new("RGB", (240, 80), "white").save(image_data, format="PNG")
+    screenshot = SimpleUploadedFile("queries.png", image_data.getvalue(), content_type="image/png")
+    client.force_login(user)
+
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "include_webmaster": "on",
+            "include_webmaster_popular_queries": "on",
+            "webmaster_queries_screenshot": screenshot,
+        },
+    )
+
+    assert response.status_code == 302
+    version = Report.objects.get(project=project).versions.get()
+    frozen = version.snapshot.payload["display_options"]["webmaster_queries_screenshot"]
+    assert frozen["name"] == "queries.png"
+    document = Document(
+        io.BytesIO(
+            generate_artifact(version=version, artifact_type="docx", is_draft=True).file.read()
+        )
+    )
+    assert len(document.inline_shapes) == 1
 
 
 def test_tampered_date_and_minimum_are_rejected_per_engine(project):
@@ -179,9 +279,7 @@ def test_new_snapshot_stores_flexible_report_options(client, user, project):
     assert options["geography_moscow"] is True
     assert options["geography_saint_petersburg"] is False
     assert options["topvisor_report_url"] == "https://topvisor.example/report/42"
-    assert options["topvisor_report_urls"] == {
-        "ya": "https://topvisor.example/report/42"
-    }
+    assert options["topvisor_report_urls"] == {"ya": "https://topvisor.example/report/42"}
 
 
 def test_topvisor_report_link_requires_url(project):

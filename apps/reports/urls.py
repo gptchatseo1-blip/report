@@ -9,6 +9,11 @@ urlpatterns = [
     path("projects/", views.project_list, name="projects"),
     path("projects/<uuid:project_id>/reports/", views.report_list, name="report-list"),
     path("projects/<uuid:project_id>/reports/create/", views.report_create, name="report-create"),
+    path(
+        "projects/<uuid:project_id>/reports/settings/",
+        views.report_settings_save,
+        name="report-settings-save",
+    ),
     path("reports/<uuid:report_id>/", views.report_detail, name="report-detail"),
     path("reports/<uuid:report_id>/versions/create/", views.version_create, name="version-create"),
     path("versions/<uuid:version_id>/", views.version_detail, name="version-detail"),

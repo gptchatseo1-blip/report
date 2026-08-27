@@ -3,7 +3,8 @@
 {% block content %}
 <h1>Отчёты проекта «{{ project.name }}»</h1>
 <p><a class="button secondary" href="{% url 'topvisor:connection' project.id %}">Topvisor</a> <a class="button secondary" href="{% url 'yandex:connection' project.id %}">Яндекс.Метрика и Вебмастер</a></p>
-<section class="card"><h2>Создать отчёт</h2><form method="post" enctype="multipart/form-data" action="{% url 'reports:report-create' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
+<section class="card"><h2>Создать отчёт</h2><form method="post" enctype="multipart/form-data" action="{% url 'reports:report-create' project.id %}" data-report-create-form data-settings-url="{% url 'reports:report-settings-save' project.id %}">{% csrf_token %}{{ form.month }}{{ form.submission_token }}{{ form.non_field_errors }}
+<div class="form-notice" data-report-form-notice hidden role="alert"></div>
 <h3>Выберите даты для вывода видимости</h3>
 <div class="calendar-pair">{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}</div>
 {% if not form.yandex_dates.field.choices and not form.google_dates.field.choices %}<p>Нет синхронизированных данных. <a href="{% url 'topvisor:connection' project.id %}">Перейти к синхронизации</a></p>{% endif %}
@@ -31,6 +32,7 @@
 <section class="option-card"><h4>Яндекс.Метрика</h4><label class="url-option">{{ form.include_metrika }} <span><strong>Выводить блок Метрики</strong><small>Месячные итоги по трафику и источникам.</small></span></label>
 <details class="option-details"><summary>Настроить блоки и сегмент</summary>
 <label for="{{ form.metrika_robotness.id_for_label }}">{{ form.metrika_robotness.label }}{{ form.metrika_robotness }}</label>
+<label class="url-option">{{ form.metrika_search_segment }} <span><strong>Сегмент ПС</strong><small>Применяется к трафику, географии, страницам, разделам, категориям и целям. На «Источники» и «Поисковые системы» не влияет.</small></span></label>
 <label class="url-option">{{ form.include_metrika_sources_table }} <span><strong>Таблица по всем источникам</strong><small>По умолчанию скрыта; график «Все источники» остаётся.</small></span></label>
 <label class="url-option">{{ form.include_metrika_search_engines }} <span><strong>Поисковые системы</strong><small>График, детальная таблица и расчёт изменений.</small></span></label>
 <div class="search-engine-options"><strong>{{ form.metrika_bar_search_engines.label }}</strong>{% for choice in form.metrika_bar_search_engines %}<label>{{ choice.tag }} {{ choice.choice_label }}</label>{% endfor %}</div>{{ form.metrika_bar_search_engines.errors }}
@@ -39,8 +41,15 @@
 <label class="url-option">{{ form.include_metrika_landing_pages }} <span><strong>Популярные страницы входа</strong><small>Включены по умолчанию.</small></span></label>
 <label class="url-option">{{ form.include_metrika_landing_page_comparison }} <span><strong>Страницы входа: Яндекс и Google</strong><small>Сравнение двух месяцев; по умолчанию скрыто.</small></span></label>
 <label class="url-option">{{ form.include_metrika_url_groups }} <span><strong>Информационные и коммерческие страницы</strong><small>Используются URL-группы проекта.</small></span></label>
-<label class="url-option">{{ form.include_metrika_sections }} <span><strong>Данные по разделам</strong><small>Вывод по настроенным URL-группам.</small></span></label>
-<label class="url-option">{{ form.include_metrika_categories }} <span><strong>Прорабатываемые категории</strong><small>Детализация по активным URL-группам.</small></span></label>
+<label class="url-option">{{ form.include_metrika_sections }} <span><strong>Данные по разделам (инфо и ком)</strong><small>Отдельные графики по настроенным URL-сегментам.</small></span></label>
+<div class="url-segment-settings">
+<label for="{{ form.metrika_info_url_groups.id_for_label }}"><strong>{{ form.metrika_info_url_groups.label }}</strong>{{ form.metrika_info_url_groups }}<small>{{ form.metrika_info_url_groups.help_text }}</small></label>{{ form.metrika_info_url_groups.errors }}
+<button type="button" class="clear-settings secondary" data-clear-setting="{{ form.metrika_info_url_groups.id_for_label }}">Очистить всё</button>
+<label for="{{ form.metrika_commercial_url_groups.id_for_label }}"><strong>{{ form.metrika_commercial_url_groups.label }}</strong>{{ form.metrika_commercial_url_groups }}<small>{{ form.metrika_commercial_url_groups.help_text }}</small></label>{{ form.metrika_commercial_url_groups.errors }}
+<button type="button" class="clear-settings secondary" data-clear-setting="{{ form.metrika_commercial_url_groups.id_for_label }}">Очистить всё</button>
+</div>
+<label class="url-option">{{ form.include_metrika_categories }} <span><strong>Прорабатываемые категории</strong><small>Для каждой категории строится отдельный график.</small></span></label>
+<div class="url-segment-settings"><label for="{{ form.metrika_category_url_groups.id_for_label }}"><strong>{{ form.metrika_category_url_groups.label }}</strong>{{ form.metrika_category_url_groups }}<small>{{ form.metrika_category_url_groups.help_text }}</small></label>{{ form.metrika_category_url_groups.errors }}<button type="button" class="clear-settings secondary" data-clear-setting="{{ form.metrika_category_url_groups.id_for_label }}">Очистить всё</button></div>
 <label class="url-option">{{ form.include_metrika_goals }} <span><strong>Цели Метрики</strong><small>Поисковый трафик с выбранной роботностью.</small></span></label>
 </details></section>
 <section class="option-card"><h4>Работы</h4><label class="url-option">{{ form.include_completed_work }} <span><strong>Выполненные работы</strong><small>Нумерованный список с вложенными пунктами.</small></span></label></section>
@@ -48,8 +57,8 @@
 <h3>Данные сервисов Яндекса</h3>
 <p>Перед созданием ежемесячного отчёта синхронизируйте оба источника. Достаточно одного обновления за отчётный месяц: сервис загрузит его и два предыдущих. Затем выберите периоды, данные которых попадут в отчёт.</p>
 <div class="report-source-grid">{% for source in source_period_fields %}{% include "reports/_source_period_picker.html" with source=source %}{% endfor %}</div>
-<p><button{% if not can_create %} disabled aria-disabled="true" title="Для каждой подключённой поисковой системы нужны минимум две даты"{% endif %}>Создать отчёт</button></p></form></section>
-{% for source in source_period_fields %}{% if source.connected %}<form id="{{ source.sync_form_id }}" method="post" action="{{ source.sync_url }}" class="source-sync-form">{% csrf_token %}<input type="hidden" name="month" value="{{ source.sync_month }}" data-sync-month-for="{{ source.name }}"><input type="hidden" name="return_to_reports" value="1"></form>{% endif %}{% endfor %}
+<p><button type="submit"{% if not can_create %} disabled aria-disabled="true" title="Для каждой подключённой поисковой системы нужны минимум две даты"{% endif %}>Создать отчёт</button></p></form></section>
+{% for source in source_period_fields %}{% if source.connected %}<form id="{{ source.sync_form_id }}" method="post" action="{{ source.sync_url }}" class="source-sync-form" data-ajax-sync-form data-source-name="{{ source.name }}">{% csrf_token %}<input type="hidden" name="month" value="{{ source.sync_month }}" data-sync-month-for="{{ source.name }}"><input type="hidden" name="return_to_reports" value="1"></form>{% endif %}{% endfor %}
 <section><h2>Отчётные месяцы</h2>{% if reports %}<div class="table-wrap"><table><thead><tr><th>Месяц</th><th>Версий</th><th>Последняя версия</th><th></th></tr></thead><tbody>{% for report in reports %}<tr><td>{{ report.report_month|date:'F Y' }}</td><td>{{ report.version_count }}</td><td>{{ report.latest_version_at|date:'d.m.Y H:i'|default:'—' }}</td><td><a class="button" href="{% url 'reports:report-detail' report.id %}">Открыть отчёт</a></td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">Отчётов пока нет.</div>{% endif %}</section>
 {% endblock %}
-{% block scripts %}<script src="{% static 'reports/calendar.js' %}" defer></script>{% endblock %}
+{% block scripts %}<script src="{% static 'reports/calendar.js' %}" defer></script><script src="{% static 'reports/report-builder.js' %}" defer></script>{% endblock %}
