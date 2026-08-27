@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -149,6 +150,60 @@ def test_form_defaults_to_three_report_month_source_periods_and_preserves_bound_
     assert "выберите хотя бы один" in bound.errors["webmaster_snapshots"][0]
 
 
+def test_metrika_search_segment_changes_traffic_but_not_source_breakdown():
+    project = Project.objects.create(name="Segment", domain="segment.example")
+    for month, base, search, all_traffic in (
+        (6, 100, 40, 80),
+        (7, 120, 55, 95),
+    ):
+        snapshot = source_snapshot(
+            project,
+            SourceSnapshot.Source.METRIKA,
+            date(2026, month, 1),
+            base,
+            "visits",
+        )
+        for code, value in (
+            ("segment_search_humans_visits", search),
+            ("segment_all_humans_visits", all_traffic),
+            ("source_search_visits", 33 + month),
+        ):
+            MetricPoint.objects.create(
+                snapshot=snapshot,
+                metric_code=code,
+                numeric_value=value,
+                unit=MetricPoint.Unit.COUNT,
+            )
+    selected = list(SourceSnapshot.objects.filter(project=project).values_list("id", flat=True))
+
+    search_facts = build_source_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_snapshot_ids={SourceSnapshot.Source.METRIKA: selected},
+        display_options={"metrika_search_segment": True, "metrika_robotness": "humans"},
+    )["sources"][SourceSnapshot.Source.METRIKA]
+    all_facts = build_source_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_snapshot_ids={SourceSnapshot.Source.METRIKA: selected},
+        display_options={"metrika_search_segment": False, "metrika_robotness": "humans"},
+    )["sources"][SourceSnapshot.Source.METRIKA]
+
+    assert search_facts["normalized_changes"]["visits"].current == Decimal("55")
+    assert all_facts["normalized_changes"]["visits"].current == Decimal("95")
+    assert (
+        search_facts["normalized_changes"]["source_search_visits"].current
+        == all_facts["normalized_changes"]["source_search_visits"].current
+    )
+    assert search_facts["traffic_source_dynamics"]["search"]["share_percent"] == Decimal(
+        "33.33333333333333333333333333"
+    )
+    assert (
+        search_facts["traffic_source_dynamics"]["search"]["share_percent"]
+        == all_facts["traffic_source_dynamics"]["search"]["share_percent"]
+    )
+
+
 def test_single_source_period_has_no_previous_value_or_zero_change():
     project = Project.objects.create(name="Single", domain="single.example")
     snapshot = source_snapshot(
@@ -274,6 +329,52 @@ def test_report_page_sync_buttons_return_to_report_builder(client, monkeypatch):
     assert Report.objects.filter(project=project, report_month=date(2026, 7, 1)).exists()
     assert metrika_mapping.project_id == project.id
     assert webmaster_mapping.project_id == project.id
+
+
+def test_report_page_ajax_sync_returns_periods_without_reload(client, monkeypatch):
+    user = get_user_model().objects.create_user("source-ajax-sync")
+    project = Project.objects.create(name="Source Ajax Sync", domain="source-ajax.example")
+    connection = YandexConnection.objects.create(
+        user=user,
+        access_token_encrypted=b"token",
+        active=True,
+    )
+    YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    success = SimpleNamespace(status="success", Status=SimpleNamespace(SUCCESS="success"))
+
+    def fake_sync(**_kwargs):
+        for month in (5, 6, 7):
+            source_snapshot(
+                project,
+                SourceSnapshot.Source.METRIKA,
+                date(2026, month, 1),
+                month,
+                "visits",
+            )
+        return success
+
+    monkeypatch.setattr("apps.yandex.views.sync_metrika", fake_sync)
+    client.force_login(user)
+    response = client.post(
+        reverse("yandex:sync", args=[project.id]),
+        {"month": "2026-07", "return_to_reports": "1"},
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert [period["month"] for period in response.json()["periods"]] == [
+        "2026-07",
+        "2026-06",
+        "2026-05",
+    ]
+    assert not Report.objects.filter(project=project).exists()
 
 
 def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocked(client):

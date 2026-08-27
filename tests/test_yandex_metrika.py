@@ -296,6 +296,13 @@ class FakeMetrika:
                         ],
                         "metrics": [5],
                     },
+                    {
+                        "dimensions": [
+                            {"id": "1", "name": "Москва и Московская область"},
+                            {"id": "0", "name": "Не определено"},
+                        ],
+                        "metrics": [3],
+                    },
                 ]
             }
         if params.get("dimensions"):
@@ -342,7 +349,8 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert points["goal_7_reaches"].dimensions["label"] == "Client label"
     assert points["geography_moscow_visits"].numeric_value == 40
     assert points["geography_saint_petersburg_visits"].numeric_value == 20
-    assert points["geography_undefined_visits"].numeric_value == 5
+    assert points["geography_undefined_visits"].numeric_value == 3
+    assert points["geography_area_undefined_visits"].numeric_value == 5
     sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
     assert SourceSnapshot.objects.filter(project=mapping.project).count() == 3
     assert MetricPoint.objects.filter(snapshot__project=mapping.project).count() == len(points) * 3

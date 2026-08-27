@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from fnmatch import fnmatchcase
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -38,7 +39,7 @@ from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, Va
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.3-provider-fidelity"
+GENERATOR_VERSION = "mvp1.4-project-segments"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -172,6 +173,21 @@ def _set_cell_width(cell, width):
     tc_width.set(qn("w:type"), "dxa")
 
 
+def _set_cell_margins(cell, *, top=45, bottom=45, left=70, right=70):
+    properties = cell._tc.get_or_add_tcPr()
+    margins = properties.first_child_found_in("w:tcMar")
+    if margins is None:
+        margins = OxmlElement("w:tcMar")
+        properties.append(margins)
+    for edge, value in (("top", top), ("bottom", bottom), ("left", left), ("right", right)):
+        element = margins.find(qn(f"w:{edge}"))
+        if element is None:
+            element = OxmlElement(f"w:{edge}")
+            margins.append(element)
+        element.set(qn("w:w"), str(value))
+        element.set(qn("w:type"), "dxa")
+
+
 def _repeat_header(row):
     props = row._tr.get_or_add_trPr()
     element = OxmlElement("w:tblHeader")
@@ -239,6 +255,7 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
         cell.text = _clean(value)
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         _set_cell_width(cell, width)
+        _set_cell_margins(cell)
         _shade_cell(cell, header_fill)
         for paragraph in cell.paragraphs:
             paragraph.paragraph_format.space_before = Pt(0)
@@ -259,6 +276,7 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
             cell.text = _clean(value if value is not None and value != "" else "—")
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             _set_cell_width(cell, width)
+            _set_cell_margins(cell)
             for paragraph in cell.paragraphs:
                 paragraph.paragraph_format.space_before = Pt(0)
                 paragraph.paragraph_format.space_after = Pt(0)
@@ -272,6 +290,11 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
                 if column_index < len(fills):
                     _shade_cell(cell, fills[column_index])
     _keep_small_table_together(table)
+    gap = doc.add_paragraph()
+    gap.paragraph_format.space_before = Pt(0)
+    gap.paragraph_format.space_after = Pt(3)
+    gap.paragraph_format.line_spacing = Pt(2)
+    gap.add_run("\u200b").font.size = Pt(2)
     return table
 
 
@@ -539,8 +562,12 @@ def _render_position_table(doc, payload, segment, start, end):
         return False
     widths = [7.74, 1.50, 1.56, 8.25] if engine == "yandex" else [8.63, 1.17, 1.52, 7.42]
     cell_fills = []
+    cluster_order = {}
     for row in rows:
-        cell_fills.append(("E7E7E7", None, _position_fill(row[2]), None))
+        cluster = str(row[3] or "Без группы")
+        cluster_order.setdefault(cluster, len(cluster_order))
+        cluster_fill = "F7F8FA" if cluster_order[cluster] % 2 == 0 else None
+        cell_fills.append((cluster_fill, cluster_fill, _position_fill(row[2]), cluster_fill))
     table = _table(
         doc,
         ("Запросы", "WS", engine_header, "Имя группы"),
@@ -1094,13 +1121,21 @@ def _style_run(run, *, size, color="000000", bold=False):
 
 
 def _style_provider_table(table):
-    for cell in table.rows[0].cells:
+    for index, cell in enumerate(table.rows[0].cells):
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        _set_cell_margins(cell, top=35, bottom=35, left=55, right=55)
         for paragraph in cell.paragraphs:
+            paragraph.alignment = (
+                WD_ALIGN_PARAGRAPH.LEFT if index == 0 else WD_ALIGN_PARAGRAPH.CENTER
+            )
             paragraph.paragraph_format.space_before = Pt(0)
             paragraph.paragraph_format.space_after = Pt(0)
             for run in paragraph.runs:
                 _style_run(run, size=11)
     for row in table.rows[1:]:
+        for cell in row.cells:
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            _set_cell_margins(cell, top=30, bottom=30, left=55, right=55)
         for paragraph in row.cells[0].paragraphs:
             paragraph.paragraph_format.space_before = Pt(0)
             paragraph.paragraph_format.space_after = Pt(0)
@@ -1111,12 +1146,14 @@ def _style_provider_table(table):
 def _paired_metric_cell(cell, code, current, previous, *, lower_is_better=False):
     cell.text = _provider_value(code, current)
     current_paragraph = cell.paragraphs[0]
-    current_paragraph.paragraph_format.space_after = Pt(8)
+    current_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    current_paragraph.paragraph_format.space_after = Pt(1)
     _style_run(current_paragraph.runs[0], size=9)
     if previous is None:
         return
 
     previous_paragraph = cell.add_paragraph(_provider_value(code, previous))
+    previous_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     previous_paragraph.paragraph_format.space_after = Pt(0)
     _style_run(previous_paragraph.runs[0], size=7.5, color="7A8796")
 
@@ -1137,6 +1174,7 @@ def _paired_metric_cell(cell, code, current, previous, *, lower_is_better=False)
             decimal_places=2,
         )
     change = cell.add_paragraph(change_text)
+    change.alignment = WD_ALIGN_PARAGRAPH.CENTER
     change.paragraph_format.space_after = Pt(0)
     _style_run(
         change.runs[0],
@@ -1453,18 +1491,19 @@ def _metrika_comparison_chart(payload, codes, *, title):
     previous = [float(change.get("previous") or 0) for _, change in rows]
     current = [float(change.get("current") or 0) for _, change in rows]
     x = list(range(len(labels)))
-    width = 0.34
+    width = 0.26
+    offset = 0.18
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
         figure, axis = plt.subplots(figsize=(7.2, 3.55), dpi=150, facecolor="white")
         previous_bars = axis.bar(
-            [value - width / 2 for value in x],
+            [value - offset for value in x],
             previous,
             width=width,
             color=[METRIKA_COLORS[i % len(METRIKA_COLORS)] for i in x],
             label="Предыдущий период",
         )
         current_bars = axis.bar(
-            [value + width / 2 for value in x],
+            [value + offset for value in x],
             current,
             width=width,
             color="white",
@@ -1497,19 +1536,33 @@ def _metrika_source_label(name):
         "referral": "Переходы по ссылкам на сайтах",
         "ad": "Переходы по рекламе",
         "ads": "Переходы по рекламе",
+        "advertising": "Переходы по рекламе",
+        "social": "Переходы из социальных сетей",
         "internal": "Внутренние переходы",
+        "other": "Остальные источники",
     }.get(name, name)
 
 
 def _metrika_sources_chart(facts):
-    order = ("search", "direct", "referral", "ad", "ads", "internal")
+    order = (
+        "search",
+        "direct",
+        "referral",
+        "advertising",
+        "social",
+        "internal",
+        "other",
+    )
     color_map = {
         "search": "#7A45E5",
         "direct": "#FF3399",
         "referral": "#0FBDA0",
         "ad": "#3388FF",
         "ads": "#3388FF",
+        "advertising": "#3388FF",
+        "social": "#FFB851",
         "internal": "#FFB851",
+        "other": "#8B98A7",
     }
     names = [name for name in order if name in facts]
     names.extend(name for name in facts if name not in names)
@@ -1530,15 +1583,8 @@ def _metrika_sources_chart(facts):
             values = [float(value) if value is not None else float("nan") for _, value in points]
             change = facts[name].get("change") or {}
             current = change.get("current")
-            relative = change.get("relative_percent")
-            movement = (
-                f"; {'+' if Decimal(str(relative)) > 0 else ''}"
-                f"{_number(relative, '%', decimal_places=1)}"
-                if relative is not None
-                else ""
-            )
             legend_label = (
-                f"{_metrika_source_label(name)} — {_number(current)}{movement}"
+                f"{_metrika_source_label(name)} — {_number(current)}"
                 if current is not None
                 else _metrika_source_label(name)
             )
@@ -1564,16 +1610,24 @@ def _metrika_sources_chart(facts):
 
 
 def _metrika_period_rows(payload, key):
-    robotness = payload.get("display_options", {}).get("metrika_robotness", "humans")
+    options = payload.get("display_options", {})
+    robotness = options.get("metrika_robotness", "humans")
+    force_search = key in {"search_engines", "search_landing_pages"}
+    detail_key = "landing_pages" if key == "search_landing_pages" else key
+    segment = "search" if force_search or options.get("metrika_search_segment", True) else "all"
     periods = []
     for detail in _period_details(payload, "yandex_metrika"):
         source = _detail_payload(detail)
-        variant = (source.get("search_details") or {}).get(robotness) or source
+        variant = (
+            ((source.get("detail_variants") or {}).get(segment) or {}).get(robotness)
+            or (source.get("search_details") or {}).get(robotness)
+            or source
+        )
         periods.append(
             {
                 "period_start": detail.get("period_start"),
                 "period_end": detail.get("period_end"),
-                "rows": variant.get(key) or [],
+                "rows": variant.get(detail_key) or [],
                 "payload": source,
             }
         )
@@ -1655,26 +1709,14 @@ def _metrika_search_quarter_chart(periods):
     for period in periods[-3:]:
         parsed = date.fromisoformat(str(period["period_start"])[:10])
         labels.append(MONTHS[parsed.month - 1][:3])
-    series = [
-        (
-            "Всего",
-            [
-                sum(
-                    (values.get("visits") or Decimal(0) for values in aggregate.values()),
-                    Decimal(0),
-                )
-                for aggregate in aggregates
-            ],
-            "#A79BFF",
-        )
-    ]
+    series = []
     colors = {"Google": "#7A45E5", "Яндекс": "#FF3399"}
     for index, engine in enumerate(engines):
         series.append(
             (
                 engine,
                 [aggregate.get(engine, {}).get("visits") or Decimal(0) for aggregate in aggregates],
-                colors.get(engine, METRIKA_COLORS[(index + 2) % len(METRIKA_COLORS)]),
+                colors.get(engine, METRIKA_COLORS[index % len(METRIKA_COLORS)]),
             )
         )
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
@@ -1697,18 +1739,6 @@ def _metrika_search_quarter_chart(periods):
             Line2D(
                 [0],
                 [0],
-                marker="s",
-                linestyle="none",
-                markersize=5,
-                markerfacecolor="#AAB4C0",
-                markeredgecolor="#AAB4C0",
-                label=f"Выбрано {len(series)} из {len(series)}",
-            )
-        ]
-        legend_handles.extend(
-            Line2D(
-                [0],
-                [0],
                 marker="o",
                 linestyle="none",
                 markersize=5,
@@ -1717,7 +1747,7 @@ def _metrika_search_quarter_chart(periods):
                 label=f"{label}  {_compact_number(values[-1])}",
             )
             for label, values, color in series
-        )
+        ]
         axis.legend(
             handles=legend_handles,
             loc="upper center",
@@ -1737,13 +1767,14 @@ def _metrika_comparison_bars(rows, *, title):
     if not useful:
         return None
     x = list(range(len(useful)))
-    width = 0.34
+    width = 0.26
+    offset = 0.18
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
         figure, axis = plt.subplots(figsize=(7.2, 3.55), dpi=150, facecolor="white")
         for index, row in enumerate(useful):
             color = row.get("color") or METRIKA_COLORS[index % len(METRIKA_COLORS)]
             axis.bar(
-                index - width / 2,
+                index - offset,
                 float(row.get("previous") or 0),
                 width=width,
                 color=color,
@@ -1751,7 +1782,7 @@ def _metrika_comparison_bars(rows, *, title):
                 linewidth=0.5,
             )
             axis.bar(
-                index + width / 2,
+                index + offset,
                 float(row.get("current") or 0),
                 width=width,
                 color=color,
@@ -1871,6 +1902,31 @@ def _metrika_detail_table(doc, rows, *, first_header, metrics=("visits", "users"
     return table
 
 
+def _style_search_engine_icons(table):
+    markers = {
+        "google": ("G", "4285F4"),
+        "яндекс": ("Я", "FC3F1D"),
+        "yandex": ("Я", "FC3F1D"),
+        "bing": ("⌕", "008373"),
+        "duckduckgo": ("●", "DE5833"),
+        "rambler": ("/", "315EFB"),
+        "mail.ru": ("@", "168DE2"),
+        "yahoo": ("Y!", "6001D2"),
+        "yahoo!": ("Y!", "6001D2"),
+    }
+    for row in table.rows[1:]:
+        cell = row.cells[0]
+        label = cell.text.strip()
+        marker, color = markers.get(label.casefold(), ("●", "8B98A7"))
+        cell.text = ""
+        paragraph = cell.paragraphs[0]
+        paragraph.paragraph_format.space_after = Pt(0)
+        marker_run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+        marker_run.text = marker + "  "
+        _style_run(marker_run, size=8, color=color, bold=True)
+        _style_run(paragraph.add_run(label), size=8)
+
+
 def _metrika_search_engine_text(current):
     total = sum((row.get("visits") or Decimal(0) for row in current.values()), Decimal(0))
     ordered = []
@@ -1954,6 +2010,169 @@ def _url_group(payload, url):
     return "Остальные страницы"
 
 
+def _configured_url_groups(payload, kind):
+    configured = payload.get("display_options", {}).get("metrika_url_segments", {}).get(kind) or []
+    if configured:
+        return [
+            {
+                "name": str(group.get("name") or "Раздел"),
+                "patterns": [str(value) for value in group.get("patterns") or [] if value],
+            }
+            for group in configured
+            if group.get("patterns")
+        ]
+    if kind != "categories":
+        return []
+    return [
+        {
+            "name": str(group.get("name") or group.get("slug") or "Раздел"),
+            "patterns": [
+                {"value": str(rule.get("pattern")), "type": rule.get("type")}
+                for rule in group.get("rules") or []
+                if rule.get("active") and rule.get("pattern")
+            ],
+        }
+        for group in payload.get("project", {}).get("url_groups", [])
+        if group.get("active")
+    ]
+
+
+def _url_matches_pattern(url, pattern):
+    url = str(url or "").strip()
+    rule_type = pattern.get("type") if isinstance(pattern, dict) else ""
+    pattern_value = pattern.get("value") if isinstance(pattern, dict) else pattern
+    pattern_value = str(pattern_value or "").strip()
+    if not url or not pattern_value:
+        return False
+    if rule_type == "starts_with":
+        return url.casefold().startswith(pattern_value.casefold())
+    if rule_type == "contains":
+        return pattern_value.casefold() in url.casefold()
+    if rule_type == "regex":
+        try:
+            return re.search(pattern_value, url) is not None
+        except re.error:
+            return False
+    parsed = urlsplit(url)
+    candidates = (url, parsed.path or "/", f"{parsed.netloc}{parsed.path}")
+    wildcard = "*" in pattern_value or "?" in pattern_value
+    if wildcard:
+        return any(
+            fnmatchcase(candidate.casefold(), pattern_value.casefold()) for candidate in candidates
+        )
+    return any(
+        candidate.casefold().startswith(pattern_value.casefold()) for candidate in candidates
+    )
+
+
+def _url_pattern_label(pattern):
+    return str(pattern.get("value") if isinstance(pattern, dict) else pattern)
+
+
+def _aggregate_configured_groups(rows, groups):
+    result = {
+        group["name"]: {
+            "visits": Decimal(0),
+            "users": Decimal(0),
+            "bounce_sum": Decimal(0),
+        }
+        for group in groups
+    }
+    for row in rows:
+        url = _landing_url(row)
+        visits = _decimal_or_none(row.get("visits")) or Decimal(0)
+        users = _decimal_or_none(row.get("users")) or Decimal(0)
+        bounce = _decimal_or_none(row.get("bounce_rate")) or Decimal(0)
+        for group in groups:
+            if not any(_url_matches_pattern(url, pattern) for pattern in group["patterns"]):
+                continue
+            target = result[group["name"]]
+            target["visits"] += visits
+            target["users"] += users
+            target["bounce_sum"] += bounce * visits
+    for values in result.values():
+        values["bounce_rate"] = (
+            values.pop("bounce_sum") / values["visits"] if values["visits"] else Decimal(0)
+        )
+    return result
+
+
+def _group_period_values(periods, groups):
+    return [
+        {
+            "period_start": period.get("period_start"),
+            "values": _aggregate_configured_groups(period.get("rows") or [], groups),
+        }
+        for period in periods
+    ]
+
+
+def _metrika_groups_chart(periods, groups, *, title="Визиты", only_group=None):
+    grouped = _group_period_values(periods, groups)
+    if not grouped:
+        return None
+    selected = [group for group in groups if not only_group or group["name"] == only_group]
+    if not selected:
+        return None
+    labels = [
+        MONTHS[date.fromisoformat(str(row["period_start"])[:10]).month - 1][:3] for row in grouped
+    ]
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
+        figure, axis = plt.subplots(figsize=(7.2, 3.45), dpi=150, facecolor="white")
+        for index, group in enumerate(selected):
+            values = [row["values"].get(group["name"], {}).get("visits", 0) for row in grouped]
+            pattern_label = " › ".join(
+                _url_pattern_label(pattern) for pattern in group.get("patterns") or []
+            )
+            legend = f"{pattern_label or group['name']}  {_compact_number(values[-1])}"
+            axis.plot(
+                labels,
+                [float(value) for value in values],
+                color=METRIKA_COLORS[index % len(METRIKA_COLORS)],
+                linewidth=1.6,
+                label=legend,
+            )
+        axis.set_title(title, loc="left", fontsize=11, color="#30343B")
+        axis.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _position: _compact_number(value))
+        )
+        axis.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
+        _style_axis(axis)
+        axis.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.14),
+            ncol=min(3, len(selected)),
+            frameon=False,
+            fontsize=7.5,
+        )
+        figure.subplots_adjust(left=0.1, right=0.98, top=0.9, bottom=0.29)
+        return _save_figure(figure)
+
+
+def _group_dynamics_text(periods, groups, *, prefix="Раздел"):
+    grouped = _group_period_values(periods, groups)
+    if not grouped:
+        return "Данные для сравнения отсутствуют."
+    current = grouped[-1]["values"]
+    previous = grouped[-2]["values"] if len(grouped) >= 2 else {}
+    parts = []
+    for group in groups:
+        name = group["name"]
+        delta = _relative_delta(
+            current.get(name, {}).get("visits"), previous.get(name, {}).get("visits")
+        )
+        parts.append(
+            f"{prefix} «{name}»: "
+            + (
+                f"трафик {'увеличился' if delta >= 0 else 'снизился'} на "
+                f"{_number(abs(delta), '%', decimal_places=1)}"
+                if delta is not None
+                else "нет базы сравнения"
+            )
+        )
+    return ". ".join(parts) + "."
+
+
 def _metrika_goals_chart(periods):
     if not periods:
         return None
@@ -1962,18 +2181,26 @@ def _metrika_goals_chart(periods):
     visits = [float(row.get("visits") or 0) for row in periods]
     reaches = [float(row.get("reaches") or 0) for row in periods]
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, left = plt.subplots(figsize=(5.35, 1.7), dpi=150, facecolor="white")
+        figure, left = plt.subplots(figsize=(5.35, 1.62), dpi=150, facecolor="white")
         right = left.twinx()
-        left.plot(labels, conversion, color="#7A45E5", linewidth=1.5)
-        right.plot(labels, visits, color="#FF3399", linewidth=1.5)
-        right.plot(labels, reaches, color="#0FBDA0", linewidth=1.5)
+        left.plot(labels, conversion, color="#7A45E5", linewidth=1.35)
+        right.plot(labels, visits, color="#FF3399", linewidth=1.35)
+        right.plot(labels, reaches, color="#0FBDA0", linewidth=1.35)
         _style_axis(left)
+        left.set_ylim(bottom=0)
+        left.yaxis.set_major_locator(MaxNLocator(nbins=3))
+        left.yaxis.set_major_formatter(FuncFormatter(lambda value, _position: f"{value:g}%"))
         right.grid(False)
+        right.set_ylim(bottom=0)
+        right.yaxis.set_major_locator(MaxNLocator(nbins=3, integer=True))
+        right.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _position: _compact_number(value))
+        )
         right.tick_params(colors="#8B98A7", labelsize=7, length=0)
         for spine in right.spines.values():
             spine.set_visible(False)
         left.tick_params(labelsize=7)
-        figure.subplots_adjust(left=0.1, right=0.9, top=0.94, bottom=0.25)
+        figure.subplots_adjust(left=0.1, right=0.91, top=0.91, bottom=0.24)
         return _save_figure(figure)
 
 
@@ -1999,6 +2226,60 @@ def _landing_pages_table(doc, current, previous, *, limit=20):
     return table
 
 
+def _add_metrics(target, values):
+    visits = _decimal_or_none(values.get("visits")) or Decimal(0)
+    users = _decimal_or_none(values.get("users")) or Decimal(0)
+    bounce = _decimal_or_none(values.get("bounce_rate")) or Decimal(0)
+    target["visits"] += visits
+    target["users"] += users
+    target["bounce_sum"] += bounce * visits
+
+
+def _landing_hierarchy(pages):
+    result = {}
+    for url, values in pages.items():
+        parsed = urlsplit(url)
+        if not parsed.netloc:
+            continue
+        parts = [part for part in parsed.path.split("/") if part]
+        prefixes = [f"{parsed.scheme or 'https'}://{parsed.netloc}/"]
+        for depth in (1, 2):
+            if len(parts) >= depth:
+                prefixes.append(
+                    f"{parsed.scheme or 'https'}://{parsed.netloc}/" + "/".join(parts[:depth]) + "/"
+                )
+        for prefix in dict.fromkeys(prefixes):
+            target = result.setdefault(
+                prefix,
+                {"visits": Decimal(0), "users": Decimal(0), "bounce_sum": Decimal(0)},
+            )
+            _add_metrics(target, values)
+    for values in result.values():
+        values["bounce_rate"] = (
+            values.pop("bounce_sum") / values["visits"] if values["visits"] else Decimal(0)
+        )
+    return result
+
+
+def _landing_hierarchy_table(doc, current, previous):
+    current_hierarchy = _landing_hierarchy(current)
+    previous_hierarchy = _landing_hierarchy(previous)
+    ordered = sorted(
+        current_hierarchy,
+        key=lambda url: (
+            urlsplit(url).netloc,
+            tuple(part.casefold() for part in urlsplit(url).path.split("/") if part),
+        ),
+    )
+    table = _metrika_detail_table(
+        doc,
+        [(url, current_hierarchy[url], previous_hierarchy.get(url, {})) for url in ordered],
+        first_header="Страница входа",
+    )
+    _style_metrika_url_column(table)
+    return table
+
+
 def _landing_comparison_table(doc, current_rows, previous_rows, engine):
     current = _aggregate_detail_rows(
         [row for row in current_rows if _search_engine_name(row) == engine], _landing_url
@@ -2006,46 +2287,50 @@ def _landing_comparison_table(doc, current_rows, previous_rows, engine):
     previous = _aggregate_detail_rows(
         [row for row in previous_rows if _search_engine_name(row) == engine], _landing_url
     )
-    ordered = sorted(current.items(), key=lambda item: item[1]["visits"], reverse=True)[:20]
-    table = _metrika_detail_table(
-        doc,
-        [(url, values, previous.get(url, {})) for url, values in ordered],
-        first_header="Страница входа",
-        metrics=("visits", "users"),
-    )
-    _style_metrika_url_column(table)
-    return table
+    return _landing_hierarchy_table(doc, current, previous)
 
 
 def _goal_card(doc, goal, periods):
-    table = doc.add_table(rows=2, cols=2)
+    table = doc.add_table(rows=2, cols=3)
     table.autofit = False
     table.style = "Report Table"
-    _set_cell_width(table.rows[0].cells[0], 5.2)
-    _set_cell_width(table.rows[0].cells[1], 13.3)
-    heading = table.rows[0].cells[0].merge(table.rows[0].cells[1])
-    heading.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    heading.text = ""
-    title = heading.paragraphs[0]
-    title.paragraph_format.space_after = Pt(1)
+    widths = (5.8, 3.1, 9.6)
+    for row in table.rows:
+        for cell, width in zip(row.cells, widths, strict=True):
+            _set_cell_width(cell, width)
+            _set_cell_margins(cell, top=45, left=80, bottom=45, right=80)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+    title_cell, id_cell, identifier_cell = table.rows[0].cells
+    title_cell.text = ""
+    title = title_cell.paragraphs[0]
+    title.paragraph_format.space_after = Pt(0)
+    icon = title.add_run("◉  ")
+    _style_run(icon, size=8.5, color="7A45E5", bold=True)
     title_run = title.add_run(_clean(goal.get("label") or goal.get("name") or "Цель"))
     title_run.bold = True
-    title_run.font.size = Pt(10)
-    details = heading.add_paragraph()
-    details.paragraph_format.space_after = Pt(0)
-    detail_text = f"ID {_clean(goal.get('goal_id'))}"
-    identifier = goal.get("identifier") or goal.get("condition")
-    if identifier:
-        detail_text += f"    идентификатор: {_clean(identifier)}"
-    detail_run = details.add_run(detail_text)
-    detail_run.font.size = Pt(7.5)
-    detail_run.font.color.rgb = RGBColor.from_string("667180")
+    title_run.font.size = Pt(8.5)
 
-    metrics_cell, chart_cell = table.rows[1].cells
+    id_cell.text = ""
+    id_paragraph = id_cell.paragraphs[0]
+    id_paragraph.paragraph_format.space_after = Pt(0)
+    id_run = id_paragraph.add_run(f"ID {_clean(goal.get('goal_id'))}")
+    _style_run(id_run, size=7.5, color="526071")
+
+    identifier_cell.text = ""
+    identifier_paragraph = identifier_cell.paragraphs[0]
+    identifier_paragraph.paragraph_format.space_after = Pt(0)
+    identifier = goal.get("identifier") or goal.get("condition")
+    identifier_text = f"идентификатор: {_clean(identifier)}" if identifier else ""
+    identifier_run = identifier_paragraph.add_run(identifier_text)
+    _style_run(identifier_run, size=7.5, color="526071")
+
+    metrics_cell = table.rows[1].cells[0]
+    chart_cell = table.rows[1].cells[1].merge(table.rows[1].cells[2])
     metrics_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     chart_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    _set_cell_width(metrics_cell, 5.2)
-    _set_cell_width(chart_cell, 13.3)
+    _set_cell_width(metrics_cell, widths[0])
+    _set_cell_width(chart_cell, widths[1] + widths[2])
     metrics_cell.text = ""
     metrics = (
         ("7A45E5", "Конверсия", _number(goal.get("conversion_rate"), "%", decimal_places=2)),
@@ -2054,14 +2339,15 @@ def _goal_card(doc, goal, periods):
     )
     for index, (color, label, value) in enumerate(metrics):
         paragraph = metrics_cell.paragraphs[0] if index == 0 else metrics_cell.add_paragraph()
-        paragraph.paragraph_format.space_after = Pt(1)
-        marker = paragraph.add_run("■ ")
+        paragraph.paragraph_format.space_after = Pt(2.5)
+        marker = paragraph.add_run("●  ")
         marker.font.color.rgb = RGBColor.from_string(color)
-        marker.font.size = Pt(8)
-        label_run = paragraph.add_run(f"{label}  ")
-        label_run.font.size = Pt(8)
+        marker.font.size = Pt(7)
+        label_run = paragraph.add_run(label)
+        label_run.font.size = Pt(7.5)
+        paragraph.add_run("\t")
         value_run = paragraph.add_run(value)
-        value_run.font.size = Pt(8)
+        value_run.font.size = Pt(7.5)
         value_run.bold = True
     chart_cell.text = ""
     chart = _metrika_goals_chart(periods)
@@ -2069,8 +2355,8 @@ def _goal_card(doc, goal, periods):
         chart_paragraph = chart_cell.paragraphs[0]
         chart_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         chart_paragraph.paragraph_format.space_after = Pt(0)
-        chart_paragraph.add_run().add_picture(chart, width=Cm(12.7))
-    _set_table_borders(table, "E2E7EF", size="3")
+        chart_paragraph.add_run().add_picture(chart, width=Cm(12.3))
+    _set_table_borders(table, "E6EBF2", size="3")
     for row in table.rows:
         _prevent_row_split(row)
     doc.add_paragraph(style="Compact")
@@ -2141,11 +2427,7 @@ def _render_metrika(doc, payload, blocks):
             }
             selected_bar_engines = options.get("metrika_bar_search_engines")
             chart_labels = (
-                [
-                    label
-                    for label in ordered
-                    if _search_engine_code(label) in selected_bar_engines
-                ]
+                [label for label in ordered if _search_engine_code(label) in selected_bar_engines]
                 if selected_bar_engines is not None
                 else ordered
             )
@@ -2175,11 +2457,12 @@ def _render_metrika(doc, payload, blocks):
                 doc,
                 _metrika_comparison_bars(chart_rows, title="Визиты из поисковых систем"),
             )
-            _metrika_detail_table(
+            search_table = _metrika_detail_table(
                 doc,
                 [(label, current[label], previous.get(label, {})) for label in ordered],
                 first_header="Поисковая система",
             )
+            _style_search_engine_icons(search_table)
             movement = []
             for label in ("Яндекс", "Google"):
                 if label not in current:
@@ -2221,8 +2504,12 @@ def _render_metrika(doc, payload, blocks):
             "moscow": "geography_moscow",
             "saint_petersburg": "geography_saint_petersburg",
         }
-        selected = [
+        chart_selected = [
             key for key, flag in flags.items() if options.get(flag, True) and key in current
+        ]
+        table_selected = [
+            *chart_selected,
+            *(key for key in ("undefined", "area_undefined") if key in current),
         ]
         doc.add_paragraph(
             "Сравнение трафика за два последних месяца по основным регионам:",
@@ -2246,20 +2533,23 @@ def _render_metrika(doc, payload, blocks):
                         "current": current[key].get("visits"),
                         "color": METRIKA_COLORS[index % len(METRIKA_COLORS)],
                     }
-                    for index, key in enumerate(selected)
+                    for index, key in enumerate(chart_selected)
                 ],
                 title="Поисковый трафик по регионам",
             ),
         )
-        if selected:
+        if table_selected:
             _metrika_detail_table(
                 doc,
-                [(REGION_LABELS[key], current[key], previous.get(key, {})) for key in selected],
+                [
+                    (REGION_LABELS[key], current[key], previous.get(key, {}))
+                    for key in table_selected
+                ],
                 first_header="Регион",
             )
             total_current = sum((row["visits"] for row in current.values()), Decimal(0))
             total_previous = sum((row["visits"] for row in previous.values()), Decimal(0))
-            for key in selected:
+            for key in table_selected:
                 if key in {"undefined", "area_undefined"}:
                     continue
                 delta = _relative_delta(
@@ -2292,7 +2582,12 @@ def _render_metrika(doc, payload, blocks):
             doc.add_paragraph("Популярные страницы входа", style="Table Heading")
             doc.add_paragraph(
                 "Ниже приведены значения количества переходов в отчётном месяце по сравнению "
-                "с предыдущим только по поисковому трафику по страницам."
+                "с предыдущим "
+                + (
+                    "только по поисковому трафику по страницам."
+                    if options.get("metrika_search_segment", True)
+                    else "по всему трафику по страницам."
+                )
             )
             _landing_pages_table(doc, current_pages, previous_pages)
             total = sum((row["visits"] for row in current_pages.values()), Decimal(0))
@@ -2326,87 +2621,134 @@ def _render_metrika(doc, payload, blocks):
             if text:
                 doc.add_paragraph(". ".join(text) + ".")
         if section_enabled(payload, "metrika_landing_page_comparison"):
+            comparison_periods = _metrika_period_rows(payload, "search_landing_pages")
+            comparison_current = comparison_periods[-1]["rows"] if comparison_periods else []
+            comparison_previous = (
+                comparison_periods[-2]["rows"] if len(comparison_periods) >= 2 else []
+            )
+            commercial_groups = _configured_url_groups(payload, "commercial")
+            named_conclusion_groups = [
+                group
+                for expected in ("лечение", "диагностика", "реабилитация")
+                for group in commercial_groups
+                if group["name"].casefold() == expected
+            ] or commercial_groups
             for engine in ("Яндекс", "Google"):
                 doc.add_paragraph(
                     f"Страницы входа в сравнении двух месяцев для трафика из {engine}:",
                     style="Table Heading",
                 )
-                _landing_comparison_table(doc, current_rows, previous_rows, engine)
-        group_codes = (
-            ("metrika_url_groups", "Сравнение информационных и коммерческих страниц"),
-            ("metrika_sections", "Данные по разделам"),
-            ("metrika_categories", "Основные прорабатываемые категории"),
-        )
-        current_groups = _aggregate_detail_rows(
-            current_rows, lambda row: _url_group(payload, _landing_url(row))
-        )
-        previous_groups = _aggregate_detail_rows(
-            previous_rows, lambda row: _url_group(payload, _landing_url(row))
-        )
-        for code, title in group_codes:
-            if not section_enabled(payload, code):
-                continue
-            doc.add_paragraph(title, style="Table Heading")
-            if code == "metrika_url_groups":
-                ordered_pages = sorted(
-                    current_pages,
-                    key=lambda key: current_pages[key]["visits"],
-                    reverse=True,
-                )[:20]
-                table = _metrika_detail_table(
-                    doc,
-                    [
-                        (url, current_pages[url], previous_pages.get(url, {}))
-                        for url in ordered_pages
-                    ],
-                    first_header="Страница входа",
+                _landing_comparison_table(doc, comparison_current, comparison_previous, engine)
+                if named_conclusion_groups:
+                    engine_periods = [
+                        {
+                            **period,
+                            "rows": [
+                                row
+                                for row in period.get("rows") or []
+                                if _search_engine_name(row) == engine
+                            ],
+                        }
+                        for period in comparison_periods
+                    ]
+                    doc.add_paragraph(
+                        _group_dynamics_text(
+                            engine_periods,
+                            named_conclusion_groups,
+                            prefix=f"{engine}, раздел",
+                        )
+                    )
+        information_groups = _configured_url_groups(payload, "information")
+        commercial_groups = _configured_url_groups(payload, "commercial")
+        if section_enabled(payload, "metrika_url_groups"):
+            doc.add_paragraph(
+                "Сравнение информационных и коммерческих страниц", style="Table Heading"
+            )
+            _landing_hierarchy_table(doc, current_pages, previous_pages)
+            if information_groups:
+                doc.add_paragraph(
+                    _group_dynamics_text(
+                        landing_periods, information_groups, prefix="Информационный раздел"
+                    )
                 )
-                _style_metrika_url_column(table)
-                continue
-            ordered_groups = sorted(
-                current_groups, key=lambda key: current_groups[key]["visits"], reverse=True
-            )
-            _metrika_detail_table(
-                doc,
-                [
-                    (label, current_groups[label], previous_groups.get(label, {}))
-                    for label in ordered_groups
-                ],
-                first_header="Раздел",
-            )
-            for label in ordered_groups:
-                delta = _relative_delta(
-                    current_groups[label]["visits"],
-                    previous_groups.get(label, {}).get("visits"),
+            if commercial_groups:
+                doc.add_paragraph(
+                    _group_dynamics_text(
+                        landing_periods, commercial_groups, prefix="Коммерческий раздел"
+                    )
+                )
+        if section_enabled(payload, "metrika_sections"):
+            doc.add_paragraph("Данные по разделам", style="Table Heading")
+            for heading, groups in (
+                ("Информационные разделы", information_groups),
+                ("Коммерческие разделы", commercial_groups),
+            ):
+                if not groups:
+                    continue
+                doc.add_paragraph(heading, style="Chart Caption")
+                _add_report_picture(doc, _metrika_groups_chart(landing_periods, groups))
+                doc.add_paragraph(_group_dynamics_text(landing_periods, groups))
+            if not information_groups and not commercial_groups:
+                doc.add_paragraph(
+                    "URL-сегменты информационных и коммерческих разделов не настроены.",
+                    style="Data Missing",
+                )
+        if section_enabled(payload, "metrika_categories"):
+            doc.add_paragraph("Основные прорабатываемые категории", style="Table Heading")
+            category_groups = _configured_url_groups(payload, "categories")
+            for group in category_groups:
+                doc.add_paragraph(group["name"], style="Table Heading")
+                _add_report_picture(
+                    doc,
+                    _metrika_groups_chart(
+                        landing_periods,
+                        category_groups,
+                        only_group=group["name"],
+                    ),
                 )
                 doc.add_paragraph(
-                    f"Трафик на раздел «{label}» "
-                    f"{'увеличился' if delta is not None and delta >= 0 else 'снизился'} на "
-                    f"{_number(abs(delta), '%', decimal_places=1) if delta is not None else '—'}."
+                    _group_dynamics_text(landing_periods, [group], prefix="Категория")
+                )
+            if not category_groups:
+                doc.add_paragraph(
+                    "URL-сегменты прорабатываемых категорий не настроены.",
+                    style="Data Missing",
                 )
 
     if section_enabled(payload, "metrika_goals") and period_details:
         robotness = options.get("metrika_robotness", "humans")
+        segment = "search" if options.get("metrika_search_segment", True) else "all"
         goal_periods = []
         for detail in period_details:
             source_payload = _detail_payload(detail)
             goal_periods.append(
                 {
                     "period_start": detail.get("period_start"),
-                    "rows": (source_payload.get("goals_by_robotness") or {}).get(robotness)
+                    "rows": ((source_payload.get("goals_by_segment") or {}).get(segment) or {}).get(
+                        robotness
+                    )
+                    or (source_payload.get("goals_by_robotness") or {}).get(robotness)
                     or source_payload.get("goals")
                     or [],
                 }
             )
         current_goals = goal_periods[-1]["rows"]
         if current_goals:
-            doc.add_paragraph("Сводная информация по конверсии", style="Table Heading")
+            doc.add_heading("4) Сводная информация по конверсии (Яндекс.Метрика).", level=1)
             first_date = date.fromisoformat(str(period_details[0]["period_start"])[:10])
             last_date = date.fromisoformat(str(period_details[-1]["period_end"])[:10])
             robotness_label = "только люди" if robotness == "humans" else "все визиты"
+            segment_label = "переходы из поисковых систем" if segment == "search" else "весь трафик"
+            segment_description = (
+                "только по поисковому трафику" if segment == "search" else "по всему трафику"
+            )
+            doc.add_paragraph(
+                "Ниже приведены диаграммы конверсии за квартал с детализацией "
+                f"по месяцам {segment_description}."
+            )
             doc.add_paragraph(
                 f"Период: {first_date:%d.%m.%Y} — {last_date:%d.%m.%Y} · "
-                f"Детализация: по месяцам · Сегмент: переходы из поисковых систем · "
+                f"Детализация: по месяцам · Сегмент: {segment_label} · "
                 f"Роботность: {robotness_label}",
                 style="Chart Caption",
             )

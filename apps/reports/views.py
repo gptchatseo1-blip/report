@@ -1,5 +1,6 @@
 import base64
 import calendar
+import json
 import logging
 import secrets
 from datetime import date, timedelta
@@ -7,9 +8,10 @@ from datetime import date, timedelta
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Count, Max, OuterRef, Subquery
-from django.http import FileResponse, Http404, HttpResponseNotAllowed
+from django.http import FileResponse, Http404, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -18,8 +20,21 @@ from django.views.decorators.http import require_POST
 from apps.projects.models import Project
 
 from .exporting import ExportBlocked, generate_artifact
-from .forms import NarrativeEditForm, ReportCreateForm
-from .models import GeneratedArtifact, NarrativeBlock, Report, ReportVersion, ValidationIssue
+from .forms import (
+    BOOLEAN_REPORT_FIELDS,
+    PERSISTED_REPORT_FIELDS,
+    NarrativeEditForm,
+    ReportCreateForm,
+    parse_named_url_groups,
+)
+from .models import (
+    GeneratedArtifact,
+    NarrativeBlock,
+    ProjectReportSettings,
+    Report,
+    ReportVersion,
+    ValidationIssue,
+)
 from .narratives import SECTION_ORDER, TOP_SECTION_RANGES, section_enabled
 from .services import ReportVersionDeleteBlocked, create_report_version, delete_report_version
 from .validation import validate_report_version
@@ -87,6 +102,24 @@ METRIC_LABELS = {
     "geography_area_undefined_visits": "Область не определена",
 }
 logger = logging.getLogger(__name__)
+
+
+def _persisted_report_values(form):
+    values = {
+        name: form.cleaned_data.get(name)
+        for name in PERSISTED_REPORT_FIELDS
+        if name in form.cleaned_data
+    }
+    values["topvisor_report_urls"] = form.cleaned_topvisor_report_urls()
+    return values
+
+
+def _url_segment_settings(cleaned):
+    return {
+        "information": parse_named_url_groups(cleaned.get("metrika_info_url_groups")),
+        "commercial": parse_named_url_groups(cleaned.get("metrika_commercial_url_groups")),
+        "categories": parse_named_url_groups(cleaned.get("metrika_category_url_groups")),
+    }
 
 
 def _calendar_months(field, count=3):
@@ -233,10 +266,7 @@ def _source_period_fields(form):
 
 
 def _topvisor_report_link_fields(form):
-    return [
-        {**item, "field": form[item["name"]]}
-        for item in form.topvisor_report_link_fields
-    ]
+    return [{**item, "field": form[item["name"]]} for item in form.topvisor_report_link_fields]
 
 
 def _topvisor_report_url(payload, source):
@@ -345,6 +375,10 @@ def report_create(request, project_id):
                 "data": base64.b64encode(screenshot.read()).decode("ascii"),
             }
         topvisor_report_urls = form.cleaned_topvisor_report_urls()
+        persisted_values = _persisted_report_values(form)
+        ProjectReportSettings.objects.update_or_create(
+            project=project, defaults={"values": persisted_values}
+        )
         version = create_report_version(
             report=report,
             created_by=request.user,
@@ -370,6 +404,7 @@ def report_create(request, project_id):
                             "include_webmaster_popular_queries",
                             "include_metrika",
                             "metrika_robotness",
+                            "metrika_search_segment",
                             "include_metrika_sources_table",
                             "include_metrika_search_engines",
                             "metrika_bar_search_engines",
@@ -387,6 +422,7 @@ def report_create(request, project_id):
                             "include_completed_work",
                         )
                     },
+                    "metrika_url_segments": _url_segment_settings(form.cleaned_data),
                     "topvisor_report_urls": topvisor_report_urls,
                     "topvisor_report_url": (
                         next(iter(topvisor_report_urls.values()), "")
@@ -430,6 +466,46 @@ def report_create(request, project_id):
         },
         status=400,
     )
+
+
+@login_required
+@require_POST
+def report_settings_save(request, project_id):
+    project = get_object_or_404(Project, pk=project_id)
+    try:
+        incoming = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return JsonResponse({"ok": False, "message": "Некорректные настройки."}, status=400)
+    if not isinstance(incoming, dict):
+        return JsonResponse({"ok": False, "message": "Некорректные настройки."}, status=400)
+    values = {}
+    for name in PERSISTED_REPORT_FIELDS:
+        if name not in incoming:
+            continue
+        value = incoming[name]
+        if name in BOOLEAN_REPORT_FIELDS:
+            values[name] = bool(value)
+        elif name == "metrika_bar_search_engines":
+            allowed = {"google", "yandex", "bing", "yahoo"}
+            values[name] = [str(item) for item in (value or []) if str(item) in allowed]
+        else:
+            values[name] = str(value or "")[:20_000]
+    for name in (
+        "metrika_info_url_groups",
+        "metrika_commercial_url_groups",
+        "metrika_category_url_groups",
+    ):
+        try:
+            parse_named_url_groups(values.get(name, ""))
+        except ValidationError as exc:
+            return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
+    raw_urls = incoming.get("topvisor_report_urls") or {}
+    if isinstance(raw_urls, dict):
+        values["topvisor_report_urls"] = {
+            str(key)[:200]: str(value)[:2000] for key, value in raw_urls.items() if value
+        }
+    ProjectReportSettings.objects.update_or_create(project=project, defaults={"values": values})
+    return JsonResponse({"ok": True, "message": "Настройки проекта сохранены."})
 
 
 @login_required
@@ -546,6 +622,13 @@ def _segment_rows(payload, code):
                 row["rows"].sort(
                     key=lambda item: (item.get("position"), str(item.get("query", "")).casefold())
                 )
+                cluster_order = {}
+                for item in row["rows"]:
+                    cluster = str(item.get("group") or "Без группы")
+                    cluster_order.setdefault(cluster, len(cluster_order))
+                    item["cluster_tone"] = (
+                        "cluster-shade" if cluster_order[cluster] % 2 == 0 else "cluster-white"
+                    )
             row_count = len(row["rows"])
             row["row_count"] = row_count
             row["row_word"] = (

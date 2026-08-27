@@ -9,11 +9,12 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.http import HttpResponseBadRequest, HttpResponseNotAllowed
+from django.http import HttpResponseBadRequest, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.metrics.models import SourceSnapshot
 from apps.projects.models import Project, normalize_domain
 
 from .client import MetrikaClient, WebmasterClient, YandexAPIError, exchange_token
@@ -34,6 +35,38 @@ from .services import sync_metrika, sync_webmaster
 METRIKA_SCOPE = "metrika:read"
 WEBMASTER_SCOPES = ("webmaster:hostinfo", "webmaster:verify")
 OAUTH_SCOPES = (METRIKA_SCOPE, *WEBMASTER_SCOPES)
+
+
+def _is_ajax(request):
+    return request.headers.get("x-requested-with") == "XMLHttpRequest"
+
+
+def _sync_json(mapping, source, run, success_message):
+    if run.status != run.Status.SUCCESS:
+        return JsonResponse(
+            {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
+            status=400,
+        )
+    periods = [
+        {
+            "id": str(row.id),
+            "month": row.period_start.strftime("%Y-%m"),
+            "label": f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}",
+        }
+        for row in SourceSnapshot.objects.filter(project=mapping.project, source=source).order_by(
+            "-period_start", "-period_end", "id"
+        )
+    ]
+    return JsonResponse(
+        {
+            "ok": True,
+            "message": success_message,
+            "last_synced_at": timezone.localtime(
+                mapping.last_successful_sync_at or timezone.now()
+            ).strftime("%d.%m.%Y %H:%M"),
+            "periods": periods,
+        }
+    )
 
 
 def _is_other_domain(project, value):
@@ -549,8 +582,21 @@ def sync(request, project_id):
     )
     form = SyncForm(request.POST)
     if not form.is_valid():
+        if _is_ajax(request):
+            return JsonResponse(
+                {"ok": False, "message": "Выберите корректный месяц синхронизации."},
+                status=400,
+            )
         return HttpResponseBadRequest("Некорректный месяц.")
     run = sync_metrika(mapping=mapping, report_month=form.cleaned_data["month"], user=request.user)
+    mapping.refresh_from_db(fields=["last_successful_sync_at"])
+    if _is_ajax(request):
+        return _sync_json(
+            mapping,
+            SourceSnapshot.Source.METRIKA,
+            run,
+            "Данные Яндекс.Метрики синхронизированы.",
+        )
     if run.status == run.Status.SUCCESS:
         from apps.reports.models import Report
 
@@ -582,10 +628,23 @@ def sync_webmaster_view(request, project_id):
     )
     form = SyncForm(request.POST)
     if not form.is_valid():
+        if _is_ajax(request):
+            return JsonResponse(
+                {"ok": False, "message": "Выберите корректный месяц синхронизации."},
+                status=400,
+            )
         return HttpResponseBadRequest("Некорректный месяц.")
     run = sync_webmaster(
         mapping=mapping, report_month=form.cleaned_data["month"], user=request.user
     )
+    mapping.refresh_from_db(fields=["last_successful_sync_at"])
+    if _is_ajax(request):
+        return _sync_json(
+            mapping,
+            SourceSnapshot.Source.WEBMASTER,
+            run,
+            "Данные Яндекс.Вебмастера синхронизированы.",
+        )
     if run.status == run.Status.SUCCESS:
         from apps.reports.models import Report
 

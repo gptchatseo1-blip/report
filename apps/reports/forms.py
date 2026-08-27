@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import date
+from urllib.parse import urlsplit
 
 from django import forms
 from django.utils import timezone
@@ -8,6 +9,76 @@ from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import configuration_id
 
 from .models import NarrativeBlock
+
+PERSISTED_REPORT_FIELDS = (
+    "show_urls",
+    "include_visibility",
+    "include_monthly_dynamics",
+    "include_top_tables",
+    "include_top_5",
+    "include_top_10",
+    "include_top_20",
+    "include_top_11_30",
+    "include_top_30",
+    "include_topvisor_report_link",
+    "include_webmaster",
+    "webmaster_chart_period",
+    "include_webmaster_popular_queries",
+    "webmaster_queries_comment",
+    "include_metrika",
+    "metrika_robotness",
+    "metrika_search_segment",
+    "include_metrika_sources_table",
+    "include_metrika_search_engines",
+    "metrika_bar_search_engines",
+    "include_metrika_geography",
+    "geography_moscow",
+    "geography_saint_petersburg",
+    "include_metrika_landing_pages",
+    "include_metrika_landing_page_comparison",
+    "include_metrika_url_groups",
+    "include_metrika_sections",
+    "include_metrika_categories",
+    "include_metrika_goals",
+    "metrika_info_url_groups",
+    "metrika_commercial_url_groups",
+    "metrika_category_url_groups",
+    "include_completed_work",
+)
+
+BOOLEAN_REPORT_FIELDS = frozenset(
+    name
+    for name in PERSISTED_REPORT_FIELDS
+    if name.startswith("include_")
+    or name
+    in {"show_urls", "metrika_search_segment", "geography_moscow", "geography_saint_petersburg"}
+)
+
+
+def parse_named_url_groups(value):
+    """Parse user-friendly `name | mask` lines into deterministic URL groups."""
+    groups = {}
+    for line_number, raw_line in enumerate(str(value or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            label, pattern = (part.strip() for part in line.split("|", 1))
+        else:
+            pattern = line
+            parsed = urlsplit(pattern.replace("*", ""))
+            parts = [part for part in parsed.path.split("/") if part]
+            label = parts[-1].replace("-", " ").strip().capitalize() if parts else parsed.netloc
+        if not label or not pattern:
+            raise forms.ValidationError(
+                f"Строка {line_number}: укажите название и URL через символ |."
+            )
+        if len(label) > 200 or len(pattern) > 2000:
+            raise forms.ValidationError(f"Строка {line_number}: значение слишком длинное.")
+        groups.setdefault(label, [])
+        if pattern not in groups[label]:
+            groups[label].append(pattern)
+    return [{"name": name, "patterns": patterns} for name, patterns in groups.items()]
 
 
 class ReportCreateForm(forms.Form):
@@ -23,10 +94,10 @@ class ReportCreateForm(forms.Form):
     include_top_tables = forms.BooleanField(
         label="Таблицы запросов по позициям", required=False, initial=True
     )
-    include_top_5 = forms.BooleanField(label="TOP-5", required=False, initial=True)
+    include_top_5 = forms.BooleanField(label="TOP-5", required=False, initial=False)
     include_top_10 = forms.BooleanField(label="TOP-10", required=False, initial=True)
     include_top_20 = forms.BooleanField(label="TOP-20", required=False, initial=False)
-    include_top_11_30 = forms.BooleanField(label="TOP-11–30", required=False, initial=True)
+    include_top_11_30 = forms.BooleanField(label="TOP-11–30", required=False, initial=False)
     include_top_30 = forms.BooleanField(label="TOP-30", required=False, initial=False)
     include_topvisor_report_link = forms.BooleanField(
         label="Ссылка на подробный отчёт Topvisor", required=False, initial=False
@@ -72,6 +143,7 @@ class ReportCreateForm(forms.Form):
         initial="humans",
         choices=(("humans", "Только люди"), ("all", "Люди и роботы")),
     )
+    metrika_search_segment = forms.BooleanField(label="Сегмент ПС", required=False, initial=True)
     include_metrika_sources_table = forms.BooleanField(
         label="Таблица по всем источникам", required=False, initial=False
     )
@@ -116,6 +188,41 @@ class ReportCreateForm(forms.Form):
     include_metrika_categories = forms.BooleanField(
         label="Основные прорабатываемые категории", required=False, initial=False
     )
+    metrika_info_url_groups = forms.CharField(
+        label="Информационные разделы",
+        required=False,
+        widget=forms.Textarea(
+            attrs={
+                "rows": 6,
+                "placeholder": "Статьи | https://site.ru/articles/*\nFAQ | https://site.ru/faq/*",
+            }
+        ),
+        help_text=(
+            "Одна строка: название раздела | URL или маска. Одинаковое название можно повторять."
+        ),
+    )
+    metrika_commercial_url_groups = forms.CharField(
+        label="Коммерческие разделы",
+        required=False,
+        widget=forms.Textarea(
+            attrs={
+                "rows": 6,
+                "placeholder": "Лечение | https://site.ru/treatment/*\nДиагностика | https://site.ru/diagnostics/*",
+            }
+        ),
+        help_text="Одна строка: название раздела | URL или маска.",
+    )
+    metrika_category_url_groups = forms.CharField(
+        label="Прорабатываемые категории",
+        required=False,
+        widget=forms.Textarea(
+            attrs={
+                "rows": 7,
+                "placeholder": "Оперативная гинекология | https://site.ru/medicine/operativnaya-ginekologiya/*",
+            }
+        ),
+        help_text="Для каждой категории задайте название и её URL/маски.",
+    )
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
     include_completed_work = forms.BooleanField(
         label="Выполненные работы", required=False, initial=True
@@ -144,6 +251,11 @@ class ReportCreateForm(forms.Form):
             ):
                 self.fields[name].choices = []
             return
+        saved = getattr(getattr(project, "report_settings", None), "values", {}) or {}
+        if not self.is_bound:
+            for name in PERSISTED_REPORT_FIELDS:
+                if name in saved and name in self.fields:
+                    self.initial[name] = saved[name]
         from apps.metrics.models import RankingSnapshot, SourceSnapshot
 
         for source, relation in (
@@ -181,7 +293,12 @@ class ReportCreateForm(forms.Form):
                 label=f"{engine_label} · {region or 'Регион не указан'}",
                 required=False,
                 assume_scheme="https",
-                widget=forms.URLInput(attrs={"placeholder": "https://..."}),
+                widget=forms.URLInput(
+                    attrs={
+                        "placeholder": "https://...",
+                        "data-topvisor-configuration-id": configuration_id(configuration),
+                    }
+                ),
             )
             self.topvisor_report_link_fields.append(
                 {
@@ -191,6 +308,11 @@ class ReportCreateForm(forms.Form):
                     "region": region,
                 }
             )
+            if not self.is_bound:
+                saved_urls = saved.get("topvisor_report_urls") or {}
+                saved_url = saved_urls.get(str(configuration_id(configuration)))
+                if saved_url:
+                    self.initial[field_name] = saved_url
         for item in configurations:
             raw = str(
                 item.get("search_engine")
@@ -346,6 +468,21 @@ class ReportCreateForm(forms.Form):
         if image and image.size > 5 * 1024 * 1024:
             raise forms.ValidationError("Размер скриншота не должен превышать 5 МБ.")
         return image
+
+    def clean_metrika_info_url_groups(self):
+        value = self.cleaned_data.get("metrika_info_url_groups", "")
+        parse_named_url_groups(value)
+        return value
+
+    def clean_metrika_commercial_url_groups(self):
+        value = self.cleaned_data.get("metrika_commercial_url_groups", "")
+        parse_named_url_groups(value)
+        return value
+
+    def clean_metrika_category_url_groups(self):
+        value = self.cleaned_data.get("metrika_category_url_groups", "")
+        parse_named_url_groups(value)
+        return value
 
 
 class NarrativeEditForm(forms.ModelForm):

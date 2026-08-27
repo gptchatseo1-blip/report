@@ -58,6 +58,7 @@ LAST_SIGN_SEARCH_ENGINE = "ym:s:lastSignSearchEngineRoot"
 START_URL = "ym:s:startURL"
 SEARCH_HUMANS_FILTER = "ym:s:lastSignTrafficSource=='organic' AND ym:s:isRobot=='No'"
 SEARCH_ALL_FILTER = "ym:s:lastSignTrafficSource=='organic'"
+HUMANS_FILTER = "ym:s:isRobot=='No'"
 SEARCH_DETAIL_METRICS = "ym:s:visits,ym:s:users,ym:s:bounceRate"
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
@@ -106,6 +107,25 @@ def _detail_rows(response, dimension_count):
     return rows
 
 
+def _stat_with_filter(client, filter_value, **params):
+    if filter_value:
+        params["filters"] = filter_value
+    return client.stat(**params)
+
+
+def _geography_totals(rows):
+    totals = {code: Decimal(0) for code in GEOGRAPHY_CODES}
+    for row in rows:
+        normalized = {
+            "dimensions": row.get("dimensions") or [],
+            "metrics": [row.get("visits")],
+        }
+        code = _geography_code(normalized)
+        if code:
+            totals[code] += _value(normalized, 0)
+    return totals
+
+
 def _geography_code(item):
     area = _dimension_name(item, 0)
     city = _dimension_name(item, 1)
@@ -114,10 +134,10 @@ def _geography_code(item):
     if city in {"санкт-петербург", "saint petersburg", "st. petersburg"}:
         return "saint_petersburg"
     undefined = {"", "не определено", "undefined", "not defined"}
-    if city in undefined:
-        return "undefined"
     if area in undefined | {"область не определена", "area not defined"}:
         return "area_undefined"
+    if city in undefined:
+        return "undefined"
     return None
 
 
@@ -135,6 +155,30 @@ def _fetch_month(client, mapping, month):
         {"code": code, "value": str(_value(row, i)), "unit": unit, "dimensions": {}}
         for i, (code, unit) in enumerate(zip(METRIC_CODES, METRIC_UNITS, strict=True))
     ]
+    traffic_by_segment = {"search": {}, "all": {}}
+    for segment, robotness, filter_value in (
+        ("search", "humans", SEARCH_HUMANS_FILTER),
+        ("search", "all", SEARCH_ALL_FILTER),
+        ("all", "humans", HUMANS_FILTER),
+        ("all", "all", None),
+    ):
+        variant_row = row
+        if filter_value is not None:
+            response = _stat_with_filter(
+                client, filter_value, **common, metrics=",".join(CORE_METRICS)
+            )
+            variant_row = (response.get("data") or [{"metrics": response.get("totals", [])}])[0]
+        values = {code: str(_value(variant_row, index)) for index, code in enumerate(METRIC_CODES)}
+        traffic_by_segment[segment][robotness] = values
+        points.extend(
+            {
+                "code": f"segment_{segment}_{robotness}_{code}",
+                "value": value,
+                "unit": unit,
+                "dimensions": {"segment": segment, "robotness": robotness},
+            }
+            for (code, value), unit in zip(values.items(), METRIC_UNITS, strict=True)
+        )
     sources = client.stat(
         **common, metrics="ym:s:visits", dimensions=LAST_SIGN_TRAFFIC_SOURCE, limit=10000
     )
@@ -191,51 +235,93 @@ def _fetch_month(client, mapping, month):
             }
         )
 
-    search_details = {}
-    for robotness, filter_value in (
-        ("humans", SEARCH_HUMANS_FILTER),
-        ("all", SEARCH_ALL_FILTER),
+    detail_variants = {"search": {}, "all": {}}
+    for segment, robotness, filter_value in (
+        ("search", "humans", SEARCH_HUMANS_FILTER),
+        ("search", "all", SEARCH_ALL_FILTER),
+        ("all", "humans", HUMANS_FILTER),
+        ("all", "all", None),
     ):
-        search_details[robotness] = {
-            "search_engines": _detail_rows(
-                client.stat(
+        geography_details = _detail_rows(
+            _stat_with_filter(
+                client,
+                filter_value,
+                **common,
+                metrics=SEARCH_DETAIL_METRICS,
+                dimensions=f"{REGION_AREA},{REGION_CITY}",
+                limit=10000,
+                sort="-ym:s:visits",
+                lang="ru",
+            ),
+            2,
+        )
+        if segment == "search":
+            search_engines = _detail_rows(
+                _stat_with_filter(
+                    client,
+                    filter_value,
                     **common,
                     metrics=SEARCH_DETAIL_METRICS,
                     dimensions=LAST_SIGN_SEARCH_ENGINE,
-                    filters=filter_value,
                     limit=100,
                     sort="-ym:s:visits",
                     lang="ru",
                 ),
                 1,
-            ),
-            "search_geography": _detail_rows(
-                client.stat(
-                    **common,
-                    metrics=SEARCH_DETAIL_METRICS,
-                    dimensions=f"{REGION_AREA},{REGION_CITY}",
-                    filters=filter_value,
-                    limit=10000,
-                    sort="-ym:s:visits",
-                    lang="ru",
-                ),
-                2,
-            ),
-            "landing_pages": _detail_rows(
-                client.stat(
+            )
+            landing_pages = _detail_rows(
+                _stat_with_filter(
+                    client,
+                    filter_value,
                     **common,
                     metrics=SEARCH_DETAIL_METRICS,
                     dimensions=f"{LAST_SIGN_SEARCH_ENGINE},{START_URL}",
-                    filters=filter_value,
                     limit=10000,
                     sort="-ym:s:visits",
                     lang="ru",
                 ),
                 2,
-            ),
+            )
+        else:
+            search_engines = []
+            landing_pages = _detail_rows(
+                _stat_with_filter(
+                    client,
+                    filter_value,
+                    **common,
+                    metrics=SEARCH_DETAIL_METRICS,
+                    dimensions=START_URL,
+                    limit=10000,
+                    sort="-ym:s:visits",
+                    lang="ru",
+                ),
+                1,
+            )
+            for landing in landing_pages:
+                landing["dimensions"].insert(0, {"id": "all", "name": "Все источники"})
+        detail_variants[segment][robotness] = {
+            "search_engines": search_engines,
+            "search_geography": geography_details,
+            "landing_pages": landing_pages,
         }
-    cleaned_goals = []
-    goals_by_robotness = {"humans": [], "all": []}
+        for code, value in _geography_totals(geography_details).items():
+            points.append(
+                {
+                    "code": f"segment_{segment}_{robotness}_geography_{code}_visits",
+                    "value": str(value),
+                    "unit": "count",
+                    "dimensions": {
+                        "segment": segment,
+                        "robotness": robotness,
+                        "region_code": code,
+                    },
+                }
+            )
+    search_details = detail_variants["search"]
+    goals_by_segment = {
+        "search": {"humans": [], "all": []},
+        "all": {"humans": [], "all": []},
+    }
     for goal in mapping.selected_goals:
         goal_id = str(goal["id"])
         dimensions = {
@@ -244,57 +330,71 @@ def _fetch_month(client, mapping, month):
             "label": goal.get("label", goal.get("name", "")),
             "identifier": goal.get("identifier", ""),
         }
-        goal_values = {}
-        for robotness, filter_value in (
-            ("humans", SEARCH_HUMANS_FILTER),
-            ("all", SEARCH_ALL_FILTER),
+        goal_values = {"search": {}, "all": {}}
+        for segment, robotness, filter_value in (
+            ("search", "humans", SEARCH_HUMANS_FILTER),
+            ("search", "all", SEARCH_ALL_FILTER),
+            ("all", "humans", HUMANS_FILTER),
+            ("all", "all", None),
         ):
-            response = client.stat(
+            response = _stat_with_filter(
+                client,
+                filter_value,
                 **common,
                 metrics=(
                     f"{GOAL_CONVERSION_RATE.format(id=goal_id)},"
                     f"{GOAL_VISITS.format(id=goal_id)},"
                     f"{GOAL_REACHES.format(id=goal_id)}"
                 ),
-                filters=filter_value,
             )
             goal_row = (response.get("data") or [{"metrics": response.get("totals", [])}])[0]
-            goal_values[robotness] = {
+            goal_values[segment][robotness] = {
                 **dimensions,
                 "conversion_rate": str(_value(goal_row, 0)),
                 "visits": str(_value(goal_row, 1)),
                 "reaches": str(_value(goal_row, 2)),
             }
-            goals_by_robotness[robotness].append(goal_values[robotness])
-        points.extend(
-            (
+            goals_by_segment[segment][robotness].append(goal_values[segment][robotness])
+            for metric_name, unit in (
+                ("visits", "count"),
+                ("reaches", "count"),
+                ("conversion_rate", "percent"),
+            ):
+                points.append(
+                    {
+                        "code": (f"segment_{segment}_{robotness}_goal_{goal_id}_{metric_name}"),
+                        "value": goal_values[segment][robotness][metric_name],
+                        "unit": unit,
+                        "dimensions": {
+                            **dimensions,
+                            "segment": segment,
+                            "robotness": robotness,
+                        },
+                    }
+                )
+        for metric_name, unit in (
+            ("visits", "count"),
+            ("reaches", "count"),
+            ("conversion_rate", "percent"),
+        ):
+            points.append(
                 {
-                    "code": f"goal_{goal_id}_visits",
-                    "value": goal_values["humans"]["visits"],
-                    "unit": "count",
+                    "code": f"goal_{goal_id}_{metric_name}",
+                    "value": goal_values["search"]["humans"][metric_name],
+                    "unit": unit,
                     "dimensions": dimensions,
-                },
-                {
-                    "code": f"goal_{goal_id}_reaches",
-                    "value": goal_values["humans"]["reaches"],
-                    "unit": "count",
-                    "dimensions": dimensions,
-                },
-                {
-                    "code": f"goal_{goal_id}_conversion_rate",
-                    "value": goal_values["humans"]["conversion_rate"],
-                    "unit": "percent",
-                    "dimensions": dimensions,
-                },
+                }
             )
-        )
-        cleaned_goals.append(goal_values["humans"])
+    goals_by_robotness = goals_by_segment["search"]
+    cleaned_goals = goals_by_robotness["humans"]
     return {
         "period_start": month.isoformat(),
         "period_end": month_end(month).isoformat(),
         "metrics": points,
         "traffic_sources": cleaned_sources,
         "geography": geography_rows,
+        "traffic_by_segment": traffic_by_segment,
+        "detail_variants": detail_variants,
         "search_details": search_details,
         # Keep direct aliases for older exporters; detailed reports select the
         # requested robotness variant from search_details.
@@ -308,6 +408,7 @@ def _fetch_month(client, mapping, month):
         },
         "goals": cleaned_goals,
         "goals_by_robotness": goals_by_robotness,
+        "goals_by_segment": goals_by_segment,
         "sampled": bool(totals.get("sampled")),
         "sample_share": totals.get("sample_share"),
     }

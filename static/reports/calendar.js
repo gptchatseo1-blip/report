@@ -73,14 +73,13 @@
   });
 
   document.querySelectorAll('[data-source-period-picker]').forEach(root => {
-    const checkboxes = [...root.querySelectorAll('[data-period-month]')];
-    if (!checkboxes.length) return;
     const start = root.querySelector('[data-period-start]');
     const end = root.querySelector('[data-period-end]');
     const summary = root.querySelector('[data-period-summary]');
     const label = root.dataset.sourceLabel;
     const syncMonth = document.querySelector(`[data-sync-month-for="${root.dataset.sourceName}"]`);
     const syncButton = root.querySelector('[data-source-sync-button]');
+    const checkboxes = () => [...root.querySelectorAll('[data-period-month]')];
 
     function updateSyncMonth() {
       if (!syncMonth) return;
@@ -95,7 +94,7 @@
     }
 
     function updateSummary() {
-      const count = checkboxes.filter(input => input.checked).length;
+      const count = checkboxes().filter(input => input.checked).length;
       summary.textContent = `${label}: выбрано ${count} ${periodWord(count)}.`;
     }
 
@@ -104,7 +103,7 @@
         if (changed === start) end.value = start.value;
         else start.value = end.value;
       }
-      checkboxes.forEach(input => {
+      checkboxes().forEach(input => {
         const month = input.dataset.periodMonth;
         input.checked = (!start.value || month >= start.value) && (!end.value || month <= end.value);
       });
@@ -113,7 +112,7 @@
     }
 
     function updateRangeFromExactSelection() {
-      const selected = checkboxes.filter(input => input.checked).map(input => input.dataset.periodMonth).sort();
+      const selected = checkboxes().filter(input => input.checked).map(input => input.dataset.periodMonth).sort();
       start.value = selected[0] || '';
       end.value = selected.at(-1) || '';
       updateSummary();
@@ -122,7 +121,18 @@
 
     start.addEventListener('change', () => applyRange(start));
     end.addEventListener('change', () => applyRange(end));
-    checkboxes.forEach(input => input.addEventListener('change', updateRangeFromExactSelection));
+    function bindCheckboxes() {
+      checkboxes().forEach(input => {
+        if (input.dataset.rangeBound) return;
+        input.dataset.rangeBound = '1';
+        input.addEventListener('change', updateRangeFromExactSelection);
+      });
+    }
+    root.addEventListener('source-periods-updated', () => {
+      bindCheckboxes();
+      updateRangeFromExactSelection();
+    });
+    bindCheckboxes();
     updateSummary();
     updateSyncMonth();
   });
