@@ -29,6 +29,21 @@ def test_work_pages_require_login(client, project):
 
 
 @pytest.mark.django_db
+def test_report_builder_uses_compact_spoilers_and_rich_work_editor(client, user, project):
+    client.force_login(user)
+    html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
+
+    assert "Включены по умолчанию" not in html
+    assert "по умолчанию скрыто" not in html
+    assert "Настроить информационные и коммерческие разделы" in html
+    assert "Настроить прорабатываемые категории" in html
+    assert "Выбрать ПС для столбчатого графика" in html
+    assert "Заполнить выполненные работы" in html
+    assert 'data-rich-command="insertOrderedList"' in html
+    assert "data-rich-link" in html
+
+
+@pytest.mark.django_db
 def test_report_creation_normalizes_month_and_reuses_report(client, user, project):
     client.force_login(user)
     url = reverse("reports:report-create", args=[project.id])
@@ -39,6 +54,28 @@ def test_report_creation_normalizes_month_and_reuses_report(client, user, projec
     second = client.post(url, {"month": "2026-07"})
     assert second.url == reverse("reports:report-detail", args=[report.id])
     assert Report.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_report_creation_freezes_project_specific_rich_work_text(client, user, project):
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "month": "2026-07",
+            "include_completed_work": "on",
+            "completed_work_text": (
+                "<p><strong>Проверка</strong></p><ul><li>Готово</li></ul>"
+                '<a href="https://example.test/result">Результат</a>'
+            ),
+        },
+    )
+
+    assert response.status_code == 302
+    options = ReportDatasetSnapshot.objects.get().payload["display_options"]
+    assert options["completed_work_text"].startswith("<p><strong>Проверка</strong>")
+    assert "https://example.test/result" in options["completed_work_text"]
+    assert project.report_settings.values["completed_work_text"] == options["completed_work_text"]
 
 
 @pytest.mark.django_db

@@ -6,6 +6,30 @@
   const csrf = form.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
   let saveTimer;
 
+  const richSource = form.querySelector('.rich-text-source');
+  const richEditor = form.querySelector('[data-rich-editor]');
+  if (richSource && richEditor) {
+    richEditor.innerHTML = richSource.value;
+    richEditor.addEventListener('input', () => {
+      richSource.value = richEditor.innerHTML;
+      richSource.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+    form.querySelectorAll('[data-rich-command]').forEach(button => {
+      button.addEventListener('click', () => {
+        richEditor.focus();
+        document.execCommand(button.dataset.richCommand, false);
+        richEditor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+    });
+    form.querySelector('[data-rich-link]')?.addEventListener('click', () => {
+      const url = prompt('Укажите полный адрес ссылки, начиная с https://');
+      if (!url) return;
+      richEditor.focus();
+      document.execCommand('createLink', false, url);
+      richEditor.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+  }
+
   function showNotice(message, kind = 'success') {
     if (!notice) return;
     notice.textContent = message;

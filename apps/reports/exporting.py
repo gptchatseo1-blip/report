@@ -8,9 +8,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from fnmatch import fnmatchcase
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -22,6 +24,7 @@ from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
@@ -32,14 +35,14 @@ matplotlib.use("Agg")
 from matplotlib import dates as mdates  # noqa: E402
 from matplotlib import pyplot as plt  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
-from matplotlib.patches import FancyBboxPatch, Patch  # noqa: E402
+from matplotlib.patches import FancyBboxPatch, Patch, Rectangle  # noqa: E402
 from matplotlib.ticker import FuncFormatter, MaxNLocator  # noqa: E402
 
 from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, ValidationIssue
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.4-project-segments"
+GENERATOR_VERSION = "mvp1.5-report-polish"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -1143,7 +1146,16 @@ def _style_provider_table(table):
                 _style_run(run, size=11)
 
 
-def _paired_metric_cell(cell, code, current, previous, *, lower_is_better=False):
+def _paired_metric_cell(
+    cell,
+    code,
+    current,
+    previous,
+    *,
+    lower_is_better=False,
+    show_change=True,
+    color_previous=False,
+):
     cell.text = _provider_value(code, current)
     current_paragraph = cell.paragraphs[0]
     current_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1155,7 +1167,15 @@ def _paired_metric_cell(cell, code, current, previous, *, lower_is_better=False)
     previous_paragraph = cell.add_paragraph(_provider_value(code, previous))
     previous_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     previous_paragraph.paragraph_format.space_after = Pt(0)
-    _style_run(previous_paragraph.runs[0], size=7.5, color="7A8796")
+    previous_color = (
+        _change_color(current, previous, lower_is_better=lower_is_better)
+        if color_previous
+        else "7A8796"
+    )
+    _style_run(previous_paragraph.runs[0], size=7.5, color=previous_color)
+
+    if not show_change:
+        return
 
     current_number = _decimal_or_none(current)
     previous_number = _decimal_or_none(previous)
@@ -1293,6 +1313,8 @@ def _webmaster_popular_table(doc, current_rows, previous_rows):
                 current.get(code),
                 before.get(code),
                 lower_is_better=code == "average_position",
+                show_change=False,
+                color_previous=True,
             )
     _style_provider_table(table)
     _set_table_borders(table, "D7DADF", size="3")
@@ -2173,25 +2195,71 @@ def _group_dynamics_text(periods, groups, *, prefix="Раздел"):
     return ". ".join(parts) + "."
 
 
-def _metrika_goals_chart(periods):
-    if not periods:
-        return None
+def _metrika_goal_image(goal, periods):
     labels = [_month_short(row["period_start"]) for row in periods]
     conversion = [float(row.get("conversion_rate") or 0) for row in periods]
     visits = [float(row.get("visits") or 0) for row in periods]
     reaches = [float(row.get("reaches") or 0) for row in periods]
-    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, left = plt.subplots(figsize=(5.35, 1.62), dpi=150, facecolor="white")
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 8}):
+        figure = plt.figure(figsize=(7.2, 2.15), dpi=150, facecolor="white")
+        figure.patches.append(
+            Rectangle(
+                (0.008, 0.025),
+                0.984,
+                0.95,
+                transform=figure.transFigure,
+                fill=False,
+                edgecolor="#E3E8EF",
+                linewidth=0.8,
+            )
+        )
+        title = _clean(goal.get("label") or goal.get("name") or "Цель")
+        title_lines = textwrap.wrap(title, width=30)[:2] or ["Цель"]
+        figure.text(
+            0.03, 0.9, "\n".join(title_lines), ha="left", va="top", fontsize=9, weight="bold"
+        )
+        figure.text(
+            0.42,
+            0.9,
+            f"ID {_clean(goal.get('goal_id'))}",
+            ha="left",
+            va="top",
+            fontsize=7,
+            color="#526071",
+        )
+        identifier = goal.get("identifier") or goal.get("condition")
+        figure.text(
+            0.59,
+            0.9,
+            f"идентификатор: {_clean(identifier)}" if identifier else "",
+            ha="left",
+            va="top",
+            fontsize=7,
+            color="#526071",
+        )
+        metrics = (
+            ("#7A45E5", "Конверсия", _number(goal.get("conversion_rate"), "%", decimal_places=2)),
+            ("#FF3399", "Целевые визиты", _number(goal.get("visits"), decimal_places=0)),
+            ("#0FBDA0", "Достижения цели", _number(goal.get("reaches"), decimal_places=0)),
+        )
+        for y, (color, label, value) in zip((0.59, 0.43, 0.27), metrics, strict=True):
+            figure.text(0.035, y, "●", color=color, fontsize=8, va="center")
+            figure.text(0.052, y, label, color="#30343B", fontsize=7.5, va="center")
+            figure.text(0.31, y, value, color="#30343B", fontsize=7.5, va="center", ha="right")
+
+        left = figure.add_axes((0.42, 0.17, 0.53, 0.48))
         right = left.twinx()
-        left.plot(labels, conversion, color="#7A45E5", linewidth=1.35)
-        right.plot(labels, visits, color="#FF3399", linewidth=1.35)
-        right.plot(labels, reaches, color="#0FBDA0", linewidth=1.35)
+        x = list(range(len(labels)))
+        left.plot(x, conversion, color="#7A45E5", linewidth=1.25)
+        right.plot(x, visits, color="#FF3399", linewidth=1.25)
+        right.plot(x, reaches, color="#0FBDA0", linewidth=1.25)
+        left.set_xticks(x, labels)
         _style_axis(left)
-        left.set_ylim(bottom=0)
+        left.set_ylim(0, max(max(conversion, default=0) * 1.2, 0.01))
         left.yaxis.set_major_locator(MaxNLocator(nbins=3))
         left.yaxis.set_major_formatter(FuncFormatter(lambda value, _position: f"{value:g}%"))
         right.grid(False)
-        right.set_ylim(bottom=0)
+        right.set_ylim(0, max(max([*visits, *reaches], default=0) * 1.2, 1))
         right.yaxis.set_major_locator(MaxNLocator(nbins=3, integer=True))
         right.yaxis.set_major_formatter(
             FuncFormatter(lambda value, _position: _compact_number(value))
@@ -2199,22 +2267,40 @@ def _metrika_goals_chart(periods):
         right.tick_params(colors="#8B98A7", labelsize=7, length=0)
         for spine in right.spines.values():
             spine.set_visible(False)
-        left.tick_params(labelsize=7)
-        figure.subplots_adjust(left=0.1, right=0.91, top=0.91, bottom=0.24)
+        left.tick_params(labelsize=6.5)
         return _save_figure(figure)
 
 
-def _style_metrika_url_column(table):
+def _project_favicon_bytes(payload):
+    encoded = (payload.get("project", {}).get("favicon") or {}).get("data")
+    if not encoded:
+        return None
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def _style_metrika_url_column(table, payload):
+    favicon = _project_favicon_bytes(payload)
     for row in table.rows[1:]:
         cell = row.cells[0]
-        for run in cell.paragraphs[0].runs:
-            run.font.color.rgb = RGBColor.from_string("5277D5")
-            run.font.size = Pt(7.5)
-        depth = min(4, len([part for part in urlsplit(cell.text).path.split("/") if part]))
-        cell.paragraphs[0].paragraph_format.left_indent = Cm(depth * 0.16)
+        label = cell.text
+        paragraph = cell.paragraphs[0]
+        paragraph.clear()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        if favicon:
+            paragraph.add_run().add_picture(io.BytesIO(favicon), width=Cm(0.28))
+            paragraph.add_run("  ")
+        link = paragraph.add_run(label)
+        link.font.color.rgb = RGBColor.from_string("5277D5")
+        link.font.size = Pt(7.5)
+        depth = min(4, len([part for part in urlsplit(label).path.split("/") if part]))
+        paragraph.paragraph_format.left_indent = Cm(depth * 0.16)
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
 
-def _landing_pages_table(doc, current, previous, *, limit=20):
+def _landing_pages_table(doc, payload, current, previous, *, limit=20):
     ordered = sorted(current.items(), key=lambda item: item[1]["visits"], reverse=True)[:limit]
     table = _metrika_detail_table(
         doc,
@@ -2222,7 +2308,7 @@ def _landing_pages_table(doc, current, previous, *, limit=20):
         first_header="Страница входа",
         metrics=("visits", "users"),
     )
-    _style_metrika_url_column(table)
+    _style_metrika_url_column(table, payload)
     return table
 
 
@@ -2261,106 +2347,106 @@ def _landing_hierarchy(pages):
     return result
 
 
-def _landing_hierarchy_table(doc, current, previous):
+def _landing_hierarchy_order(hierarchy):
+    by_domain = {}
+    for url in hierarchy:
+        parsed = urlsplit(url)
+        by_domain.setdefault(parsed.netloc, []).append(url)
+    ordered = []
+    for domain in sorted(by_domain):
+        urls = by_domain[domain]
+        roots = [url for url in urls if not [p for p in urlsplit(url).path.split("/") if p]]
+        ordered.extend(sorted(roots))
+        sections = [
+            url for url in urls if len([p for p in urlsplit(url).path.split("/") if p]) == 1
+        ]
+        sections.sort(key=lambda url: (-hierarchy[url]["visits"], url.casefold()))
+        for section in sections:
+            ordered.append(section)
+            section_part = [p for p in urlsplit(section).path.split("/") if p][0]
+            children = [
+                url
+                for url in urls
+                if len([p for p in urlsplit(url).path.split("/") if p]) == 2
+                and [p for p in urlsplit(url).path.split("/") if p][0] == section_part
+            ]
+            children.sort(key=lambda url: (-hierarchy[url]["visits"], url.casefold()))
+            ordered.extend(children)
+    return ordered
+
+
+def _landing_hierarchy_table(doc, payload, current, previous):
     current_hierarchy = _landing_hierarchy(current)
     previous_hierarchy = _landing_hierarchy(previous)
-    ordered = sorted(
-        current_hierarchy,
-        key=lambda url: (
-            urlsplit(url).netloc,
-            tuple(part.casefold() for part in urlsplit(url).path.split("/") if part),
-        ),
-    )
+    ordered = _landing_hierarchy_order(current_hierarchy)
     table = _metrika_detail_table(
         doc,
         [(url, current_hierarchy[url], previous_hierarchy.get(url, {})) for url in ordered],
         first_header="Страница входа",
     )
-    _style_metrika_url_column(table)
+    _style_metrika_url_column(table, payload)
     return table
 
 
-def _landing_comparison_table(doc, current_rows, previous_rows, engine):
+def _landing_comparison_table(doc, payload, current_rows, previous_rows, engine):
     current = _aggregate_detail_rows(
         [row for row in current_rows if _search_engine_name(row) == engine], _landing_url
     )
     previous = _aggregate_detail_rows(
         [row for row in previous_rows if _search_engine_name(row) == engine], _landing_url
     )
-    return _landing_hierarchy_table(doc, current, previous)
+    return _landing_hierarchy_table(doc, payload, current, previous)
+
+
+def _configured_group_label(group):
+    for pattern in group.get("patterns") or []:
+        value = _url_pattern_label(pattern).strip()
+        if value.startswith(("http://", "https://")):
+            return value.rstrip("*?")
+    return group.get("name") or "Раздел"
+
+
+def _configured_groups_table(doc, payload, current_rows, previous_rows, groups):
+    domain = payload.get("project", {}).get("normalized_domain") or ""
+    current_pages = _aggregate_detail_rows(current_rows, _landing_url)
+    previous_pages = _aggregate_detail_rows(previous_rows, _landing_url)
+    current_hierarchy = _landing_hierarchy(current_pages)
+    previous_hierarchy = _landing_hierarchy(previous_pages)
+    root_url, current_root = next(
+        (
+            (url, values)
+            for url, values in current_hierarchy.items()
+            if urlsplit(url).path in {"", "/"}
+        ),
+        (
+            f"https://{domain}/" if domain else "Главная страница",
+            {"visits": 0, "users": 0, "bounce_rate": 0},
+        ),
+    )
+    previous_root = next(
+        (values for url, values in previous_hierarchy.items() if urlsplit(url).path in {"", "/"}),
+        {"visits": 0, "users": 0, "bounce_rate": 0},
+    )
+    rows = [(root_url, current_root, previous_root)]
+    group_rows = []
+    for group in groups:
+        current = _aggregate_configured_groups(current_rows, [group]).get(group["name"], {})
+        previous = _aggregate_configured_groups(previous_rows, [group]).get(group["name"], {})
+        group_rows.append((_configured_group_label(group), current, previous))
+    group_rows.sort(key=lambda item: (-item[1].get("visits", 0), item[0].casefold()))
+    rows.extend(group_rows)
+    table = _metrika_detail_table(doc, rows, first_header="Страница входа")
+    _style_metrika_url_column(table, payload)
+    return table
 
 
 def _goal_card(doc, goal, periods):
-    table = doc.add_table(rows=2, cols=3)
-    table.autofit = False
-    table.style = "Report Table"
-    widths = (5.8, 3.1, 9.6)
-    for row in table.rows:
-        for cell, width in zip(row.cells, widths, strict=True):
-            _set_cell_width(cell, width)
-            _set_cell_margins(cell, top=45, left=80, bottom=45, right=80)
-            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-
-    title_cell, id_cell, identifier_cell = table.rows[0].cells
-    title_cell.text = ""
-    title = title_cell.paragraphs[0]
-    title.paragraph_format.space_after = Pt(0)
-    icon = title.add_run("◉  ")
-    _style_run(icon, size=8.5, color="7A45E5", bold=True)
-    title_run = title.add_run(_clean(goal.get("label") or goal.get("name") or "Цель"))
-    title_run.bold = True
-    title_run.font.size = Pt(8.5)
-
-    id_cell.text = ""
-    id_paragraph = id_cell.paragraphs[0]
-    id_paragraph.paragraph_format.space_after = Pt(0)
-    id_run = id_paragraph.add_run(f"ID {_clean(goal.get('goal_id'))}")
-    _style_run(id_run, size=7.5, color="526071")
-
-    identifier_cell.text = ""
-    identifier_paragraph = identifier_cell.paragraphs[0]
-    identifier_paragraph.paragraph_format.space_after = Pt(0)
-    identifier = goal.get("identifier") or goal.get("condition")
-    identifier_text = f"идентификатор: {_clean(identifier)}" if identifier else ""
-    identifier_run = identifier_paragraph.add_run(identifier_text)
-    _style_run(identifier_run, size=7.5, color="526071")
-
-    metrics_cell = table.rows[1].cells[0]
-    chart_cell = table.rows[1].cells[1].merge(table.rows[1].cells[2])
-    metrics_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    chart_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    _set_cell_width(metrics_cell, widths[0])
-    _set_cell_width(chart_cell, widths[1] + widths[2])
-    metrics_cell.text = ""
-    metrics = (
-        ("7A45E5", "Конверсия", _number(goal.get("conversion_rate"), "%", decimal_places=2)),
-        ("FF3399", "Целевые визиты", _number(goal.get("visits"), decimal_places=0)),
-        ("0FBDA0", "Достижения цели", _number(goal.get("reaches"), decimal_places=0)),
-    )
-    for index, (color, label, value) in enumerate(metrics):
-        paragraph = metrics_cell.paragraphs[0] if index == 0 else metrics_cell.add_paragraph()
-        paragraph.paragraph_format.space_after = Pt(2.5)
-        marker = paragraph.add_run("●  ")
-        marker.font.color.rgb = RGBColor.from_string(color)
-        marker.font.size = Pt(7)
-        label_run = paragraph.add_run(label)
-        label_run.font.size = Pt(7.5)
-        paragraph.add_run("\t")
-        value_run = paragraph.add_run(value)
-        value_run.font.size = Pt(7.5)
-        value_run.bold = True
-    chart_cell.text = ""
-    chart = _metrika_goals_chart(periods)
-    if chart:
-        chart_paragraph = chart_cell.paragraphs[0]
-        chart_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        chart_paragraph.paragraph_format.space_after = Pt(0)
-        chart_paragraph.add_run().add_picture(chart, width=Cm(12.3))
-    _set_table_borders(table, "E6EBF2", size="3")
-    for row in table.rows:
-        _prevent_row_split(row)
-    doc.add_paragraph(style="Compact")
-    return table
+    image = _metrika_goal_image(goal, periods)
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(6)
+    paragraph.add_run().add_picture(image, width=Cm(16.5))
+    return paragraph
 
 
 def _render_metrika(doc, payload, blocks):
@@ -2589,7 +2675,7 @@ def _render_metrika(doc, payload, blocks):
                     else "по всему трафику по страницам."
                 )
             )
-            _landing_pages_table(doc, current_pages, previous_pages)
+            _landing_pages_table(doc, payload, current_pages, previous_pages)
             total = sum((row["visits"] for row in current_pages.values()), Decimal(0))
             root = next(
                 (
@@ -2638,7 +2724,9 @@ def _render_metrika(doc, payload, blocks):
                     f"Страницы входа в сравнении двух месяцев для трафика из {engine}:",
                     style="Table Heading",
                 )
-                _landing_comparison_table(doc, comparison_current, comparison_previous, engine)
+                _landing_comparison_table(
+                    doc, payload, comparison_current, comparison_previous, engine
+                )
                 if named_conclusion_groups:
                     engine_periods = [
                         {
@@ -2664,7 +2752,13 @@ def _render_metrika(doc, payload, blocks):
             doc.add_paragraph(
                 "Сравнение информационных и коммерческих страниц", style="Table Heading"
             )
-            _landing_hierarchy_table(doc, current_pages, previous_pages)
+            _configured_groups_table(
+                doc,
+                payload,
+                current_rows,
+                previous_rows,
+                [*information_groups, *commercial_groups],
+            )
             if information_groups:
                 doc.add_paragraph(
                     _group_dynamics_text(
@@ -2795,8 +2889,108 @@ def _change_rows(payload, source, codes):
     return rows
 
 
+def _add_hyperlink(paragraph, text, url, *, bold=False, italic=False):
+    relationship = paragraph.part.relate_to(url, RT.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship)
+    run = OxmlElement("w:r")
+    properties = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "5277D5")
+    properties.append(color)
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    properties.append(underline)
+    if bold:
+        properties.append(OxmlElement("w:b"))
+    if italic:
+        properties.append(OxmlElement("w:i"))
+    run.append(properties)
+    content = OxmlElement("w:t")
+    content.text = text
+    run.append(content)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+class _RichTextDocxParser(HTMLParser):
+    def __init__(self, doc):
+        super().__init__(convert_charrefs=True)
+        self.doc = doc
+        self.paragraph = None
+        self.lists = []
+        self.bold = False
+        self.italic = False
+        self.link = ""
+
+    def _paragraph(self, style=None):
+        self.paragraph = self.doc.add_paragraph(style=style)
+        self.paragraph.paragraph_format.space_after = Pt(4)
+        return self.paragraph
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.casefold()
+        if tag == "p":
+            self._paragraph()
+        elif tag in {"ul", "ol"}:
+            self.lists.append(tag)
+        elif tag == "li":
+            kind = "Number" if self.lists and self.lists[-1] == "ol" else "Bullet"
+            level = min(len(self.lists), 3)
+            style = f"List {kind}" + (f" {level}" if level > 1 else "")
+            self._paragraph(style)
+        elif tag == "br":
+            (self.paragraph or self._paragraph()).add_run("\n")
+        elif tag == "strong":
+            self.bold = True
+        elif tag == "em":
+            self.italic = True
+        elif tag == "a":
+            self.link = dict(attrs).get("href", "")
+
+    def handle_endtag(self, tag):
+        tag = tag.casefold()
+        if tag in {"p", "li"}:
+            self.paragraph = None
+        elif tag in {"ul", "ol"} and self.lists:
+            self.lists.pop()
+        elif tag == "strong":
+            self.bold = False
+        elif tag == "em":
+            self.italic = False
+        elif tag == "a":
+            self.link = ""
+
+    def handle_data(self, data):
+        if not data:
+            return
+        paragraph = self.paragraph or self._paragraph()
+        if self.link:
+            _add_hyperlink(
+                paragraph,
+                data,
+                self.link,
+                bold=self.bold,
+                italic=self.italic,
+            )
+            return
+        run = paragraph.add_run(data)
+        run.bold = self.bold
+        run.italic = self.italic
+
+
+def _render_rich_text(doc, value):
+    parser = _RichTextDocxParser(doc)
+    parser.feed(value)
+    parser.close()
+
+
 def _render_work(doc, payload, narrative):
     show_urls = payload.get("display_options", {}).get("show_urls", True)
+    manual_text = payload.get("display_options", {}).get("completed_work_text", "").strip()
+    if manual_text:
+        _render_rich_text(doc, manual_text)
+        return
     works = payload.get("completed_work", [])
     if works:
         for work in works:

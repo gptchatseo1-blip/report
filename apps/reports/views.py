@@ -36,6 +36,7 @@ from .models import (
     ValidationIssue,
 )
 from .narratives import SECTION_ORDER, TOP_SECTION_RANGES, section_enabled
+from .rich_text import sanitize_report_html
 from .services import ReportVersionDeleteBlocked, create_report_version, delete_report_version
 from .validation import validate_report_version
 
@@ -420,6 +421,7 @@ def report_create(request, project_id):
                             "include_metrika_categories",
                             "include_metrika_goals",
                             "include_completed_work",
+                            "completed_work_text",
                         )
                     },
                     "metrika_url_segments": _url_segment_settings(form.cleaned_data),
@@ -489,7 +491,11 @@ def report_settings_save(request, project_id):
             allowed = {"google", "yandex", "bing", "yahoo"}
             values[name] = [str(item) for item in (value or []) if str(item) in allowed]
         else:
-            values[name] = str(value or "")[:20_000]
+            values[name] = (
+                sanitize_report_html(value)
+                if name == "completed_work_text"
+                else str(value or "")[:20_000]
+            )
     for name in (
         "metrika_info_url_groups",
         "metrika_commercial_url_groups",

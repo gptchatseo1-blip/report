@@ -1,3 +1,4 @@
+import base64
 import io
 import re
 import shutil
@@ -19,8 +20,14 @@ from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.metrics.synthetic import sync_synthetic_metrics
 from apps.projects.models import Project
 from apps.reports.exporting import (
+    _configure_document,
+    _configured_groups_table,
+    _goal_card,
+    _landing_hierarchy_order,
+    _landing_pages_table,
     _monthly_topvisor_rows,
     _position_fill,
+    _webmaster_popular_table,
     _webmaster_query_summary_from_changes,
     generate_artifact,
 )
@@ -82,6 +89,164 @@ def version():
 def _artifact_bytes(artifact):
     with artifact.file.open("rb") as stream:
         return stream.read()
+
+
+def test_clickable_queries_show_colored_previous_value_without_percent_line():
+    document = Document()
+    _configure_document(document, "example.test", date(2026, 7, 1))
+    table = _webmaster_popular_table(
+        document,
+        [{"query": "пример", "shows": 120, "clicks": 12, "ctr": 10, "average_position": 4}],
+        [{"query": "пример", "shows": 100, "clicks": 10, "ctr": 9, "average_position": 5}],
+    )
+
+    for cell in table.rows[1].cells[1:]:
+        assert len(cell.paragraphs) == 2
+        assert "%" not in cell.paragraphs[1].text
+        assert str(cell.paragraphs[1].runs[0].font.color.rgb) == "26A95B"
+
+
+def test_landing_hierarchy_sorts_sections_and_children_by_current_visits():
+    def values(visits):
+        return {"visits": Decimal(visits)}
+
+    hierarchy = {
+        "https://site.test/": values(200),
+        "https://site.test/blog/": values(70),
+        "https://site.test/blog/b/": values(20),
+        "https://site.test/blog/a/": values(40),
+        "https://site.test/services/": values(100),
+        "https://site.test/services/b/": values(30),
+        "https://site.test/services/a/": values(60),
+    }
+
+    assert _landing_hierarchy_order(hierarchy) == [
+        "https://site.test/",
+        "https://site.test/services/",
+        "https://site.test/services/a/",
+        "https://site.test/services/b/",
+        "https://site.test/blog/",
+        "https://site.test/blog/a/",
+        "https://site.test/blog/b/",
+    ]
+
+
+def test_landing_url_rows_include_centered_project_favicon():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 7, 1))
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/"
+        "6e0zNwAAAABJRU5ErkJggg=="
+    )
+    payload = {
+        "project": {"favicon": {"mime_type": "image/png", "data": base64.b64encode(png).decode()}}
+    }
+    current = {
+        "https://site.test/": {"visits": Decimal(10), "users": Decimal(8)},
+        "https://site.test/blog/": {"visits": Decimal(7), "users": Decimal(6)},
+    }
+
+    table = _landing_pages_table(document, payload, current, {})
+
+    assert len(document.inline_shapes) == 2
+    assert all(
+        row.cells[0].vertical_alignment == WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        for row in table.rows[1:]
+    )
+
+
+def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 7, 1))
+
+    def row(url, visits):
+        return {
+            "dimensions": [{"name": "Яндекс"}, {"name": url}],
+            "visits": visits,
+            "users": visits,
+            "bounce_rate": 10,
+        }
+
+    current = [
+        row("https://site.test/blog/a/", 30),
+        row("https://site.test/blog/b/", 20),
+        row("https://site.test/services/a/", 80),
+    ]
+    groups = [
+        {"name": "Статьи", "patterns": ["https://site.test/blog/*"]},
+        {"name": "Услуги", "patterns": ["https://site.test/services/*"]},
+    ]
+
+    table = _configured_groups_table(
+        document,
+        {"project": {"normalized_domain": "site.test"}},
+        current,
+        [],
+        groups,
+    )
+    labels = [row.cells[0].text for row in table.rows[1:]]
+
+    assert labels == [
+        "https://site.test/",
+        "https://site.test/services/",
+        "https://site.test/blog/",
+    ]
+    assert not any("/a/" in label or "/b/" in label for label in labels)
+
+
+def test_each_metrika_goal_is_rendered_as_one_separate_image():
+    document = Document()
+    _configure_document(document, "example.test", date(2026, 7, 1))
+    periods = [
+        {"period_start": "2026-05-01", "conversion_rate": 1, "visits": 10, "reaches": 11},
+        {"period_start": "2026-06-01", "conversion_rate": 2, "visits": 20, "reaches": 22},
+        {"period_start": "2026-07-01", "conversion_rate": 3, "visits": 30, "reaches": 33},
+    ]
+    _goal_card(
+        document,
+        {"label": "Запись", "goal_id": "1", "conversion_rate": 3, "visits": 30, "reaches": 33},
+        periods,
+    )
+    _goal_card(
+        document,
+        {"label": "Звонок", "goal_id": "2", "conversion_rate": 2, "visits": 20, "reaches": 22},
+        periods,
+    )
+
+    assert len(document.inline_shapes) == 2
+    assert len(document.tables) == 0
+
+
+def test_manual_completed_work_keeps_paragraphs_lists_and_clickable_links(
+    version, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    payload = version.snapshot.payload
+    payload.setdefault("display_options", {}).update(
+        {
+            "include_completed_work": True,
+            "completed_work_text": (
+                "<p><strong>Выполнен аудит</strong></p>"
+                "<ul><li>Исправлены метатеги</li></ul>"
+                '<ol><li><a href="https://example.test/result">Проверить результат</a></li></ol>'
+            ),
+        }
+    )
+    ReportDatasetSnapshot.objects.filter(pk=version.snapshot.pk).update(payload=payload)
+    version.snapshot.refresh_from_db()
+
+    data = _artifact_bytes(generate_artifact(version=version, artifact_type="docx", is_draft=True))
+    document = Document(io.BytesIO(data))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert "Выполнен аудит" in text
+    assert "Исправлены метатеги" in text
+    assert "Проверить результат" in text
+    assert any(paragraph.style.name == "List Bullet" for paragraph in document.paragraphs)
+    assert any(paragraph.style.name == "List Number" for paragraph in document.paragraphs)
+    with zipfile.ZipFile(io.BytesIO(data)) as package:
+        assert b"w:hyperlink" in package.read("word/document.xml")
+        assert b"https://example.test/result" in package.read("word/_rels/document.xml.rels")
 
 
 def test_legacy_webmaster_changes_use_provider_fidelity_summary_table_data():
@@ -290,13 +455,15 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         assert table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 11
         assert table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 11
         metric_paragraphs = table.rows[1].cells[1].paragraphs
-        assert [paragraph.runs[0].font.size.pt for paragraph in metric_paragraphs] == [
-            9,
-            7.5,
-            7.5,
-        ]
-        assert str(metric_paragraphs[1].runs[0].font.color.rgb) == "7A8796"
-        assert str(metric_paragraphs[2].runs[0].font.color.rgb) in {"26A95B", "F04444"}
+        expected_sizes = (
+            [9, 7.5, 7.5] if table.rows[0].cells[0].text == "Группа запросов" else [9, 7.5]
+        )
+        assert [paragraph.runs[0].font.size.pt for paragraph in metric_paragraphs] == expected_sizes
+        if table.rows[0].cells[0].text == "Группа запросов":
+            assert str(metric_paragraphs[1].runs[0].font.color.rgb) == "7A8796"
+            assert str(metric_paragraphs[2].runs[0].font.color.rgb) in {"26A95B", "F04444"}
+        else:
+            assert str(metric_paragraphs[1].runs[0].font.color.rgb) in {"26A95B", "F04444"}
     landing_tables = [
         table for table in document.tables if table.rows[0].cells[0].text == "Страница входа"
     ]
@@ -304,13 +471,10 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
     assert all(
         "Ур. 1" not in [cell.text for cell in table.rows[0].cells] for table in landing_tables
     )
-    goal_table = next(
-        table
+    assert not any(
+        len(table.rows[0].cells) == 3 and "ID request" in table.rows[0].cells[1].text
         for table in document.tables
-        if len(table.rows[0].cells) == 3 and "ID request" in table.rows[0].cells[1].text
     )
-    assert "Записаться на приём" in goal_table.rows[0].cells[0].text
-    assert "идентификатор: request_form" in goal_table.rows[0].cells[2].text
     assert "4) Сводная информация по конверсии (Яндекс.Метрика)." in text
     assert "Ниже приведены диаграммы конверсии" in text
     assert text.index("Динамика по поисковым системам за квартал:") < text.index(
