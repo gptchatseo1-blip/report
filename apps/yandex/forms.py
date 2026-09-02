@@ -64,6 +64,7 @@ class SyncForm(forms.Form):
     month = forms.DateField(
         input_formats=["%Y-%m"], widget=forms.DateInput(attrs={"type": "month"})
     )
+    force_refresh = forms.BooleanField(required=False)
 
 
 class HostForm(forms.Form):

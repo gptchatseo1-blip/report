@@ -39,8 +39,8 @@
 
   function settingsPayload() {
     const payload = {};
-    form.querySelectorAll('.report-options input, .report-options select, .report-options textarea').forEach(field => {
-      if (!field.name || field.type === 'file') return;
+    form.querySelectorAll('.report-options input, .report-options select, .report-options textarea, .project-storage-settings select').forEach(field => {
+      if (!field.name || field.type === 'file' || field.form !== form) return;
       if (field.dataset.topvisorConfigurationId) {
         payload.topvisor_report_urls ||= {};
         if (field.value.trim()) payload.topvisor_report_urls[field.dataset.topvisorConfigurationId] = field.value.trim();
@@ -84,6 +84,22 @@
   form.querySelector('.report-options')?.addEventListener('input', event => {
     if (event.target.matches('textarea, input[type=url], input[type=text]')) scheduleSave(700);
   });
+  form.querySelector('.project-storage-settings')?.addEventListener('change', () => scheduleSave(150));
+
+  document.querySelectorAll('[data-report-goal-picker]').forEach(picker => {
+    const count = picker.querySelector('[data-goal-count]');
+    const update = () => {
+      if (count) count.textContent = picker.querySelectorAll('input[name=goals]:checked').length;
+    };
+    picker.addEventListener('change', update);
+    update();
+  });
+
+  document.querySelectorAll('[data-confirm]').forEach(button => {
+    button.addEventListener('click', event => {
+      if (!confirm(button.dataset.confirm)) event.preventDefault();
+    });
+  });
 
   form.querySelectorAll('[data-clear-setting]').forEach(button => {
     button.addEventListener('click', () => {
@@ -109,25 +125,19 @@
   function replacePeriods(card, periods, sourceName) {
     const optionsRoot = card.querySelector('[data-period-options]');
     const range = card.querySelector('[data-period-range]');
-    const details = card.querySelector('[data-period-details]');
     const empty = card.querySelector('[data-source-empty]');
     if (!optionsRoot) return;
     optionsRoot.replaceChildren();
     periods.forEach((period, index) => {
-      const label = document.createElement('label');
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.name = sourceName;
       input.value = period.id;
       input.dataset.periodMonth = period.month;
       input.checked = index < 3;
-      const text = document.createElement('span');
-      text.textContent = period.label;
-      label.append(input, text);
-      optionsRoot.append(label);
+      optionsRoot.append(input);
     });
     range.hidden = periods.length === 0;
-    details.hidden = periods.length === 0;
     empty.hidden = periods.length > 0;
     card.dispatchEvent(new CustomEvent('source-periods-updated'));
   }
@@ -161,6 +171,8 @@
           status.dataset.kind = 'success';
           status.textContent = data.message;
         }
+        const forceRefresh = document.querySelector(`[name=force_refresh][form="${syncForm.id}"]`);
+        if (forceRefresh) forceRefresh.checked = false;
       } catch (error) {
         if (status) {
           status.dataset.kind = 'error';

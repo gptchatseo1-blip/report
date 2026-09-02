@@ -14,6 +14,11 @@ urlpatterns = [
         views.report_settings_save,
         name="report-settings-save",
     ),
+    path(
+        "projects/<uuid:project_id>/reports/source-history/clear/",
+        views.source_history_clear,
+        name="source-history-clear",
+    ),
     path("reports/<uuid:report_id>/", views.report_detail, name="report-detail"),
     path("reports/<uuid:report_id>/versions/create/", views.version_create, name="version-create"),
     path("versions/<uuid:version_id>/", views.version_detail, name="version-detail"),

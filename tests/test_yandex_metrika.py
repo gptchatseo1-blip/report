@@ -12,7 +12,7 @@ from django.utils import timezone
 from apps.metrics.models import MetricPoint, SourceSnapshot
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
-from apps.reports.models import Report
+from apps.reports.models import ProjectReportSettings, Report
 from apps.reports.services import create_report_version
 from apps.yandex.client import MetrikaClient, YandexAPIError
 from apps.yandex.crypto import decrypt_token, encrypt_token
@@ -22,7 +22,7 @@ from apps.yandex.models import (
     YandexMetrikaSyncRun,
     YandexOAuthState,
 )
-from apps.yandex.services import sync_metrika
+from apps.yandex.services import prune_sync_runs, sync_metrika
 from apps.yandex.views import consume_oauth_state
 
 pytestmark = pytest.mark.django_db
@@ -208,7 +208,6 @@ def test_goals_use_compact_picker_with_selected_count(
         selected_goals=[{"id": "7", "name": "Order", "label": "Order"}],
     )
     client.force_login(user)
-    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     monkeypatch.setattr(
         MetrikaClient,
         "goals",
@@ -218,12 +217,15 @@ def test_goals_use_compact_picker_with_selected_count(
         ],
     )
 
-    html = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+    connection_html = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
+    html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
 
-    assert mapping.counter_id in html
-    assert '<details class="goal-picker">' in html
+    assert mapping.counter_id in connection_html
+    assert "Выбрать цели" not in connection_html
+    assert "data-report-goal-picker" in html
+    assert "compact-goal-options" in html
     assert "Выбрать цели · выбрано <span data-goal-count>1</span>" in html
-    assert 'value="7" checked' in html
+    assert 'value="7" form="report-metrika-goals-form" checked' in html
     assert 'value="8"' in html
 
 
@@ -259,6 +261,61 @@ def test_metrika_run_can_only_be_deleted_by_post_and_keeps_snapshots(
 
     assert response.status_code == 302
     assert not YandexMetrikaSyncRun.objects.filter(pk=run.id).exists()
+    assert SourceSnapshot.objects.filter(pk=snapshot.pk).exists()
+
+
+def test_project_cleanup_removes_selected_source_month_and_keeps_report_snapshot(
+    client, identity, yandex_settings
+):
+    user, project = identity
+    mapping = mapping_with_goal(identity, yandex_settings)
+    sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
+    report = Report.objects.create(project=project, report_month=date(2026, 3, 1))
+    version = create_report_version(report=report, created_by=user)
+    frozen_snapshot_id = version.snapshot.id
+    client.force_login(user)
+    url = reverse("reports:source-history-clear", args=[project.id])
+
+    response = client.post(
+        url,
+        {"source": "yandex_metrika", "action": "delete_selected", "months": ["2026-01"]},
+    )
+
+    assert response.status_code == 302
+    assert not SourceSnapshot.objects.filter(
+        project=project, period_start=date(2026, 1, 1)
+    ).exists()
+    assert (
+        Report.objects.get(pk=report.pk).versions.get(pk=version.pk).snapshot.id
+        == frozen_snapshot_id
+    )
+    client.post(url, {"source": "yandex_metrika", "action": "delete_runs"})
+    assert not YandexMetrikaSyncRun.objects.filter(mapping=mapping).exists()
+
+
+def test_sync_log_retention_does_not_delete_monthly_snapshots(identity, yandex_settings):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    old = YandexMetrikaSyncRun.objects.create(mapping=mapping, report_month=date(2025, 1, 1))
+    recent = YandexMetrikaSyncRun.objects.create(mapping=mapping, report_month=date(2026, 9, 1))
+    YandexMetrikaSyncRun.objects.filter(pk=old.pk).update(
+        started_at=timezone.now() - timedelta(days=400)
+    )
+    snapshot = SourceSnapshot.objects.create(
+        project=mapping.project,
+        source=SourceSnapshot.Source.METRIKA,
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 1, 31),
+        checksum="kept",
+        payload={},
+    )
+    ProjectReportSettings.objects.create(
+        project=mapping.project, values={"sync_log_retention_months": "12"}
+    )
+
+    prune_sync_runs(mapping.project)
+
+    assert not YandexMetrikaSyncRun.objects.filter(pk=old.pk).exists()
+    assert YandexMetrikaSyncRun.objects.filter(pk=recent.pk).exists()
     assert SourceSnapshot.objects.filter(pk=snapshot.pk).exists()
 
 
@@ -351,7 +408,10 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert points["geography_saint_petersburg_visits"].numeric_value == 20
     assert points["geography_undefined_visits"].numeric_value == 3
     assert points["geography_area_undefined_visits"].numeric_value == 5
-    sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
+    cached_api = FakeMetrika()
+    cached = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=cached_api)
+    assert cached_api.calls == []
+    assert (cached.fetched_period_count, cached.reused_period_count) == (0, 3)
     assert SourceSnapshot.objects.filter(project=mapping.project).count() == 3
     assert MetricPoint.objects.filter(snapshot__project=mapping.project).count() == len(points) * 3
 
@@ -362,15 +422,72 @@ def test_late_failure_preserves_existing_snapshots(identity, yandex_settings):
     before = list(
         SourceSnapshot.objects.filter(project=mapping.project).values_list("id", "checksum")
     )
-    # Four calls per month with one selected goal: fail in the third month's first request.
+    # Force refresh and fail after two complete months; old snapshots stay intact.
     run = sync_metrika(
-        mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika(fail_call=9)
+        mapping=mapping,
+        report_month=date(2026, 3, 1),
+        client=FakeMetrika(fail_call=41),
+        force_refresh=True,
     )
     assert run.status == "failed"
     assert (
         list(SourceSnapshot.objects.filter(project=mapping.project).values_list("id", "checksum"))
         == before
     )
+
+
+def test_goal_requests_are_batched_and_rate_limit_is_reported(identity, yandex_settings):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    mapping.selected_goals = [
+        {"id": str(index), "name": f"Goal {index}", "label": f"Goal {index}"}
+        for index in range(1, 27)
+    ]
+    mapping.save(update_fields=["selected_goals", "updated_at"])
+    api = FakeMetrika()
+
+    run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
+
+    assert run.status == run.Status.SUCCESS
+    assert len(api.calls) == 108
+    limited = sync_metrika(
+        mapping=mapping,
+        report_month=date(2026, 3, 1),
+        client=FakeMetrikaRateLimited(),
+        force_refresh=True,
+    )
+    assert limited.status == limited.Status.FAILED
+    assert "Лимит запросов" in limited.error_message
+
+
+class FakeMetrikaRateLimited(FakeMetrika):
+    def stat(self, **params):
+        raise YandexAPIError("safe", http_status=429)
+
+
+class FakeMetrikaWithDeletedGoal(FakeMetrika):
+    def stat(self, **params):
+        metrics = params["metrics"]
+        if "goal13" in metrics:
+            raise YandexAPIError("safe", http_status=400, error_code="invalid_parameter")
+        return super().stat(**params)
+
+
+def test_deleted_goal_is_skipped_without_losing_other_goals(identity, yandex_settings):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    mapping.selected_goals.append({"id": "13", "name": "Deleted", "label": "Deleted"})
+    mapping.save(update_fields=["selected_goals", "updated_at"])
+
+    run = sync_metrika(
+        mapping=mapping,
+        report_month=date(2026, 3, 1),
+        client=FakeMetrikaWithDeletedGoal(),
+    )
+
+    codes = set(SourceSnapshot.objects.first().metrics.values_list("metric_code", flat=True))
+    assert run.status == run.Status.SUCCESS
+    assert run.unavailable_goal_ids == ["13"]
+    assert "goal_7_visits" in codes
+    assert not any("goal_13" in code for code in codes)
 
 
 def test_report_snapshot_contains_safe_source_metadata(identity, yandex_settings):

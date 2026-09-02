@@ -46,7 +46,11 @@ def context(settings):
 
 
 class FakeWebmaster:
+    def __init__(self):
+        self.user_calls = 0
+
     def user(self):
+        self.user_calls += 1
         return {"user_id": 7}
 
     def hosts(self, user_id):
@@ -197,7 +201,10 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
         "date_to": "2026-03-31",
     }
     ids = list(snapshots.values_list("id", flat=True))
-    sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=FakeWebmaster())
+    cached_api = FakeWebmaster()
+    cached = sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=cached_api)
+    assert cached_api.user_calls == 0
+    assert (cached.fetched_period_count, cached.reused_period_count) == (0, 3)
     assert (
         list(
             SourceSnapshot.objects.filter(source=SourceSnapshot.Source.WEBMASTER)
@@ -206,6 +213,17 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
         )
         == ids
     )
+
+    refreshed_api = FakeWebmaster()
+    refreshed = sync_webmaster(
+        mapping=item,
+        report_month=date(2026, 3, 1),
+        client=refreshed_api,
+        force_refresh=True,
+    )
+    assert refreshed.status == refreshed.Status.SUCCESS
+    assert refreshed_api.user_calls == 1
+    assert (refreshed.fetched_period_count, refreshed.reused_period_count) == (3, 0)
 
 
 def test_zero_impressions_does_not_invent_ctr(context):

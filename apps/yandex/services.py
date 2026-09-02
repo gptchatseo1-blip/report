@@ -3,7 +3,7 @@ import json
 import logging
 from calendar import monthrange
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from urllib.parse import urlsplit
 
@@ -62,6 +62,9 @@ HUMANS_FILTER = "ym:s:isRobot=='No'"
 SEARCH_DETAIL_METRICS = "ym:s:visits,ym:s:users,ym:s:bounceRate"
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-02-v1"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-02-v1"
+GOALS_PER_REQUEST = 6
 
 
 def shift_month(value, offset):
@@ -71,6 +74,73 @@ def shift_month(value, offset):
 
 def month_end(value):
     return date(value.year, value.month, monthrange(value.year, value.month)[1])
+
+
+def _configuration_fingerprint(mapping, collector_version):
+    configuration = {
+        "collector_version": collector_version,
+        "source_id": str(getattr(mapping, "counter_id", "") or getattr(mapping, "host_id", "")),
+    }
+    if hasattr(mapping, "selected_goals"):
+        configuration["goals"] = [
+            {
+                "id": str(goal.get("id", "")),
+                "name": str(goal.get("name", "")),
+                "label": str(goal.get("label", "")),
+                "identifier": str(goal.get("identifier", "")),
+            }
+            for goal in mapping.selected_goals
+        ]
+    return hashlib.sha256(
+        json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def _reusable_snapshots(mapping, source, months, fingerprint, *, force_refresh=False):
+    if force_refresh:
+        return {}
+    expected = {(month, month_end(month)) for month in months}
+    rows = SourceSnapshot.objects.filter(
+        project=mapping.project,
+        source=source,
+        period_start__in=months,
+        retrieval_method=SourceSnapshot.RetrievalMethod.YANDEX_API,
+    )
+    return {
+        row.period_start: row
+        for row in rows
+        if (row.period_start, row.period_end) in expected
+        and row.payload.get("sync_fingerprint") == fingerprint
+    }
+
+
+def _sync_retention_months(project):
+    from apps.reports.models import ProjectReportSettings
+
+    settings_row = ProjectReportSettings.objects.filter(project=project).only("values").first()
+    raw = (settings_row.values if settings_row else {}).get("sync_log_retention_months", "12")
+    return None if raw == "forever" else int(raw) if str(raw) in {"6", "12"} else 12
+
+
+def prune_sync_runs(project, retention_months=None):
+    """Remove technical sync logs only; source snapshots and report versions stay intact."""
+    retention_months = (
+        _sync_retention_months(project) if retention_months is None else retention_months
+    )
+    if retention_months is None:
+        return 0
+    cutoff_month = shift_month(timezone.localdate().replace(day=1), -retention_months)
+    cutoff = timezone.make_aware(
+        datetime.combine(cutoff_month, time.min), timezone.get_current_timezone()
+    )
+    deleted = 0
+    for model, lookup in (
+        (YandexMetrikaSyncRun, "mapping__project"),
+        (YandexWebmasterSyncRun, "mapping__project"),
+    ):
+        count, _ = model.objects.filter(**{lookup: project}, started_at__lt=cutoff).delete()
+        deleted += count
+    return deleted
 
 
 def _value(row, index):
@@ -139,6 +209,62 @@ def _geography_code(item):
     if city in undefined:
         return "undefined"
     return None
+
+
+def _chunks(items, size):
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def _goal_metrics(goal_id):
+    return (
+        GOAL_CONVERSION_RATE.format(id=goal_id),
+        GOAL_VISITS.format(id=goal_id),
+        GOAL_REACHES.format(id=goal_id),
+    )
+
+
+def _parse_goal_batch(response, goals):
+    row = (response.get("data") or [{"metrics": response.get("totals", [])}])[0]
+    result = {}
+    for index, goal in enumerate(goals):
+        offset = index * 3
+        result[str(goal["id"])] = {
+            "conversion_rate": str(_value(row, offset)),
+            "visits": str(_value(row, offset + 1)),
+            "reaches": str(_value(row, offset + 2)),
+        }
+    return result
+
+
+def _fetch_goal_variant(client, common, goals, filter_value):
+    """Fetch up to six goals per report request and isolate invalid goals."""
+    values = {}
+    unavailable = set()
+    for batch in _chunks(goals, GOALS_PER_REQUEST):
+        metrics = ",".join(metric for goal in batch for metric in _goal_metrics(str(goal["id"])))
+        try:
+            response = _stat_with_filter(client, filter_value, **common, metrics=metrics)
+            values.update(_parse_goal_batch(response, batch))
+        except YandexAPIError as exc:
+            if exc.http_status != 400:
+                raise
+            # A deleted or unavailable goal must not block every other selected goal.
+            for goal in batch:
+                goal_id = str(goal["id"])
+                try:
+                    response = _stat_with_filter(
+                        client,
+                        filter_value,
+                        **common,
+                        metrics=",".join(_goal_metrics(goal_id)),
+                    )
+                    values.update(_parse_goal_batch(response, [goal]))
+                except YandexAPIError as goal_exc:
+                    if goal_exc.http_status != 400:
+                        raise
+                    unavailable.add(goal_id)
+    return values, unavailable
 
 
 def _fetch_month(client, mapping, month):
@@ -322,8 +448,25 @@ def _fetch_month(client, mapping, month):
         "search": {"humans": [], "all": []},
         "all": {"humans": [], "all": []},
     }
+    variants = (
+        ("search", "humans", SEARCH_HUMANS_FILTER),
+        ("search", "all", SEARCH_ALL_FILTER),
+        ("all", "humans", HUMANS_FILTER),
+        ("all", "all", None),
+    )
+    goal_variant_values = {}
+    unavailable_goal_ids = set()
+    for segment, robotness, filter_value in variants:
+        values, unavailable = _fetch_goal_variant(
+            client, common, mapping.selected_goals, filter_value
+        )
+        goal_variant_values[(segment, robotness)] = values
+        unavailable_goal_ids.update(unavailable)
+
     for goal in mapping.selected_goals:
         goal_id = str(goal["id"])
+        if goal_id in unavailable_goal_ids:
+            continue
         dimensions = {
             "goal_id": goal_id,
             "name": goal.get("name", ""),
@@ -331,29 +474,9 @@ def _fetch_month(client, mapping, month):
             "identifier": goal.get("identifier", ""),
         }
         goal_values = {"search": {}, "all": {}}
-        for segment, robotness, filter_value in (
-            ("search", "humans", SEARCH_HUMANS_FILTER),
-            ("search", "all", SEARCH_ALL_FILTER),
-            ("all", "humans", HUMANS_FILTER),
-            ("all", "all", None),
-        ):
-            response = _stat_with_filter(
-                client,
-                filter_value,
-                **common,
-                metrics=(
-                    f"{GOAL_CONVERSION_RATE.format(id=goal_id)},"
-                    f"{GOAL_VISITS.format(id=goal_id)},"
-                    f"{GOAL_REACHES.format(id=goal_id)}"
-                ),
-            )
-            goal_row = (response.get("data") or [{"metrics": response.get("totals", [])}])[0]
-            goal_values[segment][robotness] = {
-                **dimensions,
-                "conversion_rate": str(_value(goal_row, 0)),
-                "visits": str(_value(goal_row, 1)),
-                "reaches": str(_value(goal_row, 2)),
-            }
+        for segment, robotness, _filter_value in variants:
+            values = goal_variant_values[(segment, robotness)].get(goal_id, {})
+            goal_values[segment][robotness] = {**dimensions, **values}
             goals_by_segment[segment][robotness].append(goal_values[segment][robotness])
             for metric_name, unit in (
                 ("visits", "count"),
@@ -363,7 +486,7 @@ def _fetch_month(client, mapping, month):
                 points.append(
                     {
                         "code": (f"segment_{segment}_{robotness}_goal_{goal_id}_{metric_name}"),
-                        "value": goal_values[segment][robotness][metric_name],
+                        "value": goal_values[segment][robotness].get(metric_name, "0"),
                         "unit": unit,
                         "dimensions": {
                             **dimensions,
@@ -380,7 +503,7 @@ def _fetch_month(client, mapping, month):
             points.append(
                 {
                     "code": f"goal_{goal_id}_{metric_name}",
-                    "value": goal_values["search"]["humans"][metric_name],
+                    "value": goal_values["search"]["humans"].get(metric_name, "0"),
                     "unit": unit,
                     "dimensions": dimensions,
                 }
@@ -409,29 +532,39 @@ def _fetch_month(client, mapping, month):
         "goals": cleaned_goals,
         "goals_by_robotness": goals_by_robotness,
         "goals_by_segment": goals_by_segment,
+        "unavailable_goal_ids": sorted(unavailable_goal_ids),
         "sampled": bool(totals.get("sampled")),
         "sample_share": totals.get("sample_share"),
     }
 
 
-def sync_metrika(*, mapping, report_month, user=None, client=None):
-    run = YandexMetrikaSyncRun.objects.create(
-        mapping=mapping, report_month=report_month.replace(day=1)
-    )
+def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh=False):
+    month = report_month.replace(day=1)
+    run = YandexMetrikaSyncRun.objects.create(mapping=mapping, report_month=month)
     client = client or MetrikaClient(mapping.connection)
     try:
+        prune_sync_runs(mapping.project)
+        months = tuple(shift_month(month, offset) for offset in (-2, -1, 0))
+        fingerprint = _configuration_fingerprint(mapping, METRIKA_COLLECTOR_VERSION)
+        reusable = _reusable_snapshots(
+            mapping,
+            SourceSnapshot.Source.METRIKA,
+            months,
+            fingerprint,
+            force_refresh=force_refresh,
+        )
         fetched = [
-            _fetch_month(client, mapping, shift_month(report_month.replace(day=1), offset))
-            for offset in (-2, -1, 0)
+            _fetch_month(client, mapping, period) for period in months if period not in reusable
         ]
         now = timezone.now()
         with transaction.atomic():
             for data in fetched:
                 payload = {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "source": "yandex_metrika",
                     "retrieval_method": "yandex_api",
                     "counter_id": mapping.counter_id,
+                    "sync_fingerprint": fingerprint,
                     **data,
                     "retrieved_at": now.isoformat(),
                     "contains_sensitive_data": False,
@@ -455,6 +588,8 @@ def sync_metrika(*, mapping, report_month, user=None, client=None):
                         "provenance": {
                             "method": "yandex_api",
                             "counter_id": mapping.counter_id,
+                            "collector_version": METRIKA_COLLECTOR_VERSION,
+                            "sync_fingerprint": fingerprint,
                             "period": f"{data['period_start']}/{data['period_end']}",
                             "retrieved_at": now.isoformat(),
                         },
@@ -480,11 +615,45 @@ def sync_metrika(*, mapping, report_month, user=None, client=None):
             run.status = run.Status.SUCCESS
             run.completed_at = now
             run.save(update_fields=["status", "completed_at"])
+        run.fetched_period_count = len(fetched)
+        run.reused_period_count = len(reusable)
+        run.unavailable_goal_ids = sorted(
+            {goal_id for data in fetched for goal_id in data.get("unavailable_goal_ids", [])}
+        )
         return run
-    except Exception:
+    except YandexUnauthorized:
+        logger.warning(
+            "Metrika authorization failed: project=%s run=%s", mapping.project_id, run.id
+        )
         run.status = run.Status.FAILED
         run.completed_at = timezone.now()
-        run.error_message = "Не удалось синхронизировать данные Метрики."
+        run.error_message = "Нужно повторно авторизовать аккаунт Яндекса для Метрики."
+        run.save(update_fields=["status", "completed_at", "error_message"])
+        return run
+    except YandexAPIError as exc:
+        logger.warning(
+            "Metrika API failed: project=%s run=%s status=%s code=%s",
+            mapping.project_id,
+            run.id,
+            exc.http_status,
+            exc.error_code or "unknown",
+        )
+        run.status = run.Status.FAILED
+        run.completed_at = timezone.now()
+        run.error_message = (
+            "Лимит запросов Яндекс.Метрики временно исчерпан. Повторите позже."
+            if exc.http_status == 429
+            else "Не удалось получить данные Яндекс.Метрики. Повторите позже."
+        )
+        run.save(update_fields=["status", "completed_at", "error_message"])
+        return run
+    except Exception:
+        logger.exception(
+            "Unexpected Metrika sync failure: project=%s run=%s", mapping.project_id, run.id
+        )
+        run.status = run.Status.FAILED
+        run.completed_at = timezone.now()
+        run.error_message = "Не удалось синхронизировать данные Метрики. Повторите позже."
         run.save(update_fields=["status", "completed_at", "error_message"])
         return run
 
@@ -933,56 +1102,71 @@ def _webmaster_month(
         "comparison_popular_queries": previous_popular,
         "path_distribution": path_distribution,
         "host": host or {},
+        "includes_current_details": include_current,
     }
 
 
-def sync_webmaster(*, mapping, report_month, user=None, client=None):
+def sync_webmaster(*, mapping, report_month, user=None, client=None, force_refresh=False):
     """Fetch everything first, then atomically replace the three monthly snapshots."""
     month = report_month.replace(day=1)
     run = YandexWebmasterSyncRun.objects.create(mapping=mapping, report_month=month)
     client = client or WebmasterClient(mapping.connection)
     try:
-        user_response = client.user()
-        user_id = user_response.get("user_id") or user_response.get("id")
-        if not user_id:
-            raise ValueError("missing user id")
-        allowed = {str(item.get("host_id")): item for item in client.hosts(user_id)}
-        if mapping.host_id not in allowed:
-            raise YandexAPIError(
-                "Выбранный сайт больше не доступен.",
-                http_status=404,
-                error_code="HOST_NOT_LOADED",
-            )
-        # The host list already contains the verified host metadata required below.
-        # Avoid a redundant host-detail request: it added another failure point and
-        # its response was never persisted or used for calculations.
-        host = allowed[mapping.host_id]
-        summary = _optional_webmaster_resource(
+        prune_sync_runs(mapping.project)
+        months = tuple(shift_month(month, offset) for offset in (-2, -1, 0))
+        fingerprint = _configuration_fingerprint(mapping, WEBMASTER_COLLECTOR_VERSION)
+        reusable = _reusable_snapshots(
             mapping,
-            "summary",
-            lambda: client.summary(user_id, mapping.host_id),
+            SourceSnapshot.Source.WEBMASTER,
+            months,
+            fingerprint,
+            force_refresh=force_refresh,
         )
-        fetched = [
-            _webmaster_month(
-                client,
+        if month in reusable and not reusable[month].payload.get("includes_current_details"):
+            reusable.pop(month)
+        missing = [period for period in months if period not in reusable]
+        fetched = []
+        if missing:
+            user_response = client.user()
+            user_id = user_response.get("user_id") or user_response.get("id")
+            if not user_id:
+                raise ValueError("missing user id")
+            allowed = {str(item.get("host_id")): item for item in client.hosts(user_id)}
+            if mapping.host_id not in allowed:
+                raise YandexAPIError(
+                    "Выбранный сайт больше не доступен.",
+                    http_status=404,
+                    error_code="HOST_NOT_LOADED",
+                )
+            # The host list already contains the metadata used by the report.
+            host = allowed[mapping.host_id]
+            summary = _optional_webmaster_resource(
                 mapping,
-                user_id,
-                shift_month(month, offset),
-                host=host,
-                summary=summary,
-                include_current=offset == 0,
+                "summary",
+                lambda: client.summary(user_id, mapping.host_id),
             )
-            for offset in (-2, -1, 0)
-        ]
+            fetched = [
+                _webmaster_month(
+                    client,
+                    mapping,
+                    user_id,
+                    period,
+                    host=host,
+                    summary=summary,
+                    include_current=period == month,
+                )
+                for period in missing
+            ]
         now = timezone.now()
         with transaction.atomic():
             for data in fetched:
                 payload = {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "source": "yandex_webmaster",
                     "retrieval_method": "yandex_api",
                     "host_id": mapping.host_id,
                     "host_url": mapping.host_url,
+                    "sync_fingerprint": fingerprint,
                     "period_start": data["period_start"],
                     "period_end": data["period_end"],
                     "actual_period": data["actual_period"],
@@ -996,6 +1180,7 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
                     "popular_queries": data["popular_queries"],
                     "comparison_popular_queries": data["comparison_popular_queries"],
                     "path_distribution": data["path_distribution"],
+                    "includes_current_details": data["includes_current_details"],
                     "contains_sensitive_data": False,
                 }
                 checksum = hashlib.sha256(
@@ -1018,6 +1203,8 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
                             "method": "yandex_api",
                             "resource": "webmaster_v4.1",
                             "host_id": mapping.host_id,
+                            "collector_version": WEBMASTER_COLLECTOR_VERSION,
+                            "sync_fingerprint": fingerprint,
                             "actual_period": data["actual_period"],
                             "retrieved_at": now.isoformat(),
                         },
@@ -1038,6 +1225,8 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
             mapping.save(update_fields=["last_successful_sync_at", "updated_at"])
             run.status, run.completed_at = run.Status.SUCCESS, now
             run.save(update_fields=["status", "completed_at"])
+        run.fetched_period_count = len(fetched)
+        run.reused_period_count = len(reusable)
         return run
     except YandexUnauthorized:
         logger.warning(
@@ -1065,6 +1254,8 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None):
             if exc.error_code == "HOST_NOT_VERIFIED"
             else "Выбранный сайт больше не доступен аккаунту Яндекса. Выберите сайт заново."
             if exc.error_code == "HOST_NOT_LOADED"
+            else "Лимит запросов Яндекс.Вебмастера временно исчерпан. Повторите позже."
+            if exc.http_status == 429
             else "Не удалось синхронизировать данные Вебмастера. Повторите позже."
         )
         run.save(update_fields=["status", "completed_at", "error_message"])

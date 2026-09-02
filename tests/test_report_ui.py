@@ -38,7 +38,10 @@ def test_report_builder_uses_compact_spoilers_and_rich_work_editor(client, user,
     assert "Настроить информационные и коммерческие разделы" in html
     assert "Настроить прорабатываемые категории" in html
     assert "Выбрать ПС для столбчатого графика" in html
+    assert "Указать ссылки по поисковым системам и регионам" in html
     assert "Заполнить выполненные работы" in html
+    assert "Хранение и очистка данных" in html
+    assert "Точный выбор периодов" not in html
     assert 'data-rich-command="insertOrderedList"' in html
     assert "data-rich-link" in html
 

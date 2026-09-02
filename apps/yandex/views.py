@@ -41,7 +41,39 @@ def _is_ajax(request):
     return request.headers.get("x-requested-with") == "XMLHttpRequest"
 
 
-def _sync_json(mapping, source, run, success_message):
+def _period_word(count):
+    if count % 10 == 1 and count % 100 != 11:
+        return "период"
+    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+        return "периода"
+    return "периодов"
+
+
+def _sync_message(run):
+    fetched = getattr(run, "fetched_period_count", 0)
+    reused = getattr(run, "reused_period_count", 0)
+    if not fetched:
+        message = "Все выбранные периоды уже синхронизированы."
+    else:
+        message = (
+            "Загружен 1 новый период"
+            if fetched == 1
+            else f"Загружено {fetched} новых {_period_word(fetched)}"
+        )
+        if reused:
+            message += (
+                ", использован 1 сохранённый период"
+                if reused == 1
+                else f", использованы {reused} сохранённых {_period_word(reused)}"
+            )
+        message += "."
+    unavailable = len(getattr(run, "unavailable_goal_ids", []))
+    if unavailable:
+        message += f" Недоступные цели пропущены: {unavailable}."
+    return message
+
+
+def _sync_json(mapping, source, run):
     if run.status != run.Status.SUCCESS:
         return JsonResponse(
             {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
@@ -60,7 +92,7 @@ def _sync_json(mapping, source, run, success_message):
     return JsonResponse(
         {
             "ok": True,
-            "message": success_message,
+            "message": _sync_message(run),
             "last_synced_at": timezone.localtime(
                 mapping.last_successful_sync_at or timezone.now()
             ).strftime("%d.%m.%Y %H:%M"),
@@ -105,18 +137,6 @@ def _host_options(project, hosts):
             }
         )
     return options
-
-
-def _goal_options(goals, selected_goals):
-    selected = {str(item.get("id")) for item in selected_goals}
-    return [
-        {
-            "id": str(goal.get("id", "")),
-            "label": str(goal.get("name") or f"Цель {goal.get('id', '')}"),
-            "selected": str(goal.get("id", "")) in selected,
-        }
-        for goal in goals
-    ]
 
 
 def _configured():
@@ -225,7 +245,7 @@ def connection(request, project_id):
         .select_related("connection")
         .first()
     )
-    counters = goals = hosts = []
+    counters = hosts = []
     error = ""
     connection_obj = (
         mapping.connection
@@ -240,8 +260,6 @@ def connection(request, project_id):
         try:
             client = MetrikaClient(connection_obj)
             counters = list(client.counters())
-            if mapping:
-                goals = list(client.goals(mapping.counter_id))
         except (YandexAPIError, CredentialConfigurationError):
             error = "Не удалось получить данные Яндекс Метрики."
         if all(scope in connection_obj.scopes for scope in WEBMASTER_SCOPES):
@@ -252,7 +270,6 @@ def connection(request, project_id):
                 hosts = list(webmaster.hosts(webmaster_user_id)) if webmaster_user_id else []
             except (YandexAPIError, CredentialConfigurationError):
                 error = "Не удалось получить данные Яндекс Вебмастера."
-    goal_options = _goal_options(goals, mapping.selected_goals if mapping else [])
     return render(
         request,
         "yandex/connection.html",
@@ -261,8 +278,6 @@ def connection(request, project_id):
             "mapping": mapping,
             "connection": connection_obj,
             "counter_options": _counter_options(project, counters),
-            "goal_options": goal_options,
-            "selected_goal_count": sum(option["selected"] for option in goal_options),
             "host_options": _host_options(project, hosts),
             "webmaster_mapping": webmaster_mapping,
             "webmaster_scope_missing": bool(
@@ -483,7 +498,12 @@ def select_goals(request, project_id):
         available = list(MetrikaClient(mapping.connection).goals(mapping.counter_id))
     except (YandexAPIError, CredentialConfigurationError):
         messages.error(request, "Не удалось получить цели выбранного счётчика.")
-        return redirect("yandex:connection", project_id=project_id)
+        return redirect(
+            "reports:report-list"
+            if request.POST.get("return_to_reports") == "1"
+            else "yandex:connection",
+            project_id=project_id,
+        )
     form = GoalsForm(request.POST, available_goals=available)
     if not form.is_valid():
         return HttpResponseBadRequest("Некорректные цели.")
@@ -512,7 +532,15 @@ def select_goals(request, project_id):
             selected_goal["identifier"] = identifier
         mapping.selected_goals.append(selected_goal)
     mapping.save(update_fields=["selected_goals", "updated_at"])
-    return redirect("yandex:connection", project_id=project_id)
+    messages.success(
+        request, "Цели Метрики сохранены. Новая настройка применится при синхронизации."
+    )
+    return redirect(
+        "reports:report-list"
+        if request.POST.get("return_to_reports") == "1"
+        else "yandex:connection",
+        project_id=project_id,
+    )
 
 
 @login_required
@@ -588,26 +616,23 @@ def sync(request, project_id):
                 status=400,
             )
         return HttpResponseBadRequest("Некорректный месяц.")
-    run = sync_metrika(mapping=mapping, report_month=form.cleaned_data["month"], user=request.user)
+    run = sync_metrika(
+        mapping=mapping,
+        report_month=form.cleaned_data["month"],
+        user=request.user,
+        force_refresh=form.cleaned_data["force_refresh"],
+    )
     mapping.refresh_from_db(fields=["last_successful_sync_at"])
     if _is_ajax(request):
-        return _sync_json(
-            mapping,
-            SourceSnapshot.Source.METRIKA,
-            run,
-            "Данные Яндекс.Метрики синхронизированы.",
-        )
+        return _sync_json(mapping, SourceSnapshot.Source.METRIKA, run)
     if run.status == run.Status.SUCCESS:
         from apps.reports.models import Report
 
         report, _ = Report.objects.get_or_create(
             project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
         )
+        messages.success(request, _sync_message(run))
         if request.POST.get("return_to_reports") == "1":
-            messages.success(
-                request,
-                "Данные Яндекс.Метрики синхронизированы. Теперь можно создать новую версию отчёта.",
-            )
             return redirect("reports:report-list", project_id=mapping.project_id)
         return redirect("reports:report-detail", report_id=report.id)
     messages.error(request, run.error_message)
@@ -635,28 +660,22 @@ def sync_webmaster_view(request, project_id):
             )
         return HttpResponseBadRequest("Некорректный месяц.")
     run = sync_webmaster(
-        mapping=mapping, report_month=form.cleaned_data["month"], user=request.user
+        mapping=mapping,
+        report_month=form.cleaned_data["month"],
+        user=request.user,
+        force_refresh=form.cleaned_data["force_refresh"],
     )
     mapping.refresh_from_db(fields=["last_successful_sync_at"])
     if _is_ajax(request):
-        return _sync_json(
-            mapping,
-            SourceSnapshot.Source.WEBMASTER,
-            run,
-            "Данные Яндекс.Вебмастера синхронизированы.",
-        )
+        return _sync_json(mapping, SourceSnapshot.Source.WEBMASTER, run)
     if run.status == run.Status.SUCCESS:
         from apps.reports.models import Report
 
         report, _ = Report.objects.get_or_create(
             project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
         )
+        messages.success(request, _sync_message(run))
         if request.POST.get("return_to_reports") == "1":
-            messages.success(
-                request,
-                "Данные Яндекс.Вебмастера синхронизированы. "
-                "Теперь можно создать новую версию отчёта.",
-            )
             return redirect("reports:report-list", project_id=mapping.project_id)
         return redirect("reports:report-detail", report_id=report.id)
     messages.error(request, run.error_message)

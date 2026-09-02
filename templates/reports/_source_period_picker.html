@@ -6,23 +6,14 @@
     <label>По месяц <input type="month" value="{{ source.end }}" data-period-end></label>
   </div>
   <p class="source-period-summary" data-period-summary>{{ source.short_label }}: выбрано {{ source.selected_count }} {{ source.period_word }}.</p>
-  <details class="source-period-details"{% if not source.options %} hidden{% endif %} data-period-details>
-    <summary>Точный выбор периодов</summary>
-    <div class="source-period-options" data-period-options>
-      {% for option in source.options %}
-      <label>
-        <input type="checkbox" name="{{ source.name }}" value="{{ option.id }}" data-period-month="{{ option.month }}"{% if option.selected %} checked{% endif %}>
-        <span>{{ option.label }}</span>
-      </label>
-      {% endfor %}
-    </div>
-  </details>
+  <div data-period-options hidden>{% for option in source.options %}<input type="checkbox" name="{{ source.name }}" value="{{ option.id }}" data-period-month="{{ option.month }}"{% if option.selected %} checked{% endif %}>{% endfor %}</div>
   {% for error in source.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
   <p class="inline-warning warning" data-source-empty{% if source.options %} hidden{% endif %}>{{ source.short_label }}: данные недоступны — {{ source.unavailable_description }}</p>
   {% if source.connected %}
   <div class="source-sync-actions">
     <p class="source-sync-status">Последняя синхронизация: <strong data-last-synced>{{ source.last_synced_at|date:'d.m.Y H:i'|default:'ещё не выполнялась' }}</strong></p>
     <button type="submit" class="secondary" form="{{ source.sync_form_id }}" data-source-sync-button>Синхронизировать данные</button>
+    <label class="force-refresh"><input type="checkbox" name="force_refresh" value="1" form="{{ source.sync_form_id }}"> Обновить ранее загруженные периоды</label>
     <p class="source-sync-notice" data-source-sync-notice hidden role="status"></p>
     <small>Загрузятся выбранный последний месяц и два предыдущих.</small>
   </div>
