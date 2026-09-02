@@ -46,6 +46,7 @@ PERSISTED_REPORT_FIELDS = (
     "metrika_category_url_groups",
     "include_completed_work",
     "completed_work_text",
+    "sync_log_retention_months",
 )
 
 BOOLEAN_REPORT_FIELDS = frozenset(
@@ -234,6 +235,16 @@ class ReportCreateForm(forms.Form):
         required=False,
         max_length=20_000,
         widget=forms.Textarea(attrs={"rows": 8, "class": "rich-text-source"}),
+    )
+    sync_log_retention_months = forms.ChoiceField(
+        label="Автоматически очищать журнал синхронизации",
+        required=False,
+        initial="12",
+        choices=(
+            ("6", "Старше 6 месяцев"),
+            ("12", "Старше 12 месяцев"),
+            ("forever", "Не удалять автоматически"),
+        ),
     )
     metrika_snapshots = forms.MultipleChoiceField(
         label="Яндекс.Метрика", required=False, widget=forms.CheckboxSelectMultiple

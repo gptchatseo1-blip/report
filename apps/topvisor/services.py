@@ -307,6 +307,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
     configurations = {configuration_id(item): item for item in mapping.selected_configurations}
     try:
         client = client or client_for_project(mapping.project)[0]
+        missing_frequency_count = 0
         segments = {}
         for configuration in configurations.values():
             segment = configuration_segment(configuration)
@@ -379,9 +380,9 @@ def sync_positions(*, mapping, report_month=None, client=None):
                             break
             missing_count = len(all_queries - frequency_map.keys())
             if missing_count:
-                raise TopvisorError(
-                    f"В ответе Topvisor нет проверенной частотности запросов: {missing_count}."
-                )
+                missing_frequency_count += missing_count
+                for query in all_queries - frequency_map.keys():
+                    frequency_map[query] = 1
 
             for configuration, existing_dates, pages in downloaded:
                 combined = {}
@@ -414,12 +415,14 @@ def sync_positions(*, mapping, report_month=None, client=None):
                             regions_indexes=[str(configuration.get("region_index", ""))],
                         )
                     )
-                    if any(row.get("frequency", row.get("ws")) is None for row in rows):
-                        raise TopvisorError("В ответе Topvisor нет обязательной частотности.")
                     try:
                         for row in rows:
                             key = "frequency" if "frequency" in row else "ws"
-                            row["frequency"] = normalize_frequency(row.get(key))
+                            if row.get(key) is None:
+                                row["frequency"] = 1
+                                missing_frequency_count += 1
+                            else:
+                                row["frequency"] = normalize_frequency(row.get(key))
                     except ValueError:
                         raise TopvisorError("В ответе Topvisor недопустимая частотность.") from None
                     pending_snapshots.append(
@@ -445,6 +448,11 @@ def sync_positions(*, mapping, report_month=None, client=None):
         run.loaded_keyword_count = sum(
             len(payload["positions"]) for _, _, payload in pending_snapshots
         )
+        if missing_frequency_count:
+            run.error_message = (
+                "Синхронизация выполнена. Для запросов без проверенной частотности "
+                f"использован минимальный вес: {missing_frequency_count}."
+            )
         run.segments = [
             {
                 "search_engine": str(

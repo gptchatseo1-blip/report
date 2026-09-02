@@ -238,6 +238,8 @@ def sync(request, project_id):
         run = sync_positions(mapping=mapping)
         if run.status == run.Status.SUCCESS:
             messages.success(request, f"Загружено позиций: {run.loaded_keyword_count}.")
+            if run.error_message:
+                messages.warning(request, run.error_message)
             return redirect("topvisor:connection", project_id=project.id)
         messages.error(request, run.error_message)
     return redirect("topvisor:connection", project_id=project.id)

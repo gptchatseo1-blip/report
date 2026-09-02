@@ -11,7 +11,13 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Count, Max, OuterRef, Subquery
-from django.http import FileResponse, Http404, HttpResponseNotAllowed, JsonResponse
+from django.http import (
+    FileResponse,
+    Http404,
+    HttpResponseBadRequest,
+    HttpResponseNotAllowed,
+    JsonResponse,
+)
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -246,6 +252,9 @@ def _source_period_fields(form):
         fields.append(
             {
                 "name": name,
+                "source_code": (
+                    "yandex_metrika" if name == "metrika_snapshots" else "yandex_webmaster"
+                ),
                 "label": label,
                 "short_label": short_label,
                 "description": description,
@@ -259,6 +268,7 @@ def _source_period_fields(form):
                 "connected": mapping is not None,
                 "last_synced_at": getattr(mapping, "last_successful_sync_at", None),
                 "sync_form_id": f"sync-{name.replace('_snapshots', '')}-form",
+                "cleanup_form_id": f"cleanup-{name.replace('_snapshots', '')}-form",
                 "sync_url": reverse(sync_route, args=[form.project.id]),
                 "sync_month": sync_month,
             }
@@ -268,6 +278,43 @@ def _source_period_fields(form):
 
 def _topvisor_report_link_fields(form):
     return [{**item, "field": form[item["name"]]} for item in form.topvisor_report_link_fields]
+
+
+def _metrika_goal_context(project, user):
+    from apps.yandex.client import MetrikaClient, YandexAPIError
+    from apps.yandex.crypto import CredentialConfigurationError
+    from apps.yandex.models import YandexMetrikaProjectMapping
+
+    mapping = (
+        YandexMetrikaProjectMapping.objects.filter(
+            project=project, connection__user=user, connection__active=True
+        )
+        .select_related("connection")
+        .first()
+    )
+    if not mapping:
+        return {"metrika_mapping": None, "metrika_goal_options": [], "goal_picker_error": ""}
+    error = ""
+    try:
+        available = list(MetrikaClient(mapping.connection).goals(mapping.counter_id))
+    except (YandexAPIError, CredentialConfigurationError):
+        available = mapping.selected_goals
+        error = "Не удалось обновить список целей. Показаны ранее выбранные цели."
+    selected = {str(goal.get("id")) for goal in mapping.selected_goals}
+    options = [
+        {
+            "id": str(goal.get("id", "")),
+            "label": str(goal.get("name") or goal.get("label") or f"Цель {goal.get('id', '')}"),
+            "selected": str(goal.get("id", "")) in selected,
+        }
+        for goal in available
+    ]
+    return {
+        "metrika_mapping": mapping,
+        "metrika_goal_options": options,
+        "selected_goal_count": sum(option["selected"] for option in options),
+        "goal_picker_error": error,
+    }
 
 
 def _topvisor_report_url(payload, source):
@@ -322,18 +369,20 @@ def report_list(request, project_id):
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
+    context = {
+        "project": project,
+        "reports": reports,
+        "form": form,
+        "calendar_fields": calendar_fields,
+        "source_period_fields": source_period_fields,
+        "topvisor_report_link_fields": topvisor_report_link_fields,
+        "can_create": can_create,
+    }
+    context.update(_metrika_goal_context(project, request.user))
     return render(
         request,
         "reports/report_list.html",
-        {
-            "project": project,
-            "reports": reports,
-            "form": form,
-            "calendar_fields": calendar_fields,
-            "source_period_fields": source_period_fields,
-            "topvisor_report_link_fields": topvisor_report_link_fields,
-            "can_create": can_create,
-        },
+        context,
     )
 
 
@@ -454,18 +503,20 @@ def report_create(request, project_id):
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
+    context = {
+        "project": project,
+        "reports": reports,
+        "form": form,
+        "calendar_fields": calendar_fields,
+        "source_period_fields": source_period_fields,
+        "topvisor_report_link_fields": topvisor_report_link_fields,
+        "can_create": can_create,
+    }
+    context.update(_metrika_goal_context(project, request.user))
     return render(
         request,
         "reports/report_list.html",
-        {
-            "project": project,
-            "reports": reports,
-            "form": form,
-            "calendar_fields": calendar_fields,
-            "source_period_fields": source_period_fields,
-            "topvisor_report_link_fields": topvisor_report_link_fields,
-            "can_create": can_create,
-        },
+        context,
         status=400,
     )
 
@@ -480,7 +531,10 @@ def report_settings_save(request, project_id):
         return JsonResponse({"ok": False, "message": "Некорректные настройки."}, status=400)
     if not isinstance(incoming, dict):
         return JsonResponse({"ok": False, "message": "Некорректные настройки."}, status=400)
-    values = {}
+    previous = ProjectReportSettings.objects.filter(project=project).only("values").first()
+    previous_values = (previous.values if previous else {}) or {}
+    old_retention = previous_values.get("sync_log_retention_months")
+    values = dict(previous_values)
     for name in PERSISTED_REPORT_FIELDS:
         if name not in incoming:
             continue
@@ -490,6 +544,8 @@ def report_settings_save(request, project_id):
         elif name == "metrika_bar_search_engines":
             allowed = {"google", "yandex", "bing", "yahoo"}
             values[name] = [str(item) for item in (value or []) if str(item) in allowed]
+        elif name == "sync_log_retention_months":
+            values[name] = str(value) if str(value) in {"6", "12", "forever"} else "12"
         else:
             values[name] = (
                 sanitize_report_html(value)
@@ -505,13 +561,82 @@ def report_settings_save(request, project_id):
             parse_named_url_groups(values.get(name, ""))
         except ValidationError as exc:
             return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
-    raw_urls = incoming.get("topvisor_report_urls") or {}
+    raw_urls = incoming.get("topvisor_report_urls")
     if isinstance(raw_urls, dict):
         values["topvisor_report_urls"] = {
             str(key)[:200]: str(value)[:2000] for key, value in raw_urls.items() if value
         }
     ProjectReportSettings.objects.update_or_create(project=project, defaults={"values": values})
+    retention = values.get("sync_log_retention_months", "12")
+    if retention != old_retention:
+        from apps.yandex.services import prune_sync_runs
+
+        prune_sync_runs(project, None if retention == "forever" else int(retention))
     return JsonResponse({"ok": True, "message": "Настройки проекта сохранены."})
+
+
+@login_required
+@require_POST
+def source_history_clear(request, project_id):
+    from apps.metrics.models import SourceSnapshot
+    from apps.yandex.models import (
+        YandexMetrikaProjectMapping,
+        YandexMetrikaSyncRun,
+        YandexWebmasterProjectMapping,
+        YandexWebmasterSyncRun,
+    )
+
+    project = get_object_or_404(Project, pk=project_id)
+    source = request.POST.get("source")
+    configuration = {
+        SourceSnapshot.Source.METRIKA: (
+            YandexMetrikaProjectMapping,
+            YandexMetrikaSyncRun,
+            "Метрики",
+        ),
+        SourceSnapshot.Source.WEBMASTER: (
+            YandexWebmasterProjectMapping,
+            YandexWebmasterSyncRun,
+            "Вебмастера",
+        ),
+    }.get(source)
+    if not configuration:
+        return HttpResponseBadRequest("Некорректный источник.")
+    mapping_model, run_model, label = configuration
+    mapping = get_object_or_404(
+        mapping_model,
+        project=project,
+        connection__user=request.user,
+    )
+    action = request.POST.get("action")
+    snapshots = SourceSnapshot.objects.filter(project=project, source=source)
+    if action == "delete_runs":
+        deleted, _ = run_model.objects.filter(mapping=mapping).delete()
+        messages.success(request, f"Журнал синхронизации {label} очищен: {deleted} записей.")
+    elif action == "delete_all":
+        deleted = snapshots.count()
+        snapshots.delete()
+        mapping.last_successful_sync_at = None
+        mapping.save(update_fields=["last_successful_sync_at", "updated_at"])
+        messages.success(request, f"Все сохранённые месяцы {label} удалены: {deleted} записей.")
+    elif action == "delete_selected":
+        try:
+            months = {date.fromisoformat(f"{value}-01") for value in request.POST.getlist("months")}
+        except ValueError:
+            return HttpResponseBadRequest("Некорректный месяц.")
+        if not months:
+            messages.warning(request, "Выберите месяцы для удаления.")
+        else:
+            selected = snapshots.filter(period_start__in=months)
+            deleted = selected.count()
+            selected.delete()
+            if not snapshots.exists():
+                mapping.last_successful_sync_at = None
+                mapping.save(update_fields=["last_successful_sync_at", "updated_at"])
+            messages.success(request, f"Выбранные месяцы {label} удалены: {deleted} записей.")
+    else:
+        return HttpResponseBadRequest("Некорректное действие.")
+    return redirect("reports:report-list", project_id=project.id)
 
 
 @login_required

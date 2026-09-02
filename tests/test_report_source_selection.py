@@ -277,7 +277,7 @@ def test_report_page_keeps_source_period_controls_inside_each_source_card(client
     assert 'form="sync-webmaster-form"' in webmaster_card
     assert 'action="' + reverse("yandex:sync", args=[project.id]) + '"' in html
     assert 'action="' + reverse("yandex:sync-webmaster", args=[project.id]) + '"' in html
-    assert html.count('name="return_to_reports" value="1"') == 2
+    assert html.count('name="return_to_reports" value="1"') == 3
     assert html.count('value="2026-07" data-sync-month-for=') == 2
     assert "Не определено</label>" not in html
     assert "Область не определена</label>" not in html
@@ -286,6 +286,8 @@ def test_report_page_keeps_source_period_controls_inside_each_source_card(client
         "yandex",
     ]
     assert 'value="bing"' in html and 'value="yahoo"' in html
+    assert "Точный выбор периодов" not in html
+    assert html.count('name="force_refresh"') == 2
 
 
 def test_report_page_sync_buttons_return_to_report_builder(client, monkeypatch):
@@ -309,7 +311,13 @@ def test_report_page_sync_buttons_return_to_report_builder(client, monkeypatch):
         host_id="host",
         host_url="https://source-sync.example/",
     )
-    success = SimpleNamespace(status="success", Status=SimpleNamespace(SUCCESS="success"))
+    success = SimpleNamespace(
+        status="success",
+        Status=SimpleNamespace(SUCCESS="success"),
+        fetched_period_count=1,
+        reused_period_count=2,
+        unavailable_goal_ids=[],
+    )
     monkeypatch.setattr("apps.yandex.views.sync_metrika", lambda **kwargs: success)
     monkeypatch.setattr("apps.yandex.views.sync_webmaster", lambda **kwargs: success)
     client.force_login(user)
@@ -346,7 +354,13 @@ def test_report_page_ajax_sync_returns_periods_without_reload(client, monkeypatc
         counter_name="Counter",
         counter_domain=project.domain,
     )
-    success = SimpleNamespace(status="success", Status=SimpleNamespace(SUCCESS="success"))
+    success = SimpleNamespace(
+        status="success",
+        Status=SimpleNamespace(SUCCESS="success"),
+        fetched_period_count=1,
+        reused_period_count=2,
+        unavailable_goal_ids=[],
+    )
 
     def fake_sync(**_kwargs):
         for month in (5, 6, 7):
@@ -374,6 +388,9 @@ def test_report_page_ajax_sync_returns_periods_without_reload(client, monkeypatc
         "2026-06",
         "2026-05",
     ]
+    assert response.json()["message"] == (
+        "Загружен 1 новый период, использованы 2 сохранённых периода."
+    )
     assert not Report.objects.filter(project=project).exists()
 
 

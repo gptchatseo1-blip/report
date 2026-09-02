@@ -264,7 +264,7 @@ def test_connection_and_project_configuration_selection(client, settings, monkey
     assert 'class="configuration-list"' in page
 
 
-def test_sync_is_idempotent_requires_frequency_and_keeps_depth_per_segment():
+def test_sync_is_idempotent_and_keeps_depth_per_segment():
     project = Project.objects.create(name="Site", domain="sync.example")
     selected = mapping(project, depth=20)
     selected.selected_configurations.append(
@@ -292,11 +292,11 @@ def test_sync_is_idempotent_requires_frequency_and_keeps_depth_per_segment():
         and item.visibility_raw["formula_source"] == VISIBILITY_FORMULA_URL
         for item in RankingSnapshot.objects.all()
     )
-    failed = sync_positions(
+    fallback = sync_positions(
         mapping=selected, report_month=date(2026, 8, 1), client=FakeClient(True)
     )
-    assert failed.status == failed.Status.FAILED
-    assert "частотности" in failed.error_message
+    assert fallback.status == fallback.Status.SUCCESS
+    assert "минимальный вес" in fallback.error_message
 
 
 def test_late_api_error_leaves_no_partial_snapshots_and_records_failed_run():
@@ -893,19 +893,20 @@ def test_history_sync_uses_dates_and_normalizes_zero_and_missing_position():
     assert missing.position_raw == "--"
 
 
-def test_missing_frequency_and_last_page_failure_are_atomic():
+def test_missing_frequency_uses_minimum_weight_and_late_failure_is_atomic():
     project = Project.objects.create(name="Atomic history", domain="atomic-history.example")
     selected = history_mapping(project)
     missing = sync_positions(mapping=selected, client=RealHistoryClient(omit_frequency=True))
-    assert missing.status == missing.Status.FAILED
-    assert "частотности" in missing.error_message
-    assert not RankingSnapshot.objects.exists()
+    assert missing.status == missing.Status.SUCCESS
+    assert "минимальный вес" in missing.error_message
+    assert RankingSnapshot.objects.count() == 3
+    before = list(RankingSnapshot.objects.values_list("id", "response_checksum"))
     failed = sync_positions(mapping=selected, client=RealHistoryClient(fail_last=True))
     assert failed.status == failed.Status.FAILED
-    assert not RankingSnapshot.objects.exists()
+    assert list(RankingSnapshot.objects.values_list("id", "response_checksum")) == before
 
 
-@pytest.mark.parametrize("frequency", ["", -1, "invalid"])
+@pytest.mark.parametrize("frequency", [-1, "invalid"])
 def test_invalid_topvisor_frequency_is_atomic(frequency):
     project = Project.objects.create(
         name="Invalid frequency", domain=f"invalid-{str(frequency)}.example"
@@ -1037,10 +1038,12 @@ def test_yandex_frequency_alias_is_shared_with_google_and_missing_is_atomic():
             "positive query": 42,
         }
 
-    RankingSnapshot.objects.all().delete()
     api.missing = True
-    failed = sync_positions(mapping=selected, client=api)
-    assert failed.status == failed.Status.FAILED
-    assert "1" in failed.error_message
-    assert "positive query" not in failed.error_message
-    assert not RankingSnapshot.objects.exists()
+    fallback = sync_positions(mapping=selected, client=api)
+    assert fallback.status == fallback.Status.SUCCESS
+    assert "минимальный вес: 1" in fallback.error_message
+    for snapshot in RankingSnapshot.objects.all():
+        assert dict(snapshot.positions.values_list("normalized_query", "frequency")) == {
+            "zero query": 1,
+            "positive query": 1,
+        }

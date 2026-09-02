@@ -134,7 +134,22 @@ class MetrikaClient:
                         else 0.5 * 2**attempt + random.uniform(0, 0.25)
                     )
                     continue
-                raise YandexAPIError(f"Метрика временно недоступна (HTTP {exc.code}).") from None
+                try:
+                    payload = json.loads(exc.read())
+                except (ValueError, TypeError):
+                    payload = {}
+                error_code = str(payload.get("error_code") or payload.get("code") or "")
+                if exc.code in (401, 403):
+                    raise YandexUnauthorized(
+                        "Подключение Яндекса требует повторной авторизации для Метрики.",
+                        http_status=exc.code,
+                        error_code=error_code,
+                    ) from None
+                raise YandexAPIError(
+                    f"Метрика временно недоступна (HTTP {exc.code}).",
+                    http_status=exc.code,
+                    error_code=error_code,
+                ) from None
             except (urllib.error.URLError, TimeoutError, ValueError):
                 if attempt < settings.YANDEX_MAX_RETRIES:
                     self.sleep(0.5 * 2**attempt + random.uniform(0, 0.25))

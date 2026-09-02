@@ -54,30 +54,13 @@
 
   {% if mapping %}
   <div class="integration-subsection">
-    <h3>Цели Метрики</h3>
-    {% if goal_options %}
-    <form method="post" action="{% url 'yandex:select-goals' project.id %}" data-goal-picker>
-      {% csrf_token %}
-      <details class="goal-picker">
-        <summary>Выбрать цели · выбрано <span data-goal-count>{{ selected_goal_count }}</span></summary>
-        <div class="goal-options">
-          {% for goal in goal_options %}
-          <label><input type="checkbox" name="goals" value="{{ goal.id }}"{% if goal.selected %} checked{% endif %}> <span>{{ goal.label }}</span></label>
-          {% endfor %}
-        </div>
-      </details>
-      <div class="actions"><button>Сохранить цели</button></div>
-    </form>
-    {% else %}<p>Доступных целей нет.</p>{% endif %}
-  </div>
-
-  <div class="integration-subsection">
     <h3>Синхронизация Метрики</h3>
     <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих.</p>
     <p>Последняя успешная: {{ mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
     <form method="post" action="{% url 'yandex:sync' project.id %}" class="sync-form">
       {% csrf_token %}
       <label>Отчётный месяц <input type="month" name="month" required></label>
+      <label class="force-refresh"><input type="checkbox" name="force_refresh" value="1"> Обновить ранее загруженные периоды</label>
       <button>Синхронизировать и открыть отчёт</button>
     </form>
   </div>
@@ -132,6 +115,7 @@
     <form method="post" action="{% url 'yandex:sync-webmaster' project.id %}" class="sync-form">
       {% csrf_token %}
       <label>Отчётный месяц <input type="month" name="month" required></label>
+      <label class="force-refresh"><input type="checkbox" name="force_refresh" value="1"> Обновить ранее загруженные периоды</label>
       <button>Синхронизировать Вебмастер и открыть отчёт</button>
     </form>
   </div>
