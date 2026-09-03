@@ -24,8 +24,8 @@
 
 /* Project list and report-builder refinements */
 .actions { gap: .875rem; flex-wrap: wrap; align-items: center; }
-.heading-with-add { display: flex; align-items: center; gap: .7rem; }
-.heading-with-add h1 { margin-bottom: .25rem; }
+.heading-with-add { display: flex; flex-direction: row; align-items: center; gap: .7rem; white-space: nowrap; }
+.heading-with-add h1 { margin: 0; }
 .compact-add { display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0; border-radius: 50%; font-size: 1.35rem; line-height: 1; }
 .settings-links { display: flex; align-items: center; justify-content: flex-end; gap: .875rem; flex-wrap: wrap; }
 .settings-links > span { font-weight: 600; color: #526174; }
@@ -34,7 +34,9 @@
 .project-card h2, .project-card dd { overflow-wrap: anywhere; }
 .project-card-actions { display: flex; align-items: center; gap: .875rem; flex-wrap: wrap; }
 .project-card-actions form { margin: 0 0 0 auto; }
-.project-card-actions button { padding: .45rem .7rem; }
+.project-delete-button { display: inline-grid; place-items: center; width: 2.5rem; height: 2.5rem; padding: .5rem; border: 1px solid #d99; border-radius: 6px; background: #fff; color: #a51d2d; }
+.project-delete-button:hover, .project-delete-button:focus-visible { border-color: #a51d2d; background: #fee1e1; }
+.project-delete-button svg { width: 1.2rem; height: 1.2rem; fill: currentColor; }
 .project-modal { width: min(34rem, calc(100% - 2rem)); padding: 0; border: 0; border-radius: 12px; box-shadow: 0 1.5rem 4rem #10204455; }
 .project-modal::backdrop { background: #10204488; }
 .project-modal > form { padding: 1.25rem; }

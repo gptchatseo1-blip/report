@@ -2,8 +2,10 @@ from datetime import date
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db.models.deletion import RestrictedError
 from django.urls import reverse
 
+from apps.imports.models import ImportBatch
 from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.projects.models import Project
 from apps.reports.models import Report
@@ -11,6 +13,7 @@ from apps.reports.services import create_report_version
 from apps.reports.validation import _contains_secret
 from apps.serphunt.models import SerphuntCredential, SerphuntProjectMapping
 from apps.serphunt.services import sync_positions
+from apps.worklog.models import WorkCategory, WorkLogItem
 
 pytestmark = pytest.mark.django_db
 FERNET_KEY = "rN4-j6VCo2PxKB9RCqaVvzwuR4mqUUqe5xzHIZfyg3A="
@@ -34,6 +37,9 @@ def test_project_screen_has_one_settings_label_and_serphunt_button(client):
     assert ">Topvisor<" in body and ">Serphunt<" in body and ">Яндекс<" in body
     assert "Настройки Topvisor" not in body
     assert "Настройки Яндекса" not in body
+    assert ">Параметры<" in body and "Параметры проекта" not in body
+    assert 'class="project-delete-button"' in body
+    assert 'title="Удалить проект"' in body
 
 
 def test_quick_create_selects_serphunt_without_changing_existing_projects(client):
@@ -133,6 +139,34 @@ def test_project_delete_cascades_only_selected_project(client):
     untouched = Project.objects.create(name="Keep", domain="keep.example")
     report = Report.objects.create(project=selected, report_month=date(2026, 8, 1))
     create_report_version(report=report, created_by=user)
+    batch = ImportBatch.objects.create(
+        project=selected,
+        original_filename="positions.csv",
+        source_file="imports/positions.csv",
+        file_checksum="a" * 64,
+        status=ImportBatch.Status.IMPORTED,
+        snapshot_date=date(2026, 8, 31),
+        search_engine=ImportBatch.SearchEngine.YANDEX,
+        region="Москва",
+    )
+    RankingSnapshot.objects.create(
+        project=selected,
+        import_batch=batch,
+        snapshot_date=batch.snapshot_date,
+        search_engine=batch.search_engine,
+        region=batch.region,
+    )
+    category = WorkCategory.objects.create(project=selected, name="Контент")
+    WorkLogItem.objects.create(
+        project=selected,
+        work_date=date(2026, 8, 15),
+        category=category,
+        title="Подготовлен материал",
+    )
+    with pytest.raises(RestrictedError):
+        batch.delete()
+    with pytest.raises(RestrictedError):
+        category.delete()
     client.force_login(user)
 
     response = client.post(reverse("reports:project-delete", args=[selected.id]))
@@ -140,3 +174,5 @@ def test_project_delete_cascades_only_selected_project(client):
     assert response.status_code == 302
     assert not Project.objects.filter(pk=selected.pk).exists()
     assert Project.objects.filter(pk=untouched.pk).exists()
+    assert not ImportBatch.objects.filter(pk=batch.pk).exists()
+    assert not WorkCategory.objects.filter(pk=category.pk).exists()
