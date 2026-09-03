@@ -111,6 +111,8 @@ def test_report_defaults_select_only_top_10_and_search_segment(project):
     assert form["include_top_30"].value() is False
     assert form["metrika_search_segment"].value() is True
     assert form["include_metrika_sources_table"].value() is False
+    assert form["metrika_goals_quarter"].value() is True
+    assert form["metrika_categories_combined"].value() is False
 
 
 def test_project_report_settings_autosave_and_restore_are_isolated(client, user, project):

@@ -5,7 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.http import HttpResponseNotAllowed
+from django.http import HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
@@ -233,15 +233,31 @@ def sync(request, project_id):
     form = TopvisorSyncForm(request.POST)
     credential = TopvisorCredential.objects.filter(pk=1, last_verified_at__isnull=False).exists()
     if not credential and not _legacy_configured():
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse(
+                {"ok": False, "message": "Общие реквизиты Topvisor не настроены."}, status=400
+            )
         messages.error(request, "Общие реквизиты Topvisor не настроены.")
     elif form.is_valid():
         run = sync_positions(mapping=mapping)
         if run.status == run.Status.SUCCESS:
+            message = f"Topvisor: загружено позиций — {run.loaded_keyword_count}."
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return JsonResponse({"ok": True, "message": message})
             messages.success(request, f"Загружено позиций: {run.loaded_keyword_count}.")
             if run.error_message:
                 messages.warning(request, run.error_message)
             return redirect("topvisor:connection", project_id=project.id)
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse(
+                {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
+                status=502,
+            )
         messages.error(request, run.error_message)
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse(
+            {"ok": False, "message": "Некорректные параметры синхронизации."}, status=400
+        )
     return redirect("topvisor:connection", project_id=project.id)
 
 

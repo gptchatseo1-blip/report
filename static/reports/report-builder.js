@@ -6,6 +6,77 @@
   const csrf = form.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
   let saveTimer;
 
+  const manualField = form.querySelector('[name=topvisor_manual_rows]');
+  const manualBody = form.querySelector('[data-topvisor-manual-body]');
+  const defaultRows = (() => {
+    try { return JSON.parse(document.getElementById('topvisor-editor-defaults')?.textContent || '[]'); }
+    catch (_error) { return []; }
+  })();
+  let manualRows = (() => {
+    try { return JSON.parse(manualField?.value || '[]'); }
+    catch (_error) { return []; }
+  })();
+  if (!manualRows.length) manualRows = defaultRows;
+
+  function renderManualRows() {
+    if (!manualBody || !manualField) return;
+    manualBody.replaceChildren();
+    manualRows.forEach((row, index) => {
+      const tr = document.createElement('tr');
+      const fields = [
+        ['segment', `${row.engine || ''} · ${row.region || ''}`, 'text'],
+        ['month', row.month || '', 'month'],
+        ['visibility', row.visibility ?? 0, 'number'],
+        ['total', row.total ?? 0, 'number'],
+        ['top3', row.top3 ?? 0, 'number'],
+        ['top10', row.top10 ?? 0, 'number'],
+        ['top11_30', row.top11_30 ?? 0, 'number'],
+      ];
+      fields.forEach(([name, value, type]) => {
+        const td = document.createElement('td');
+        if (name === 'segment') td.textContent = value;
+        else {
+          const input = document.createElement('input');
+          input.type = type;
+          input.value = type === 'month' ? String(value).slice(0, 7) : value;
+          if (type === 'number') input.min = '0';
+          input.addEventListener('input', () => {
+            manualRows[index][name] = type === 'number' ? Number(input.value || 0) : `${input.value}-01`;
+            manualField.value = JSON.stringify(manualRows);
+            scheduleSave(700);
+          });
+          td.append(input);
+        }
+        tr.append(td);
+      });
+      const actions = document.createElement('td');
+      [['↑+', -1], ['↓+', 1]].forEach(([label, offset]) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'secondary'; button.textContent = label;
+        button.title = offset < 0 ? 'Вставить строку выше' : 'Вставить строку ниже';
+        button.addEventListener('click', () => {
+          manualRows.splice(index + (offset > 0 ? 1 : 0), 0, {...row});
+          manualField.value = JSON.stringify(manualRows); renderManualRows(); scheduleSave(150);
+        });
+        actions.append(button);
+      });
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
+      remove.title = 'Удалить строку';
+      remove.addEventListener('click', () => {
+        manualRows.splice(index, 1); manualField.value = JSON.stringify(manualRows);
+        renderManualRows(); scheduleSave(150);
+      });
+      actions.append(remove); tr.append(actions); manualBody.append(tr);
+    });
+    manualField.value = JSON.stringify(manualRows);
+  }
+  renderManualRows();
+  form.querySelector('[data-topvisor-add-row]')?.addEventListener('click', () => {
+    manualRows.push(manualRows.length ? {...manualRows[manualRows.length - 1]} : {configuration_id: '', engine: 'yandex', region: '', month: '', visibility: 0, total: 0, top3: 0, top10: 0, top11_30: 0});
+    renderManualRows(); scheduleSave(150);
+  });
+
   const richSource = form.querySelector('.rich-text-source');
   const richEditor = form.querySelector('[data-rich-editor]');
   if (richSource && richEditor) {
@@ -182,5 +253,40 @@
         if (button) button.disabled = false;
       }
     });
+  });
+
+  form.querySelector('[data-global-sync]')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const status = form.querySelector('[data-global-sync-status]');
+    const sources = [...document.querySelectorAll('[data-global-source-sync]')];
+    if (!sources.length) {
+      if (status) status.textContent = 'Нет подключённых источников.';
+      return;
+    }
+    button.disabled = true;
+    const completed = [];
+    try {
+      for (const source of sources) {
+        const label = source.dataset.globalSourceLabel || 'Источник';
+        if (status) status.textContent = `Синхронизация: ${label}…`;
+        const response = await fetch(source.action, {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'X-Requested-With': 'XMLHttpRequest'}, body: new FormData(source),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(`${label}: ${data.message || 'ошибка синхронизации'}`);
+        if (source.dataset.sourceName && data.periods) {
+          const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
+          replacePeriods(card, data.periods, source.dataset.sourceName);
+        }
+        completed.push(`${label} — завершено`);
+        if (status) status.textContent = completed.join('; ');
+      }
+      if (status) status.textContent = `${completed.join('; ')}. Все данные синхронизированы.`;
+    } catch (error) {
+      if (status) status.textContent = `${completed.join('; ')}${completed.length ? '; ' : ''}${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
   });
 })();

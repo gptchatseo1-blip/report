@@ -25,8 +25,10 @@ from apps.reports.exporting import (
     _goal_card,
     _landing_hierarchy_order,
     _landing_pages_table,
+    _metrika_detail_table,
     _monthly_topvisor_rows,
     _position_fill,
+    _render_monthly_topvisor_table,
     _webmaster_popular_table,
     _webmaster_query_summary_from_changes,
     generate_artifact,
@@ -187,6 +189,7 @@ def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
     labels = [row.cells[0].text for row in table.rows[1:]]
 
     assert labels == [
+        "Итого и среднее",
         "https://site.test/",
         "https://site.test/services/",
         "https://site.test/blog/",
@@ -336,6 +339,46 @@ def test_monthly_topvisor_rows_collapse_duplicate_month_start_dates():
     assert [row[1] for row in rows] == ["1%", "4%", "6%"]
 
 
+def test_monthly_topvisor_table_hides_visibility_column_when_disabled():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 7, 1))
+    segment = {
+        "ranking_depth": 30,
+        "three_month_series": [
+            {
+                "month": "2026-07-01",
+                "visibility": 12,
+                "distribution": {
+                    "total": 10,
+                    "top_10": 4,
+                    "ranges": {"1-3": 2, "4-10": 2, "11-20": 1, "21-30": 1},
+                },
+            }
+        ],
+    }
+    _render_monthly_topvisor_table(document, segment, show_visibility=False)
+    assert [cell.text for cell in document.tables[0].rows[0].cells] == [
+        "Месяц",
+        "в топ 3",
+        "в топ 10",
+        "в топ 11-30",
+    ]
+
+
+def test_metrika_detail_table_adds_total_and_renders_missing_numbers_as_zero():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 7, 1))
+    table = _metrika_detail_table(
+        document,
+        [("Москва", {"visits": None, "users": 2}, {"visits": 3, "users": None})],
+        first_header="Регион",
+        metrics=("visits", "users"),
+    )
+    assert table.rows[1].cells[0].text == "Итого и среднее"
+    assert table.rows[2].cells[1].text == "3"
+    assert table.rows[2].cells[2].text == "0"
+
+
 def test_full_docx_matches_reference_report_structure_and_styles(rich_version, settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     data = _artifact_bytes(
@@ -356,7 +399,10 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         "4) Сводная информация по конверсии (Яндекс.Метрика).",
         "Выполненные работы",
     ]
-    assert document.styles["Normal"].font.name == "Arial"
+    assert document.styles["Normal"].font.name == "Calibri"
+    assert document.styles["Normal"].font.size.pt == 11
+    assert document.core_properties.author == "SEO"
+    assert document.core_properties.comments == "https://t.me/wmasterfl"
     paragraph_text = [paragraph.text for paragraph in document.paragraphs]
     yandex_index = paragraph_text.index("Яндекс. Москва")
     google_index = paragraph_text.index("Google. Россия")
@@ -455,13 +501,10 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         assert table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 11
         assert table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 11
         metric_paragraphs = table.rows[1].cells[1].paragraphs
-        expected_sizes = (
-            [9, 7.5, 7.5] if table.rows[0].cells[0].text == "Группа запросов" else [9, 7.5]
-        )
+        expected_sizes = [9, 7.5]
         assert [paragraph.runs[0].font.size.pt for paragraph in metric_paragraphs] == expected_sizes
         if table.rows[0].cells[0].text == "Группа запросов":
-            assert str(metric_paragraphs[1].runs[0].font.color.rgb) == "7A8796"
-            assert str(metric_paragraphs[2].runs[0].font.color.rgb) in {"26A95B", "F04444"}
+            assert str(metric_paragraphs[1].runs[0].font.color.rgb) in {"26A95B", "F04444"}
         else:
             assert str(metric_paragraphs[1].runs[0].font.color.rgb) in {"26A95B", "F04444"}
     landing_tables = [
