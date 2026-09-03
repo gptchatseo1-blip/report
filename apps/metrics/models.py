@@ -14,7 +14,7 @@ class RankingSnapshot(models.Model):
         ImportBatch,
         null=True,
         blank=True,
-        on_delete=models.PROTECT,
+        on_delete=models.RESTRICT,
         related_name="ranking_snapshot",
     )
     snapshot_date = models.DateField()

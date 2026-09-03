@@ -53,7 +53,7 @@ class WorkLogItem(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="worklog_items")
     work_date = models.DateField("Дата работы")
     category = models.ForeignKey(
-        WorkCategory, on_delete=models.PROTECT, related_name="items", verbose_name="Категория"
+        WorkCategory, on_delete=models.RESTRICT, related_name="items", verbose_name="Категория"
     )
     title = models.CharField("Работа", max_length=300)
     status = models.CharField(
