@@ -3,6 +3,7 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.deletion import ProtectedError
 
 from apps.projects.models import Project
 
@@ -38,6 +39,12 @@ class Report(models.Model):
 
     def __str__(self):
         return f"{self.project} — {self.report_month:%m.%Y}"
+
+    def delete(self, *args, **kwargs):
+        protected = list(self.versions.filter(snapshot__isnull=False))
+        if protected:
+            raise ProtectedError("Зафиксированный отчёт нельзя удалять напрямую.", protected)
+        return super().delete(*args, **kwargs)
 
 
 class ProjectReportSettings(models.Model):
@@ -91,12 +98,17 @@ class ReportVersion(models.Model):
                 raise ValidationError(changed)
         return super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        if hasattr(self, "snapshot"):
+            raise ProtectedError("Зафиксированную версию нельзя удалять напрямую.", [self.snapshot])
+        return super().delete(*args, **kwargs)
+
 
 class ReportDatasetSnapshot(models.Model):
     """The durable boundary: application code may create, but never mutate, this row."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    version = models.OneToOneField(ReportVersion, on_delete=models.PROTECT, related_name="snapshot")
+    version = models.OneToOneField(ReportVersion, on_delete=models.CASCADE, related_name="snapshot")
     schema_version = models.CharField(max_length=32)
     formula_version = models.CharField(max_length=64)
     payload = models.JSONField()

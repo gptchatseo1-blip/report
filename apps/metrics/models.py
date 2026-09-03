@@ -27,6 +27,7 @@ class RankingSnapshot(models.Model):
 
     class DepthSource(models.TextChoices):
         TOPVISOR_API = "topvisor_api", "Topvisor API"
+        SERPHUNT_API = "serphunt_api", "Serphunt API"
         MANUAL = "manual", "Ручной импорт"
 
     depth_source = models.CharField(

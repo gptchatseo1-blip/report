@@ -32,6 +32,10 @@ class TimestampedModel(models.Model):
 
 
 class Project(TimestampedModel):
+    class PositionProvider(models.TextChoices):
+        TOPVISOR = "topvisor", "Topvisor"
+        SERPHUNT = "serphunt", "Serphunt"
+
     class Top1120Mode(models.TextChoices):
         AUTO = "auto", "Автоматически"
         ENABLED = "enabled", "Включено"
@@ -43,6 +47,12 @@ class Project(TimestampedModel):
     timezone = models.CharField("Часовой пояс", max_length=64, default="Europe/Moscow")
     language = models.CharField("Язык", max_length=10, default="ru")
     active = models.BooleanField("Активен", default=True)
+    position_provider = models.CharField(
+        "Сервис позиций",
+        max_length=16,
+        choices=PositionProvider.choices,
+        default=PositionProvider.TOPVISOR,
+    )
     top_11_20_mode = models.CharField(
         "Таблица ТОП-11–20", max_length=8, choices=Top1120Mode.choices, default=Top1120Mode.AUTO
     )

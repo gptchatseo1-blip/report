@@ -201,6 +201,8 @@ def connection(request, project_id):
                     ],
                 },
             )
+            project.position_provider = Project.PositionProvider.TOPVISOR
+            project.save(update_fields=["position_provider", "updated_at"])
             messages.success(request, "Проект Topvisor и конфигурации сохранены.")
             return redirect("topvisor:connection", project_id=project.id)
 

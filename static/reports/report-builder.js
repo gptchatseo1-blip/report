@@ -21,45 +21,55 @@
   function renderManualRows() {
     if (!manualBody || !manualField) return;
     manualBody.replaceChildren();
+    const insertAt = index => {
+      const source = manualRows[Math.min(index, manualRows.length - 1)] || {configuration_id: '', engine: 'yandex', region: '', month: '', total: 0, top3: 0, top10: 0, top11_30: 0};
+      manualRows.splice(index, 0, {...source});
+      manualField.value = JSON.stringify(manualRows);
+      renderManualRows();
+      scheduleSave(150);
+    };
+    const insertBoundary = index => {
+      const boundary = document.createElement('tr');
+      boundary.className = 'manual-row-boundary';
+      const cell = document.createElement('td');
+      cell.colSpan = 5;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '+';
+      button.title = index === 0 ? 'Добавить строку сверху' : index === manualRows.length ? 'Добавить строку снизу' : 'Добавить строку здесь';
+      button.addEventListener('click', () => insertAt(index));
+      cell.append(button); boundary.append(cell); manualBody.append(boundary);
+    };
     manualRows.forEach((row, index) => {
+      insertBoundary(index);
       const tr = document.createElement('tr');
-      const fields = [
-        ['segment', `${row.engine || ''} · ${row.region || ''}`, 'text'],
-        ['month', row.month || '', 'month'],
-        ['visibility', row.visibility ?? 0, 'number'],
-        ['total', row.total ?? 0, 'number'],
-        ['top3', row.top3 ?? 0, 'number'],
-        ['top10', row.top10 ?? 0, 'number'],
-        ['top11_30', row.top11_30 ?? 0, 'number'],
-      ];
+      tr.title = [row.engine, row.region].filter(Boolean).join(' · ');
+      const fields = [['month', row.month || '', 'month'], ['top3', row.top3 ?? 0, 'metric'], ['top10', row.top10 ?? 0, 'metric'], ['top11_30', row.top11_30 ?? 0, 'metric']];
       fields.forEach(([name, value, type]) => {
         const td = document.createElement('td');
-        if (name === 'segment') td.textContent = value;
+        const input = document.createElement('input');
+        input.type = type === 'month' ? 'month' : 'text';
+        if (type === 'month') input.value = String(value).slice(0, 7);
         else {
-          const input = document.createElement('input');
-          input.type = type;
-          input.value = type === 'month' ? String(value).slice(0, 7) : value;
-          if (type === 'number') input.min = '0';
-          input.addEventListener('input', () => {
-            manualRows[index][name] = type === 'number' ? Number(input.value || 0) : `${input.value}-01`;
-            manualField.value = JSON.stringify(manualRows);
-            scheduleSave(700);
-          });
-          td.append(input);
+          const percentName = `${name}_percent`;
+          const percent = row[percentName] ?? (row.total ? Math.round(Number(value || 0) * 100 / Number(row.total)) : 0);
+          input.value = `${percent}% (${value})`;
+          input.inputMode = 'decimal';
+          input.setAttribute('aria-label', 'Процент и количество');
         }
+        input.addEventListener('input', () => {
+          if (type === 'month') manualRows[index][name] = input.value ? `${input.value}-01` : '';
+          else {
+            const numbers = input.value.match(/-?\d+(?:[.,]\d+)?/g) || [];
+            manualRows[index][`${name}_percent`] = Number((numbers[0] || '0').replace(',', '.'));
+            manualRows[index][name] = Math.max(0, Number(numbers[1] || numbers[0] || 0));
+          }
+          manualField.value = JSON.stringify(manualRows); scheduleSave(700);
+        });
+        td.append(input);
         tr.append(td);
       });
       const actions = document.createElement('td');
-      [['↑+', -1], ['↓+', 1]].forEach(([label, offset]) => {
-        const button = document.createElement('button');
-        button.type = 'button'; button.className = 'secondary'; button.textContent = label;
-        button.title = offset < 0 ? 'Вставить строку выше' : 'Вставить строку ниже';
-        button.addEventListener('click', () => {
-          manualRows.splice(index + (offset > 0 ? 1 : 0), 0, {...row});
-          manualField.value = JSON.stringify(manualRows); renderManualRows(); scheduleSave(150);
-        });
-        actions.append(button);
-      });
       const remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
       remove.title = 'Удалить строку';
@@ -69,13 +79,21 @@
       });
       actions.append(remove); tr.append(actions); manualBody.append(tr);
     });
+    insertBoundary(manualRows.length);
     manualField.value = JSON.stringify(manualRows);
   }
   renderManualRows();
-  form.querySelector('[data-topvisor-add-row]')?.addEventListener('click', () => {
-    manualRows.push(manualRows.length ? {...manualRows[manualRows.length - 1]} : {configuration_id: '', engine: 'yandex', region: '', month: '', visibility: 0, total: 0, top3: 0, top10: 0, top11_30: 0});
-    renderManualRows(); scheduleSave(150);
-  });
+
+  function updateDependencies() {
+    form.querySelectorAll('[data-dependent-on]').forEach(container => {
+      const parent = document.getElementById(container.dataset.dependentOn);
+      const disabled = !parent?.checked;
+      container.classList.toggle('disabled-setting', disabled);
+      container.querySelectorAll('input, select, textarea, button').forEach(field => { field.disabled = disabled; });
+    });
+  }
+  form.addEventListener('change', updateDependencies);
+  updateDependencies();
 
   const richSource = form.querySelector('.rich-text-source');
   const richEditor = form.querySelector('[data-rich-editor]');
@@ -264,27 +282,24 @@
       return;
     }
     button.disabled = true;
-    const completed = [];
+    const results = [];
     try {
-      for (const source of sources) {
+      await Promise.all(sources.map(async source => {
         const label = source.dataset.globalSourceLabel || 'Источник';
-        if (status) status.textContent = `Синхронизация: ${label}…`;
-        const response = await fetch(source.action, {
-          method: 'POST', credentials: 'same-origin',
-          headers: {'X-Requested-With': 'XMLHttpRequest'}, body: new FormData(source),
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(`${label}: ${data.message || 'ошибка синхронизации'}`);
-        if (source.dataset.sourceName && data.periods) {
-          const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
-          replacePeriods(card, data.periods, source.dataset.sourceName);
+        try {
+          const response = await fetch(source.action, {method: 'POST', credentials: 'same-origin', headers: {'X-Requested-With': 'XMLHttpRequest'}, body: new FormData(source)});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.message || 'ошибка синхронизации');
+          if (source.dataset.sourceName && data.periods) {
+            const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
+            replacePeriods(card, data.periods, source.dataset.sourceName);
+          }
+          results.push({label, ok: true, message: data.message || 'завершено'});
+        } catch (error) {
+          results.push({label, ok: false, message: error.message || 'ошибка синхронизации'});
         }
-        completed.push(`${label} — завершено`);
-        if (status) status.textContent = completed.join('; ');
-      }
-      if (status) status.textContent = `${completed.join('; ')}. Все данные синхронизированы.`;
-    } catch (error) {
-      if (status) status.textContent = `${completed.join('; ')}${completed.length ? '; ' : ''}${error.message}`;
+      }));
+      if (status) status.textContent = results.map(item => `${item.label} — ${item.ok ? 'готово' : `ошибка: ${item.message}`}`).join('; ');
     } finally {
       button.disabled = false;
     }

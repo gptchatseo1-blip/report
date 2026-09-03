@@ -535,6 +535,7 @@ def build_report_snapshot(*, report, selection=None):
             "timezone": project.timezone,
             "language": project.language,
             "top_11_20_mode": project.top_11_20_mode,
+            "position_provider": project.position_provider,
             "favicon": _project_favicon(project.normalized_domain),
             "brand_rules": list(
                 project.brand_rules.order_by("kind", "pattern", "priority", "id").values(

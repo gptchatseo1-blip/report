@@ -15,7 +15,9 @@ from .rich_text import sanitize_report_html
 PERSISTED_REPORT_FIELDS = (
     "show_urls",
     "include_visibility",
+    "include_visibility_table",
     "include_monthly_dynamics",
+    "include_monthly_dynamics_table",
     "include_top_tables",
     "include_top_5",
     "include_top_10",
@@ -52,6 +54,7 @@ PERSISTED_REPORT_FIELDS = (
     "metrika_info_url_groups",
     "metrika_commercial_url_groups",
     "metrika_category_url_groups",
+    "metrika_subsection_url_groups",
     "include_completed_work",
     "completed_work_text",
     "sync_log_retention_months",
@@ -111,8 +114,14 @@ class ReportCreateForm(forms.Form):
     show_urls = forms.BooleanField(label="Выводить URL", required=False, initial=False)
     topvisor_manual_rows = forms.CharField(required=False, widget=forms.HiddenInput())
     include_visibility = forms.BooleanField(label="Видимость сайта", required=False, initial=True)
+    include_visibility_table = forms.BooleanField(
+        label="Таблица позиций по выбранным дням", required=False, initial=False
+    )
     include_monthly_dynamics = forms.BooleanField(
         label="Динамика по месяцам", required=False, initial=True
+    )
+    include_monthly_dynamics_table = forms.BooleanField(
+        label="Выводить таблицу динамики", required=False, initial=True
     )
     include_top_tables = forms.BooleanField(
         label="Таблицы запросов по позициям", required=False, initial=True
@@ -255,6 +264,17 @@ class ReportCreateForm(forms.Form):
         ),
         help_text="Для каждой категории задайте название и её URL/маски.",
     )
+    metrika_subsection_url_groups = forms.CharField(
+        label="Популярные подразделы",
+        required=False,
+        widget=forms.Textarea(
+            attrs={
+                "rows": 7,
+                "placeholder": "УЗИ | https://site.ru/diagnostika/uzi/*\nМРТ | https://site.ru/diagnostika/mrt/*",
+            }
+        ),
+        help_text="Название и URL подраздела. Эти URL раскрываются вторым уровнем в таблицах.",
+    )
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
     metrika_goals_quarter = forms.BooleanField(
         label="Выводить значения за квартал", required=False, initial=True
@@ -318,11 +338,21 @@ class ReportCreateForm(forms.Form):
                 self.connected_sources.add(source)
 
         required = defaultdict(set)
-        try:
-            configurations = project.topvisor_mapping.selected_configurations
-        except TopvisorProjectMapping.DoesNotExist:
-            configurations = []
-        for index, configuration in enumerate(configurations):
+        if project.position_provider == project.PositionProvider.SERPHUNT:
+            try:
+                from apps.serphunt.services import configurations as serphunt_configurations
+
+                configurations = serphunt_configurations(project.serphunt_mapping)
+            except (ImportError, AttributeError):
+                configurations = []
+        else:
+            try:
+                configurations = project.topvisor_mapping.selected_configurations
+            except TopvisorProjectMapping.DoesNotExist:
+                configurations = []
+        for index, configuration in enumerate(
+            configurations if project.position_provider == project.PositionProvider.TOPVISOR else []
+        ):
             raw_engine = str(
                 configuration.get("search_engine")
                 or configuration.get("searcher_name")
@@ -543,6 +573,11 @@ class ReportCreateForm(forms.Form):
 
     def clean_metrika_category_url_groups(self):
         value = self.cleaned_data.get("metrika_category_url_groups", "")
+        parse_named_url_groups(value)
+        return value
+
+    def clean_metrika_subsection_url_groups(self):
+        value = self.cleaned_data.get("metrika_subsection_url_groups", "")
         parse_named_url_groups(value)
         return value
 

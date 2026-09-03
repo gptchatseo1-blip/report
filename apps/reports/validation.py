@@ -61,9 +61,20 @@ def _all_scalars(value):
         yield value
 
 
+def _all_values(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _all_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _all_values(item)
+    else:
+        yield value
+
+
 def _contains_secret(value):
     return bool(
-        SECRET_RE.search(" ".join(str(item) for item in _all_scalars(value) if item is not None))
+        SECRET_RE.search(" ".join(str(item) for item in _all_values(value) if item is not None))
     )
 
 
