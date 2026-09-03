@@ -825,6 +825,25 @@ def test_history_rejects_request_without_dates_or_range():
         next(api.get_position_history("22653133", fields=["name"], positions_fields=["position"]))
 
 
+def test_history_ignores_keyword_before_its_first_actual_check():
+    from apps.topvisor.services import _history_rows
+
+    payload = {
+        "headers": {"dates": ["2026-06-30", "2026-07-31"]},
+        "keywords": [
+            {
+                "name": "new query",
+                "positionsData": {
+                    "2026-07-31:42:2": {"position": 7},
+                },
+            }
+        ],
+    }
+    rows = _history_rows(payload, {"region_index": 2}, "42", {})
+    assert rows["2026-06-30"] == []
+    assert rows["2026-07-31"][0]["query"] == "new query"
+
+
 class RealHistoryClient:
     def __init__(self, *, frequency=0, omit_frequency=False, fail_last=False):
         self.calls = []

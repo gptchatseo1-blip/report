@@ -1,3 +1,4 @@
+import json
 from collections import defaultdict
 from datetime import date
 from urllib.parse import urlsplit
@@ -34,13 +35,20 @@ PERSISTED_REPORT_FIELDS = (
     "metrika_bar_search_engines",
     "include_metrika_geography",
     "geography_moscow",
+    "geography_moscow_region",
     "geography_saint_petersburg",
+    "geography_saint_petersburg_region",
+    "geography_undefined",
+    "geography_area_undefined",
     "include_metrika_landing_pages",
     "include_metrika_landing_page_comparison",
     "include_metrika_url_groups",
     "include_metrika_sections",
     "include_metrika_categories",
+    "metrika_categories_combined",
     "include_metrika_goals",
+    "metrika_goals_quarter",
+    "topvisor_manual_rows",
     "metrika_info_url_groups",
     "metrika_commercial_url_groups",
     "metrika_category_url_groups",
@@ -54,7 +62,18 @@ BOOLEAN_REPORT_FIELDS = frozenset(
     for name in PERSISTED_REPORT_FIELDS
     if name.startswith("include_")
     or name
-    in {"show_urls", "metrika_search_segment", "geography_moscow", "geography_saint_petersburg"}
+    in {
+        "show_urls",
+        "metrika_search_segment",
+        "geography_moscow",
+        "geography_moscow_region",
+        "geography_saint_petersburg",
+        "geography_saint_petersburg_region",
+        "geography_undefined",
+        "geography_area_undefined",
+        "metrika_categories_combined",
+        "metrika_goals_quarter",
+    }
 )
 
 
@@ -90,6 +109,7 @@ class ReportCreateForm(forms.Form):
     yandex_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
     google_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
     show_urls = forms.BooleanField(label="Выводить URL", required=False, initial=False)
+    topvisor_manual_rows = forms.CharField(required=False, widget=forms.HiddenInput())
     include_visibility = forms.BooleanField(label="Видимость сайта", required=False, initial=True)
     include_monthly_dynamics = forms.BooleanField(
         label="Динамика по месяцам", required=False, initial=True
@@ -169,8 +189,14 @@ class ReportCreateForm(forms.Form):
         label="География посетителей", required=False, initial=True
     )
     geography_moscow = forms.BooleanField(label="Москва", required=False, initial=True)
+    geography_moscow_region = forms.BooleanField(
+        label="Москва и Московская область", required=False, initial=False
+    )
     geography_saint_petersburg = forms.BooleanField(
         label="Санкт-Петербург", required=False, initial=True
+    )
+    geography_saint_petersburg_region = forms.BooleanField(
+        label="Санкт-Петербург и Ленинградская область", required=False, initial=False
     )
     geography_undefined = forms.BooleanField(label="Не определено", required=False, initial=True)
     geography_area_undefined = forms.BooleanField(
@@ -190,6 +216,9 @@ class ReportCreateForm(forms.Form):
     )
     include_metrika_categories = forms.BooleanField(
         label="Основные прорабатываемые категории", required=False, initial=False
+    )
+    metrika_categories_combined = forms.BooleanField(
+        label="Выводить на одном графике", required=False, initial=False
     )
     metrika_info_url_groups = forms.CharField(
         label="Информационные разделы",
@@ -227,6 +256,9 @@ class ReportCreateForm(forms.Form):
         help_text="Для каждой категории задайте название и её URL/маски.",
     )
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
+    metrika_goals_quarter = forms.BooleanField(
+        label="Выводить значения за квартал", required=False, initial=True
+    )
     include_completed_work = forms.BooleanField(
         label="Выполненные работы", required=False, initial=True
     )
@@ -275,6 +307,7 @@ class ReportCreateForm(forms.Form):
             for name in PERSISTED_REPORT_FIELDS:
                 if name in saved and name in self.fields:
                     self.initial[name] = saved[name]
+
         from apps.metrics.models import RankingSnapshot, SourceSnapshot
 
         for source, relation in (
@@ -415,6 +448,16 @@ class ReportCreateForm(forms.Form):
             # Never overwrite submitted checkbox values on a bound form.
             if not self.is_bound:
                 self.initial.setdefault(field, defaults)
+
+    def clean_topvisor_manual_rows(self):
+        value = self.cleaned_data.get("topvisor_manual_rows") or "[]"
+        try:
+            rows = json.loads(value)
+        except (TypeError, ValueError):
+            raise forms.ValidationError("Некорректные ручные значения Topvisor.") from None
+        if not isinstance(rows, list) or len(rows) > 500:
+            raise forms.ValidationError("Некорректные ручные значения Topvisor.")
+        return value
 
     def clean_month(self):
         value = self.cleaned_data.get("month")

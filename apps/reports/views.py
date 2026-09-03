@@ -24,6 +24,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from apps.projects.models import Project
+from apps.topvisor.models import TopvisorProjectMapping
 
 from .exporting import ExportBlocked, generate_artifact
 from .forms import (
@@ -119,6 +120,73 @@ def _persisted_report_values(form):
     }
     values["topvisor_report_urls"] = form.cleaned_topvisor_report_urls()
     return values
+
+
+def _validated_manual_rows(value):
+    try:
+        rows = json.loads(value or "[]") if isinstance(value, str) else value
+    except json.JSONDecodeError:
+        raise ValidationError("Некорректные ручные значения Topvisor.") from None
+    if not isinstance(rows, list) or len(rows) > 500:
+        raise ValidationError("Некорректные ручные значения Topvisor.")
+    allowed = {
+        "configuration_id",
+        "engine",
+        "region",
+        "month",
+        "visibility",
+        "total",
+        "top3",
+        "top10",
+        "top11_30",
+    }
+    cleaned = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cleaned.append({key: row.get(key) for key in allowed if key in row})
+    return cleaned
+
+
+def _topvisor_editor_rows(project):
+    """Latest snapshot in every configuration/month for the editable report table."""
+    from apps.metrics.models import RankingSnapshot
+
+    snapshots = (
+        RankingSnapshot.objects.filter(
+            project=project,
+            snapshot_date__gte=timezone.localdate() - timedelta(days=550),
+        )
+        .prefetch_related("positions")
+        .order_by("snapshot_date", "created_at", "id")
+    )
+    latest = {}
+    for snapshot in snapshots:
+        key = (
+            snapshot.search_engine,
+            snapshot.region,
+            snapshot.topvisor_configuration_id,
+            snapshot.snapshot_date.replace(day=1),
+        )
+        latest[key] = snapshot
+    rows = []
+    for (engine, region, configuration, month), snapshot in sorted(latest.items()):
+        positions = list(snapshot.positions.all())
+        ranked = [row.position_value for row in positions if row.position_value is not None]
+        rows.append(
+            {
+                "configuration_id": configuration,
+                "engine": engine,
+                "region": region,
+                "month": month.isoformat(),
+                "visibility": float(snapshot.visibility) if snapshot.visibility is not None else 0,
+                "total": len(positions),
+                "top3": sum(value <= 3 for value in ranked),
+                "top10": sum(value <= 10 for value in ranked),
+                "top11_30": sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked),
+            }
+        )
+    return rows
 
 
 def _url_segment_settings(cleaned):
@@ -377,6 +445,10 @@ def report_list(request, project_id):
         "source_period_fields": source_period_fields,
         "topvisor_report_link_fields": topvisor_report_link_fields,
         "can_create": can_create,
+        "topvisor_sync_url": reverse("topvisor:sync", args=[project.id])
+        if TopvisorProjectMapping.objects.filter(project=project).exists()
+        else "",
+        "topvisor_editor_rows": _topvisor_editor_rows(project),
     }
     context.update(_metrika_goal_context(project, request.user))
     return render(
@@ -429,6 +501,7 @@ def report_create(request, project_id):
         ProjectReportSettings.objects.update_or_create(
             project=project, defaults={"values": persisted_values}
         )
+        manual_rows = _validated_manual_rows(form.cleaned_data.get("topvisor_manual_rows"))
         version = create_report_version(
             report=report,
             created_by=request.user,
@@ -460,7 +533,9 @@ def report_create(request, project_id):
                             "metrika_bar_search_engines",
                             "include_metrika_geography",
                             "geography_moscow",
+                            "geography_moscow_region",
                             "geography_saint_petersburg",
+                            "geography_saint_petersburg_region",
                             "geography_undefined",
                             "geography_area_undefined",
                             "include_metrika_landing_pages",
@@ -468,12 +543,15 @@ def report_create(request, project_id):
                             "include_metrika_url_groups",
                             "include_metrika_sections",
                             "include_metrika_categories",
+                            "metrika_categories_combined",
                             "include_metrika_goals",
+                            "metrika_goals_quarter",
                             "include_completed_work",
                             "completed_work_text",
                         )
                     },
                     "metrika_url_segments": _url_segment_settings(form.cleaned_data),
+                    "topvisor_manual_rows": manual_rows,
                     "topvisor_report_urls": topvisor_report_urls,
                     "topvisor_report_url": (
                         next(iter(topvisor_report_urls.values()), "")
@@ -511,6 +589,10 @@ def report_create(request, project_id):
         "source_period_fields": source_period_fields,
         "topvisor_report_link_fields": topvisor_report_link_fields,
         "can_create": can_create,
+        "topvisor_sync_url": reverse("topvisor:sync", args=[project.id])
+        if TopvisorProjectMapping.objects.filter(project=project).exists()
+        else "",
+        "topvisor_editor_rows": _topvisor_editor_rows(project),
     }
     context.update(_metrika_goal_context(project, request.user))
     return render(
@@ -546,6 +628,11 @@ def report_settings_save(request, project_id):
             values[name] = [str(item) for item in (value or []) if str(item) in allowed]
         elif name == "sync_log_retention_months":
             values[name] = str(value) if str(value) in {"6", "12", "forever"} else "12"
+        elif name == "topvisor_manual_rows":
+            try:
+                values[name] = json.dumps(_validated_manual_rows(value), ensure_ascii=False)
+            except ValidationError as exc:
+                return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
         else:
             values[name] = (
                 sanitize_report_html(value)

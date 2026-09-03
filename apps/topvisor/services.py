@@ -280,7 +280,12 @@ def _history_rows(payload, configuration, project_id, frequency_map):
     for keyword in payload.get("keywords", []):
         positions = keyword.get("positionsData") or {}
         for value in dates:
-            position_data = positions.get(f"{value}:{project_id}:{region_index}")
+            history_key = f"{value}:{project_id}:{region_index}"
+            # No key means that this keyword did not exist when the check was made.
+            # It must not be treated as a checked keyword outside the ranking depth.
+            if history_key not in positions:
+                continue
+            position_data = positions.get(history_key)
             if position_data is None:
                 position_data = {}
             if not isinstance(position_data, dict):
