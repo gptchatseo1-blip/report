@@ -19,8 +19,8 @@ class UrlGroupInline(admin.TabularInline):
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
     form = ProjectForm
-    list_display = ["name", "normalized_domain", "active", "updated_at"]
-    list_filter = ["active"]
+    list_display = ["name", "normalized_domain", "position_provider", "active", "updated_at"]
+    list_filter = ["position_provider", "active"]
     search_fields = ["name", "domain", "normalized_domain"]
     readonly_fields = ["normalized_domain", "created_at", "updated_at"]
     inlines = [BrandRuleInline, UrlGroupInline]

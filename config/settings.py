@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     "apps.metrics",
     "apps.worklog",
     "apps.topvisor",
+    "apps.serphunt",
     "apps.yandex",
     "apps.reports",
 ]
@@ -134,6 +135,8 @@ TOPVISOR_API_BASE_URL = os.getenv("TOPVISOR_API_BASE_URL", "https://api.topvisor
 TOPVISOR_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TOPVISOR_REQUEST_TIMEOUT_SECONDS", "15"))
 TOPVISOR_MAX_RETRIES = int(os.getenv("TOPVISOR_MAX_RETRIES", "3"))
 TOPVISOR_PROJECTS_CACHE_SECONDS = int(os.getenv("TOPVISOR_PROJECTS_CACHE_SECONDS", "300"))
+SERPHUNT_API_BASE_URL = os.getenv("SERPHUNT_API_BASE_URL", "https://serphunt.ru/api/v1")
+SERPHUNT_REQUEST_TIMEOUT_SECONDS = float(os.getenv("SERPHUNT_REQUEST_TIMEOUT_SECONDS", "20"))
 
 YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID", "")
 YANDEX_CLIENT_SECRET = os.getenv("YANDEX_CLIENT_SECRET", "")

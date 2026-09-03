@@ -7,6 +7,7 @@
     <h1>Яндекс.Метрика и Вебмастер — {{ project.name }}</h1>
     <p>Один аккаунт Яндекса используется для чтения данных обоих сервисов.</p>
   </div>
+  <div class="actions"><a class="button secondary" href="{% url 'reports:report-list' project.id %}">К отчётам</a><a class="button secondary" href="{% url 'reports:projects' %}">К проектам</a></div>
 </div>
 {% if error %}<div class="notice">{{ error }}</div>{% endif %}
 

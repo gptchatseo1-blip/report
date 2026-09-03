@@ -191,8 +191,8 @@ def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
     assert labels == [
         "Итого и среднее",
         "https://site.test/",
-        "https://site.test/services/",
-        "https://site.test/blog/",
+        "›  https://site.test/services/",
+        "›  https://site.test/blog/",
     ]
     assert not any("/a/" in label or "/b/" in label for label in labels)
 
@@ -448,19 +448,20 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         table
         for table in document.tables
         if [cell.text for cell in table.rows[0].cells[:4]]
-        == ["Месяц", "Видимость", "в топ 3", "в топ 10"]
+        == ["Месяц", "в топ 3", "в топ 10", "в топ 11-30"]
     ]
     assert len(monthly_tables) == 2
     assert all(
-        re.fullmatch(r"\d+%", row.cells[1].text)
+        re.fullmatch(r"\d+% \(\d+\)", row.cells[column].text)
         for table in monthly_tables
         for row in table.rows[1:]
+        for column in range(1, 4)
     )
     assert all(
         row.cells[column].paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
         for table in monthly_tables
         for row in table.rows
-        for column in range(1, 5)
+        for column in range(1, 4)
     )
     assert all(
         cell.vertical_alignment == WD_CELL_VERTICAL_ALIGNMENT.CENTER
@@ -480,13 +481,13 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         "Отказы, %\nСегмент A",
         "Отказы, %\nСегмент B",
     ]
-    assert search_table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Arial"
-    assert search_table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 8
-    assert search_table.rows[0].cells[1].paragraphs[0].runs[0].font.size.pt == 7
+    assert search_table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Calibri"
+    assert search_table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 11
+    assert search_table.rows[0].cells[1].paragraphs[0].runs[0].font.size.pt == 9
     assert str(search_table.rows[0].cells[1].paragraphs[0].runs[0].font.color.rgb) == "7A8796"
-    assert search_table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 8
-    assert search_table.rows[1].cells[1].paragraphs[0].runs[0].font.size.pt == 8
-    assert search_table.rows[1].cells[2].paragraphs[1].runs[0].font.size.pt == 7
+    assert search_table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 11
+    assert search_table.rows[1].cells[1].paragraphs[0].runs[0].font.size.pt == 11
+    assert search_table.rows[1].cells[2].paragraphs[1].runs[0].font.size.pt == 8
     provider_tables = [
         table
         for table in document.tables
@@ -497,11 +498,11 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
         "Запрос",
     }
     for table in provider_tables:
-        assert table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Arial"
+        assert table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Calibri"
         assert table.rows[0].cells[0].paragraphs[0].runs[0].font.size.pt == 11
         assert table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 11
         metric_paragraphs = table.rows[1].cells[1].paragraphs
-        expected_sizes = [9, 7.5]
+        expected_sizes = [11, 8]
         assert [paragraph.runs[0].font.size.pt for paragraph in metric_paragraphs] == expected_sizes
         if table.rows[0].cells[0].text == "Группа запросов":
             assert str(metric_paragraphs[1].runs[0].font.color.rgb) in {"26A95B", "F04444"}
@@ -520,9 +521,8 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
     )
     assert "4) Сводная информация по конверсии (Яндекс.Метрика)." in text
     assert "Ниже приведены диаграммы конверсии" in text
-    assert text.index("Динамика по поисковым системам за квартал:") < text.index(
-        "Период сравнения:"
-    )
+    assert "Динамика по поисковым системам за квартал:" in text
+    assert "Период сравнения:" not in text
     assert "Трафик из региона «Не определено»" not in text
     assert "Трафик из региона «Область не определена»" not in text
     assert text.count("Выполненные работы отсутствуют.") == 1
@@ -623,7 +623,8 @@ def test_configured_url_segments_render_three_level_tables_and_separate_charts(
     assert "Коммерческий раздел «Реабилитация»" in text
     assert "https://demo.example/services/priority/" in landing_urls
     assert all(
-        len([part for part in urlsplit(url).path.split("/") if part]) <= 2 for url in landing_urls
+        len([part for part in urlsplit(url.lstrip("›⌄ ")).path.split("/") if part]) <= 2
+        for url in landing_urls
     )
 
 

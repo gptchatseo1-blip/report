@@ -1,5 +1,5 @@
 {% extends 'reports/base.html' %}{% block title %}Topvisor — {{ project.name }}{% endblock %}{% block content %}
-<div class="page-head"><div><h1>Topvisor — {{ project.name }}</h1><p>Выберите проект Topvisor и поисковые конфигурации.</p></div><a href="{% url 'reports:report-list' project.id %}">К отчётам</a></div>
+<div class="page-head"><div><h1>Topvisor — {{ project.name }}</h1><p>Выберите проект Topvisor и поисковые конфигурации.</p></div><div class="actions"><a class="button secondary" href="{% url 'reports:report-list' project.id %}">К отчётам</a><a class="button secondary" href="{% url 'reports:projects' %}">К проектам</a></div></div>
 {% if legacy_fallback %}<div class="card warning"><span class="badge warning-badge">Временный fallback</span><p>Используются общие реквизиты из окружения сервера.</p></div>{% endif %}
 {% if not verified %}<div class="notice">Общие реквизиты Topvisor не настроены администратором.</div>{% endif %}
 {% if verified %}{% if safe_error %}<div class="card"><span class="badge danger">Нет доступа</span><p>{{ safe_error }}</p></div>{% else %}<div class="card"><span class="badge success">API доступен</span>{% if mapping %}<p>Подключён проект: <strong>{{ mapping.topvisor_project_name }}</strong>. Выбрано конфигураций: {{ mapping.selected_configurations|length }}.</p>{% endif %}</div>

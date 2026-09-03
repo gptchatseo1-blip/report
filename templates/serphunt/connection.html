@@ -1,0 +1,9 @@
+{% extends 'reports/base.html' %}
+{% block title %}Serphunt — {{ project.name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Serphunt — {{ project.name }}</h1><p>Ключевые слова и параметры проверки позиций.</p></div><div class="actions"><a class="button secondary" href="{% url 'reports:report-list' project.id %}">К отчётам</a><a class="button secondary" href="{% url 'reports:projects' %}">К проектам</a></div></div>
+{% if not credential %}<div class="notice">Общий API-ключ Serphunt не настроен администратором.</div>{% endif %}
+<section class="card"><form method="post" class="configuration-form">{% csrf_token %}{{ form.as_p }}<p>Устройство не является отдельным измерением отчёта, поэтому выбирается одно.</p><button>Сохранить настройки</button></form></section>
+{% if mapping and credential %}<section class="card"><h2>Синхронизация позиций</h2><form method="post" action="{% url 'serphunt:sync' project.id %}">{% csrf_token %}<button>Загрузить позиции из Serphunt</button></form><p>Последняя успешная: {{ mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p></section>{% endif %}
+{% if runs %}<section><h2>Последние запуски</h2>{% for run in runs %}<article class="card">{{ run.get_status_display }} · {{ run.started_at|date:'d.m.Y H:i' }} · {{ run.loaded_keyword_count }} позиций{% if run.error_message %}<p>{{ run.error_message }}</p>{% endif %}</article>{% endfor %}</section>{% endif %}
+{% endblock %}

@@ -58,8 +58,12 @@ def test_staff_stores_one_encrypted_credential_without_rendering_secret(client, 
     project_list = client.get(reverse("reports:projects")).content.decode()
     assert reverse("yandex:oauth-credentials") in project_list
     assert reverse("topvisor:credentials") in project_list
-    assert reverse("topvisor:connection", args=[project.id]) in project_list
-    assert reverse("yandex:connection", args=[project.id]) in project_list
+    assert reverse("serphunt:credentials") in project_list
+    assert reverse("topvisor:connection", args=[project.id]) not in project_list
+    assert reverse("yandex:connection", args=[project.id]) not in project_list
+    report_settings = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
+    assert reverse("topvisor:connection", args=[project.id]) in report_settings
+    assert reverse("yandex:connection", args=[project.id]) in report_settings
 
 
 def test_credentials_page_requires_staff_and_csrf(oauth_context):

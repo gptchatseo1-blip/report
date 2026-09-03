@@ -295,7 +295,7 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
             for run in paragraph.runs:
                 run.font.name = "Calibri"
                 run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Calibri")
-                run.font.size = Pt(10)
+                run.font.size = Pt(11)
                 run.font.bold = True
     _repeat_header(table.rows[0])
     _prevent_row_split(table.rows[0])
@@ -315,7 +315,7 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
                 for run in paragraph.runs:
                     run.font.name = "Calibri"
                     run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Calibri")
-                    run.font.size = Pt(10)
+                    run.font.size = Pt(11)
                     run.font.bold = False
             if cell_fills and row_index < len(cell_fills):
                 fills = cell_fills[row_index]
@@ -335,13 +335,59 @@ def _save_figure(figure):
     figure.savefig(
         output,
         format="png",
-        dpi=150,
+        dpi=300,
         facecolor="white",
         metadata={"Software": GENERATOR_VERSION},
     )
     plt.close(figure)
     output.seek(0)
     return output
+
+
+def _period_pills_image(items):
+    """Render Metrika-like period controls as a sharp, layout-stable image."""
+    widths = [0.9 if marker == "swap" else max(2.4, len(label) * 0.105) for label, marker in items]
+    total = sum(widths) + 0.18 * (len(widths) - 1)
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 10}):
+        figure, axis = plt.subplots(figsize=(total, 0.55), dpi=300, facecolor="white")
+        axis.set_xlim(0, total)
+        axis.set_ylim(0, 1)
+        axis.axis("off")
+        x = 0
+        for (label, marker), width in zip(items, widths, strict=True):
+            fill = "#F1F3F6" if marker != "swap" else "#FFFFFF"
+            axis.add_patch(
+                FancyBboxPatch(
+                    (x, 0.16),
+                    width,
+                    0.68,
+                    boxstyle="round,pad=0.02,rounding_size=0.18",
+                    facecolor=fill,
+                    edgecolor="#E1E5EA",
+                    linewidth=0.8,
+                )
+            )
+            if marker and marker != "swap":
+                axis.add_patch(plt.Circle((x + 0.3, 0.5), 0.12, color="#FFFFFF"))
+                axis.text(
+                    x + 0.3, 0.5, marker, ha="center", va="center", fontsize=7, color="#526174"
+                )
+                text_x = x + 0.52
+            else:
+                text_x = x + width / 2
+            axis.text(
+                text_x,
+                0.5,
+                label,
+                ha="center" if marker == "swap" else "left",
+                va="center",
+                fontsize=9,
+                color="#27303F",
+                fontweight="bold" if marker == "swap" else "normal",
+            )
+            x += width + 0.18
+        figure.subplots_adjust(0, 0, 1, 1)
+        return _save_figure(figure)
 
 
 def _style_axis(axis, *, grid_axis="both"):
@@ -463,7 +509,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
     columns = 1 if engine == "google" else 2
     row_count = math.ceil(len(buckets) / columns)
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(4.0, 0.67 * row_count), dpi=150, facecolor="white")
+        figure, axis = plt.subplots(figsize=(4.8, 0.78 * row_count), dpi=200, facecolor="white")
         axis.set_xlim(0, columns)
         axis.set_ylim(0, row_count)
         axis.axis("off")
@@ -499,7 +545,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
                 ha="center",
                 va="center",
                 color="white",
-                fontsize=8,
+                fontsize=10,
                 fontweight="bold",
             )
             axis.text(
@@ -509,7 +555,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
                 ha="left",
                 va="center",
                 color="#91A0AF",
-                fontsize=8,
+                fontsize=9,
             )
             axis.text(
                 x + 0.82,
@@ -518,7 +564,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
                 ha="right",
                 va="center",
                 color="#5D6875",
-                fontsize=8,
+                fontsize=9,
             )
         figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         return _save_figure(figure)
@@ -626,6 +672,72 @@ def _render_position_table(doc, payload, segment, start, end):
     return True
 
 
+def _render_daily_position_table(doc, payload, segment):
+    sources = [
+        source
+        for source in payload.get("ranking_sources", [])
+        if str(source.get("configuration_id")) == str(segment.get("configuration_id"))
+    ]
+    sources.sort(key=lambda item: str(item.get("date")))
+    if not sources:
+        return
+    dates = [str(source.get("date"))[:10] for source in sources]
+    by_date = {
+        day: {
+            row.get("normalized_query") or row.get("query"): row
+            for row in source.get("positions", [])
+        }
+        for day, source in zip(dates, sources, strict=True)
+    }
+    latest = sources[-1].get("positions", [])
+    query_rows = []
+    current_group = None
+    for row in sorted(latest, key=lambda item: (item.get("group") or "", item.get("query") or "")):
+        group = row.get("group") or "Без группы"
+        if group != current_group:
+            query_rows.append((f"Группа: {group}", "", *([""] * len(dates))))
+            current_group = group
+        key = row.get("normalized_query") or row.get("query")
+        query_rows.append(
+            (
+                row.get("query"),
+                _number(row.get("frequency"), decimal_places=0),
+                *[
+                    _number((by_date[day].get(key) or {}).get("position"), decimal_places=0)
+                    if (by_date[day].get(key) or {}).get("position") is not None
+                    else "—"
+                    for day in dates
+                ],
+            )
+        )
+    widths = [8.0, 2.2, *([max(1.6, 8.2 / len(dates))] * len(dates))]
+    table = _table(
+        doc,
+        (
+            "Ключевое слово",
+            "Частота",
+            *[date.fromisoformat(day).strftime("%d.%m") for day in dates],
+        ),
+        query_rows,
+        widths,
+        header_fill="F7F7F7",
+    )
+    for row_index, values in enumerate(query_rows, start=1):
+        if str(values[0]).startswith("Группа: "):
+            for cell in table.rows[row_index].cells:
+                _shade_cell(cell, "F3F5F7")
+                for run in cell.paragraphs[0].runs:
+                    run.font.bold = True
+            continue
+        for column in range(2, len(table.rows[row_index].cells)):
+            cell = table.rows[row_index].cells[column]
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            value = values[column]
+            if value != "—":
+                _shade_cell(cell, _position_fill(int(str(value).replace(",", ".").split(".")[0])))
+    _set_table_borders(table, "E2E4E8", size="3")
+
+
 def _monthly_boundary_points(points, date_getter):
     points_by_month = {}
     for order, point in enumerate(points):
@@ -679,12 +791,9 @@ def _render_monthly_topvisor_table(doc, segment, *, show_visibility=True):
     if not rows:
         doc.add_paragraph("Месячные итоги отсутствуют.", style="Data Missing")
         return
-    headers = ("Месяц", "Видимость", "в топ 3", "в топ 10", f"в топ {final_label}")
-    widths = [3.7] * 5
-    if not show_visibility:
-        headers = (headers[0], *headers[2:])
-        rows = [(row[0], *row[2:]) for row in rows]
-        widths = [4.6] * 4
+    headers = ("Месяц", "в топ 3", "в топ 10", f"в топ {final_label}")
+    rows = [(row[0], *row[2:]) for row in rows]
+    widths = [4.6] * 4
     table = _table(doc, headers, rows, widths, header_fill="EEF1F2")
     for row in table.rows:
         for column in range(1, len(row.cells)):
@@ -725,22 +834,14 @@ def _render_topvisor_comparison(doc, segment, *, show_visibility=True):
     current_buckets = {
         item["label"]: item for item in _topvisor_buckets(current.get("distribution") or {}, depth)
     }
-    previous_buckets = (
-        {
-            item["label"]: item
-            for item in _topvisor_buckets(previous.get("distribution") or {}, depth)
-        }
-        if previous
-        else {}
-    )
     final_label = "11-30" if depth >= 30 else "11-20"
     doc.add_paragraph("В сравнении с прошлым месяцем доля запросов в топ:")
     for label in ("1-3", "1-10", final_label):
-        now = (current_buckets.get(label) or {}).get("share")
-        before = (previous_buckets.get(label) or {}).get("share")
+        bucket = current_buckets.get(label) or {}
+        now = bucket.get("share")
         doc.add_paragraph(
             f"Запросов в топ {label} — {_number(now, '%', decimal_places=0)} "
-            f"({_comparison_phrase(now, before)}).",
+            f"({_number(bucket.get('count'), decimal_places=0)}).",
             style="Compact",
         )
     if show_visibility:
@@ -824,6 +925,9 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, report_url=""):
             "Видимость сайта — это доля показов сайта в поисковых системах, которая "
             "зависит от частот и позиций запросов."
         )
+        if payload.get("display_options", {}).get("include_visibility_table"):
+            doc.add_paragraph("Позиции по выбранным дням", style="Table Heading")
+            _render_daily_position_table(doc, payload, segment)
     doc.add_paragraph(
         "График распределения по топам по основным ключевым словам за отчётный период."
     )
@@ -838,9 +942,11 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, report_url=""):
         _distribution_cards(
             segment.get("distribution") or {}, depth, engine=segment.get("search_engine")
         ),
-        width=9.0 if segment.get("search_engine") == "yandex" else 5.0,
+        width=9.6,
     )
-    if section_enabled(payload, "position_dynamics"):
+    if section_enabled(payload, "position_dynamics") and payload.get("display_options", {}).get(
+        "include_monthly_dynamics_table", True
+    ):
         doc.add_paragraph("В динамике по месяцам")
         _render_monthly_topvisor_table(
             doc, segment, show_visibility=section_enabled(payload, "visibility")
@@ -972,21 +1078,11 @@ def _period_caption(doc, rows, *, detail="по дням"):
         f"{start_date:%d} {MONTHS_GENITIVE[start_date.month - 1]} {start_date.year} - "
         f"{end_date:%d} {MONTHS_GENITIVE[end_date.month - 1]} {end_date.year}"
     )
-    table = doc.add_table(rows=1, cols=2)
-    table.autofit = False
-    for cell, text, width in zip(
-        table.rows[0].cells,
-        (period, f"Детализация: {detail}"),
-        (8.5, 5.0),
-        strict=True,
-    ):
-        cell.text = text
-        _set_cell_width(cell, width)
-        _shade_cell(cell, "F0F2F5")
-        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-        for run in cell.paragraphs[0].runs:
-            _style_run(run, size=8, color="526174")
-    _set_table_borders(table, "FFFFFF", size="0")
+    _add_report_picture(
+        doc,
+        _period_pills_image([(period, ""), (f"{detail.capitalize()} ⌄", "")]),
+        width=11.2,
+    )
 
 
 def _nice_step(values, *, minimum=10):
@@ -1226,8 +1322,8 @@ def _change_color(current, previous, *, lower_is_better=False):
 
 
 def _style_run(run, *, size, color="000000", bold=False):
-    run.font.name = "Arial"
-    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Arial")
+    run.font.name = "Calibri"
+    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Calibri")
     run.font.size = Pt(size)
     run.font.bold = bold
     run.font.color.rgb = RGBColor.from_string(color)
@@ -1270,7 +1366,7 @@ def _paired_metric_cell(
     current_paragraph = cell.paragraphs[0]
     current_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     current_paragraph.paragraph_format.space_after = Pt(1)
-    _style_run(current_paragraph.runs[0], size=9)
+    _style_run(current_paragraph.runs[0], size=11)
     if previous is None:
         return
 
@@ -1282,7 +1378,7 @@ def _paired_metric_cell(
         if color_previous
         else "7A8796"
     )
-    _style_run(previous_paragraph.runs[0], size=7.5, color=previous_color)
+    _style_run(previous_paragraph.runs[0], size=8, color=previous_color)
 
     if not show_change:
         return
@@ -1308,7 +1404,7 @@ def _paired_metric_cell(
     change.paragraph_format.space_after = Pt(0)
     _style_run(
         change.runs[0],
-        size=7.5,
+        size=8,
         color=_change_color(current, previous, lower_is_better=lower_is_better),
     )
 
@@ -1598,7 +1694,6 @@ def _render_webmaster(doc, payload, blocks):
     if "indexing" in enabled:
         doc.add_paragraph("Динамика количества страниц в поиске:", style="Table Heading")
         indexing_rows = _daily_rows(details, "indexed_pages")
-        _period_caption(doc, indexing_rows)
         points = [(row.get("date"), row.get("value")) for row in indexing_rows]
         distribution = latest.get("path_distribution")
         _add_report_picture(
@@ -1638,8 +1733,6 @@ def _render_webmaster(doc, payload, blocks):
         doc.add_paragraph(
             "Данные по показам, кликам и CTR по всем запросам:", style="Table Heading"
         )
-        query_rows = _daily_rows(details, "queries")
-        _period_caption(doc, query_rows)
         _add_report_picture(doc, _webmaster_search_chart(payload))
         current_summary = latest.get("query_summary") or {}
         previous_summary = latest.get("comparison_query_summary") or {}
@@ -1746,6 +1839,35 @@ def _metrika_source_label(name):
     }.get(name, name)
 
 
+def _style_traffic_source_icons(table):
+    markers = {
+        "Переходы из поисковых систем": ("⌕", "F04444"),
+        "Прямые заходы": ("➜", "8B98A7"),
+        "Переходы по ссылкам на сайтах": ("↗", "3388FF"),
+        "Переходы из социальных сетей": ("●", "9B51E0"),
+        "Внутренние переходы": ("⌂", "0FBDA0"),
+        "Переходы из рекомендательных систем": ("★", "FF3399"),
+        "Переходы из мессенджеров": ("✉", "2D9CDB"),
+        "Переходы по рекламе": ("AD", "FF8A00"),
+        "Остальные источники": ("●", "8B98A7"),
+    }
+    for row in table.rows[1:]:
+        cell = row.cells[0]
+        label = cell.text.strip()
+        if label == "Итого и среднее":
+            continue
+        marker, color = markers.get(label, ("●", "8B98A7"))
+        cell.text = ""
+        paragraph = cell.paragraphs[0]
+        _style_run(
+            paragraph.add_run(f"{marker}  "),
+            size=8 if marker == "AD" else 10,
+            color=color,
+            bold=True,
+        )
+        _style_run(paragraph.add_run(label), size=11)
+
+
 def _metrika_sources_chart(facts):
     order = (
         "search",
@@ -1803,6 +1925,10 @@ def _metrika_sources_chart(facts):
             legend_handles.append(Patch(facecolor=color, edgecolor=color, label=legend_label))
         axis.set_title("Источники, сводка", loc="left", fontsize=13, color="#30343B")
         axis.set_ylabel("Визиты", color="#677485")
+        axis.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _position: _axis_compact_number(value))
+        )
+        axis.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
         _style_axis(axis)
         axis.legend(
             handles=legend_handles,
@@ -2107,13 +2233,13 @@ def _metrika_detail_table(
         for run in cell.paragraphs[0].runs:
             _style_run(
                 run,
-                size=8 if column_index == 0 else 7,
+                size=11 if column_index == 0 else 9,
                 color="000000" if column_index == 0 else "7A8796",
             )
     for row_index, (_label, current, previous) in enumerate(display_rows, start=1):
         label_cell = table.rows[row_index].cells[0]
         for run in label_cell.paragraphs[0].runs:
-            _style_run(run, size=8)
+            _style_run(run, size=11)
         for metric_index, code in enumerate(metrics):
             previous_cell = table.rows[row_index].cells[1 + metric_index * 2]
             current_cell = table.rows[row_index].cells[2 + metric_index * 2]
@@ -2122,9 +2248,9 @@ def _metrika_detail_table(
             previous_cell.paragraphs[0].paragraph_format.space_after = Pt(0)
             current_cell.paragraphs[0].paragraph_format.space_after = Pt(2)
             for run in previous_cell.paragraphs[0].runs:
-                _style_run(run, size=8)
+                _style_run(run, size=11)
             for run in current_cell.paragraphs[0].runs:
-                _style_run(run, size=8)
+                _style_run(run, size=11)
             delta = _relative_delta(current.get(code), previous.get(code))
             if delta is None:
                 continue
@@ -2133,7 +2259,7 @@ def _metrika_detail_table(
             change.paragraph_format.space_after = Pt(0)
             _style_run(
                 change.runs[0],
-                size=7,
+                size=8,
                 color=_change_color(
                     current.get(code),
                     previous.get(code),
@@ -2165,14 +2291,18 @@ def _style_search_engine_icons(table):
     for row in table.rows[1:]:
         cell = row.cells[0]
         label = cell.text.strip()
+        if label == "Итого и среднее":
+            for run in cell.paragraphs[0].runs:
+                _style_run(run, size=11, bold=True)
+            continue
         marker, color = markers.get(label.casefold(), ("●", "8B98A7"))
         cell.text = ""
         paragraph = cell.paragraphs[0]
         paragraph.paragraph_format.space_after = Pt(0)
         marker_run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
         marker_run.text = marker + "  "
-        _style_run(marker_run, size=8, color=color, bold=True)
-        _style_run(paragraph.add_run(label), size=8)
+        _style_run(marker_run, size=10, color=color, bold=True)
+        _style_run(paragraph.add_run(label), size=11)
 
 
 def _metrika_search_engine_text(current):
@@ -2211,23 +2341,15 @@ def _comparison_period_pills(doc, periods):
     if len(periods) < 2:
         return
     labels = []
-    for marker, period in zip(("A", "B"), periods[-2:], strict=True):
+    for period in periods[-2:]:
         start = date.fromisoformat(str(period["period_start"])[:10])
         end = date.fromisoformat(str(period.get("period_end") or period["period_start"])[:10])
-        labels.append(f"{marker}  {start.day}—{end.day} {MONTHS_GENITIVE[end.month - 1]}")
-    table = doc.add_table(rows=1, cols=3)
-    table.autofit = False
-    for cell, text, width in zip(
-        table.rows[0].cells, (labels[0], "↔", labels[1]), (5.2, 1.0, 5.2), strict=True
-    ):
-        cell.text = text
-        _set_cell_width(cell, width)
-        _shade_cell(cell, "F0F2F5" if text != "↔" else "FFFFFF")
-        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for run in cell.paragraphs[0].runs:
-            _style_run(run, size=8, color="526174", bold=text == "↔")
-    _set_table_borders(table, "FFFFFF", size="0")
+        labels.append(f"{start.day}—{end.day} {MONTHS_GENITIVE[end.month - 1]} ⌄")
+    _add_report_picture(
+        doc,
+        _period_pills_image([(labels[0], "A"), ("⇄", "swap"), (labels[1], "B")]),
+        width=11.2,
+    )
 
 
 def _region_key(row):
@@ -2443,7 +2565,7 @@ def _metrika_groups_chart(periods, groups, *, title="Визиты", only_group=N
         return _save_figure(figure)
 
 
-def _group_dynamics_text(periods, groups, *, prefix="Раздел"):
+def _group_dynamics_text(periods, groups, *, prefix="Раздел", subsections=()):
     grouped = _group_period_values(periods, groups)
     if not grouped:
         return "Данные для сравнения отсутствуют."
@@ -2455,8 +2577,9 @@ def _group_dynamics_text(periods, groups, *, prefix="Раздел"):
         delta = _relative_delta(
             current.get(name, {}).get("visits"), previous.get(name, {}).get("visits")
         )
-        part = f"{prefix} «{name}»: " + (
-            f"трафик {'увеличился' if delta >= 0 else 'снизился'} на "
+        group_url = _configured_group_label(group)
+        part = f"{prefix} «{name}» ({group_url}) — " + (
+            f"{'+' if delta > 0 else '−' if delta < 0 else ''}"
             f"{_number(abs(delta), '%', decimal_places=1)}"
             if delta is not None
             else "нет базы сравнения"
@@ -2470,16 +2593,35 @@ def _group_dynamics_text(periods, groups, *, prefix="Раздел"):
                 for pattern in group.get("patterns") or []
             )
         ]
-        if matching:
-            popular = max(matching, key=lambda row: _decimal_or_none(row.get("visits")) or 0)
-            parts_path = [
-                value for value in urlsplit(_landing_url(popular)).path.split("/") if value
+        popular_subsections = []
+        for subsection in subsections:
+            relevant = [
+                row
+                for row in matching
+                if any(
+                    _url_matches_pattern(_landing_url(row), pattern)
+                    for pattern in subsection.get("patterns") or []
+                )
             ]
-            if parts_path:
-                subsection = parts_path[-1].replace("-", " ").capitalize()
-                part += f". Самый популярный подраздел — {subsection}"
+            if relevant:
+                popular_subsections.append(
+                    (
+                        sum(
+                            (_decimal_or_none(row.get("visits")) or 0 for row in relevant),
+                            Decimal(0),
+                        ),
+                        subsection,
+                    )
+                )
+        popular_subsections.sort(key=lambda item: (-item[0], item[1]["name"].casefold()))
+        if popular_subsections:
+            labels = [
+                f"{item['name']} ({_configured_group_label(item)})"
+                for _visits, item in popular_subsections[:2]
+            ]
+            part += ". Здесь самые популярные подразделы — " + ", ".join(labels)
         parts.append(part)
-    return ". ".join(parts) + "."
+    return "\n".join(f"{part}." for part in parts)
 
 
 def _group_overview_text(periods, groups, *, commercial=False):
@@ -2505,11 +2647,26 @@ def _group_overview_text(periods, groups, *, commercial=False):
     )
     if commercial:
         return f"По разделам услуг наблюдается {trend} поискового трафика."
-    leader_label = _configured_group_label(leader)
+    leader_label = f"«{leader['name']}» ({_configured_group_label(leader)})"
     return (
         f"На информационный раздел {leader_label} приходится основная доля трафика. "
         f"В отчётном месяце наблюдается {trend} трафика на информационные разделы."
     )
+
+
+def _metrika_goal_icon(goal):
+    text = " ".join(
+        str(goal.get(key) or "") for key in ("label", "name", "identifier", "condition")
+    ).casefold()
+    if any(token in text for token in ("телефон", "phone", "звон")):
+        return "☎"
+    if any(token in text for token in ("форма", "заяв", "заказ", "обратн", "отзыв")):
+        return "◎"
+    if any(token in text for token in ("переход", "url", "http", "страниц")):
+        return "↗"
+    if any(token in text for token in ("общая", "общий", "составная")):
+        return "⌘"
+    return "◎"
 
 
 def _metrika_goal_image(goal, periods):
@@ -2533,7 +2690,16 @@ def _metrika_goal_image(goal, periods):
         title = _clean(goal.get("label") or goal.get("name") or "Цель")
         title_lines = textwrap.wrap(title, width=30)[:2] or ["Цель"]
         figure.text(
-            0.03, 0.9, "\n".join(title_lines), ha="left", va="top", fontsize=9, weight="bold"
+            0.03,
+            0.9,
+            _metrika_goal_icon(goal),
+            ha="left",
+            va="top",
+            fontsize=10,
+            color="#7A45E5",
+        )
+        figure.text(
+            0.055, 0.9, "\n".join(title_lines), ha="left", va="top", fontsize=9, weight="bold"
         )
         figure.text(
             0.42,
@@ -2560,8 +2726,28 @@ def _metrika_goal_image(goal, periods):
             ("#0FBDA0", "Достижения цели", _number(goal.get("reaches"), decimal_places=0)),
         )
         for y, (color, label, value) in zip((0.59, 0.43, 0.27), metrics, strict=True):
-            figure.text(0.035, y, "■", color=color, fontsize=8, va="center")
-            figure.text(0.052, y, label, color="#30343B", fontsize=7.5, va="center")
+            figure.patches.append(
+                FancyBboxPatch(
+                    (0.032, y - 0.018),
+                    0.018,
+                    0.036,
+                    transform=figure.transFigure,
+                    boxstyle="round,pad=0.001,rounding_size=0.006",
+                    facecolor=color,
+                    edgecolor=color,
+                )
+            )
+            figure.text(
+                0.041,
+                y,
+                "✓",
+                color="#FFFFFF",
+                fontsize=5.5,
+                va="center",
+                ha="center",
+                weight="bold",
+            )
+            figure.text(0.057, y, label, color="#30343B", fontsize=7.5, va="center")
             figure.text(0.31, y, value, color="#30343B", fontsize=7.5, va="center", ha="right")
 
         left = figure.add_axes((0.42, 0.17, 0.53, 0.48))
@@ -2600,23 +2786,36 @@ def _project_favicon_bytes(payload):
 
 def _style_metrika_url_column(table, payload):
     favicon = _project_favicon_bytes(payload)
-    for row in table.rows[1:]:
+    labels = [row.cells[0].text for row in table.rows[1:]]
+    depths = [
+        min(4, len([part for part in urlsplit(label).path.split("/") if part])) for label in labels
+    ]
+    for row_index, row in enumerate(table.rows[1:]):
         cell = row.cells[0]
         label = cell.text
         if label == "Итого и среднее":
             for run in cell.paragraphs[0].runs:
-                _style_run(run, size=8, bold=True)
+                _style_run(run, size=11, bold=True)
             continue
         paragraph = cell.paragraphs[0]
         paragraph.clear()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        depth = depths[row_index]
+        if depth == 1:
+            expanded = row_index + 1 < len(depths) and depths[row_index + 1] == 2
+            _style_run(
+                paragraph.add_run("⌄  " if expanded else "›  "),
+                size=9,
+                color="9AA5B1",
+            )
         if favicon:
             paragraph.add_run().add_picture(io.BytesIO(favicon), width=Cm(0.28))
             paragraph.add_run("  ")
         link = paragraph.add_run(label)
         link.font.color.rgb = RGBColor.from_string("5277D5")
-        link.font.size = Pt(7.5)
-        depth = min(4, len([part for part in urlsplit(label).path.split("/") if part]))
+        link.font.name = "Calibri"
+        link._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Calibri")
+        link.font.size = Pt(11)
         paragraph.paragraph_format.left_indent = Cm(depth * 0.16)
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
@@ -2668,7 +2867,7 @@ def _landing_hierarchy(pages):
     return result
 
 
-def _landing_hierarchy_order(hierarchy):
+def _landing_hierarchy_order(hierarchy, expanded_patterns=None):
     by_domain = {}
     for url in hierarchy:
         parsed = urlsplit(url)
@@ -2684,6 +2883,15 @@ def _landing_hierarchy_order(hierarchy):
         sections.sort(key=lambda url: (-hierarchy[url]["visits"], url.casefold()))
         for section in sections:
             ordered.append(section)
+            section_path = urlsplit(section).path.rstrip("/") + "/"
+            should_expand = expanded_patterns is None or any(
+                urlsplit(_url_pattern_label(pattern).replace("*", "").replace("?", ""))
+                .path.rstrip("/")
+                .startswith(section_path.rstrip("/"))
+                for pattern in expanded_patterns
+            )
+            if not should_expand:
+                continue
             section_part = [p for p in urlsplit(section).path.split("/") if p][0]
             children = [
                 url
@@ -2696,10 +2904,15 @@ def _landing_hierarchy_order(hierarchy):
     return ordered
 
 
-def _landing_hierarchy_table(doc, payload, current, previous, *, metrics=("visits", "users")):
+def _landing_hierarchy_table(
+    doc, payload, current, previous, *, metrics=("visits", "users"), expanded_groups=()
+):
     current_hierarchy = _landing_hierarchy(current)
     previous_hierarchy = _landing_hierarchy(previous)
-    ordered = _landing_hierarchy_order(current_hierarchy)
+    expanded_patterns = [
+        pattern for group in expanded_groups for pattern in group.get("patterns") or []
+    ]
+    ordered = _landing_hierarchy_order(current_hierarchy, expanded_patterns)
     current_total = next(
         (values for url, values in current_hierarchy.items() if urlsplit(url).path in {"", "/"}),
         {},
@@ -2719,14 +2932,18 @@ def _landing_hierarchy_table(doc, payload, current, previous, *, metrics=("visit
     return table
 
 
-def _landing_comparison_table(doc, payload, current_rows, previous_rows, engine):
+def _landing_comparison_table(
+    doc, payload, current_rows, previous_rows, engine, *, expanded_groups=()
+):
     current = _aggregate_detail_rows(
         [row for row in current_rows if _search_engine_name(row) == engine], _landing_url
     )
     previous = _aggregate_detail_rows(
         [row for row in previous_rows if _search_engine_name(row) == engine], _landing_url
     )
-    return _landing_hierarchy_table(doc, payload, current, previous)
+    return _landing_hierarchy_table(
+        doc, payload, current, previous, expanded_groups=expanded_groups
+    )
 
 
 def _configured_group_label(group):
@@ -2737,52 +2954,36 @@ def _configured_group_label(group):
     return group.get("name") or "Раздел"
 
 
-def _configured_groups_table(doc, payload, current_rows, previous_rows, groups):
-    domain = payload.get("project", {}).get("normalized_domain") or ""
+def _conclusion_page_label(url, groups):
+    matching = [
+        group
+        for group in groups
+        if any(_url_matches_pattern(url, pattern) for pattern in group.get("patterns") or [])
+    ]
+    if matching:
+        matching.sort(
+            key=lambda group: max(
+                (len(_url_pattern_label(pattern)) for pattern in group.get("patterns") or []),
+                default=0,
+            ),
+            reverse=True,
+        )
+        return f"«{matching[0]['name']}» ({url})"
+    return f"страница ({url})"
+
+
+def _configured_groups_table(
+    doc, payload, current_rows, previous_rows, _groups, *, expanded_groups=()
+):
     current_pages = _aggregate_detail_rows(current_rows, _landing_url)
     previous_pages = _aggregate_detail_rows(previous_rows, _landing_url)
-    current_hierarchy = _landing_hierarchy(current_pages)
-    previous_hierarchy = _landing_hierarchy(previous_pages)
-    root_url, current_root = next(
-        (
-            (url, values)
-            for url, values in current_hierarchy.items()
-            if urlsplit(url).path in {"", "/"}
-        ),
-        (
-            f"https://{domain}/" if domain else "Главная страница",
-            {"visits": 0, "users": 0, "bounce_rate": 0},
-        ),
-    )
-    previous_root = next(
-        (values for url, values in previous_hierarchy.items() if urlsplit(url).path in {"", "/"}),
-        {"visits": 0, "users": 0, "bounce_rate": 0},
-    )
-    rows = [(root_url, current_root, previous_root)]
-    group_rows = []
-    for group in groups:
-        current = _aggregate_configured_groups(current_rows, [group]).get(group["name"], {})
-        previous = _aggregate_configured_groups(previous_rows, [group]).get(group["name"], {})
-        group_rows.append((_configured_group_label(group), current, previous))
-    group_rows.sort(key=lambda item: (-item[1].get("visits", 0), item[0].casefold()))
-    rows.extend(group_rows)
-    configured_patterns = [pattern for group in groups for pattern in group.get("patterns") or []]
-    first_level = [
-        (url, values, previous_hierarchy.get(url, {}))
-        for url, values in current_hierarchy.items()
-        if len([part for part in urlsplit(url).path.split("/") if part]) == 1
-        and not any(_url_matches_pattern(url, pattern) for pattern in configured_patterns)
-    ]
-    first_level.sort(key=lambda item: (-item[1].get("visits", 0), item[0].casefold()))
-    rows.extend(first_level)
-    table = _metrika_detail_table(
+    return _landing_hierarchy_table(
         doc,
-        rows,
-        first_header="Страница входа",
-        total_values=(current_root, previous_root),
+        payload,
+        current_pages,
+        previous_pages,
+        expanded_groups=expanded_groups,
     )
-    _style_metrika_url_column(table, payload)
-    return table
 
 
 def _goal_card(doc, goal, periods):
@@ -2820,7 +3021,7 @@ def _render_metrika(doc, payload, blocks):
         facts = _metric_source(payload, "yandex_metrika").get("traffic_source_dynamics", {})
         _add_report_picture(doc, _metrika_sources_chart(facts))
         if options.get("include_metrika_sources_table"):
-            rows = [
+            source_rows = [
                 (
                     _metrika_source_label(name),
                     _number((fact.get("change") or {}).get("previous")),
@@ -2834,7 +3035,33 @@ def _render_metrika(doc, payload, blocks):
                 )
                 for name, fact in sorted(facts.items())
             ]
-            if rows:
+            if source_rows:
+                previous_total = sum(
+                    (
+                        _decimal_or_none((fact.get("change") or {}).get("previous")) or 0
+                        for fact in facts.values()
+                    ),
+                    Decimal(0),
+                )
+                current_total = sum(
+                    (
+                        _decimal_or_none((fact.get("change") or {}).get("current")) or 0
+                        for fact in facts.values()
+                    ),
+                    Decimal(0),
+                )
+                rows = [
+                    (
+                        "Итого и среднее",
+                        _number(previous_total, decimal_places=0),
+                        _number(current_total, decimal_places=0),
+                        "100,0%",
+                        _number(
+                            _relative_delta(current_total, previous_total), "%", decimal_places=1
+                        ),
+                    ),
+                    *source_rows,
+                ]
                 table = _table(
                     doc,
                     ("Источник", "Предыдущий период", "Текущий период", "Доля", "Изменение"),
@@ -2842,6 +3069,12 @@ def _render_metrika(doc, payload, blocks):
                     [5.4, 3.3, 3.3, 3.0, 3.5],
                     header_fill="F7F7F7",
                 )
+                _style_provider_table(table)
+                _style_traffic_source_icons(table)
+                for cell in table.rows[1].cells:
+                    _shade_cell(cell, "F7F7F7")
+                    for run in cell.paragraphs[0].runs:
+                        run.font.bold = True
                 _set_table_borders(table, "E2E4E8", size="3")
     if traffic_enabled:
         search_periods = _metrika_period_rows(payload, "search_engines")
@@ -2902,14 +3135,6 @@ def _render_metrika(doc, payload, blocks):
                 style="Table Heading",
             )
             _comparison_period_pills(doc, search_periods)
-            if len(search_periods) >= 2:
-                comparison_start = date.fromisoformat(str(search_periods[-2]["period_start"])[:10])
-                comparison_end = date.fromisoformat(str(search_periods[-1]["period_end"])[:10])
-                doc.add_paragraph(
-                    f"Период сравнения: {comparison_start:%d.%m.%Y} — "
-                    f"{comparison_end:%d.%m.%Y}. Детализация: по месяцам.",
-                    style="Chart Caption",
-                )
             _add_report_picture(
                 doc,
                 _metrika_comparison_bars(chart_rows, title="Визиты из поисковых систем"),
@@ -2972,14 +3197,6 @@ def _render_metrika(doc, payload, blocks):
             style="Table Heading",
         )
         _comparison_period_pills(doc, geography_periods)
-        if len(geography_periods) >= 2:
-            comparison_start = date.fromisoformat(str(geography_periods[-2]["period_start"])[:10])
-            comparison_end = date.fromisoformat(str(geography_periods[-1]["period_end"])[:10])
-            doc.add_paragraph(
-                f"Период сравнения: {comparison_start:%d.%m.%Y} — "
-                f"{comparison_end:%d.%m.%Y}. Детализация: по месяцам.",
-                style="Chart Caption",
-            )
         _add_report_picture(
             doc,
             _metrika_comparison_bars(
@@ -3033,6 +3250,9 @@ def _render_metrika(doc, payload, blocks):
     if landing_periods:
         current_rows = landing_periods[-1]["rows"]
         previous_rows = landing_periods[-2]["rows"] if len(landing_periods) >= 2 else []
+        category_groups = _configured_url_groups(payload, "categories")
+        subsection_groups = _configured_url_groups(payload, "subsections")
+        expanded_groups = [*category_groups, *subsection_groups]
         current_pages = _aggregate_detail_rows(current_rows, _landing_url)
         previous_pages = _aggregate_detail_rows(previous_rows, _landing_url)
         if section_enabled(payload, "metrika_landing_pages"):
@@ -3071,7 +3291,8 @@ def _render_metrika(doc, payload, blocks):
                 )
             if popular and total:
                 text.append(
-                    f"Самой популярной внутренней страницей является {popular[0]} "
+                    "Самой популярной внутренней страницей является "
+                    f"{_conclusion_page_label(popular[0], expanded_groups)} "
                     f"({_number(popular[1]['visits'], decimal_places=0)} визитов — "
                     f"{_number(popular[1]['visits'] * 100 / total, '%', decimal_places=2)})"
                 )
@@ -3101,7 +3322,12 @@ def _render_metrika(doc, payload, blocks):
                 )
                 _comparison_period_pills(doc, comparison_periods)
                 _landing_comparison_table(
-                    doc, payload, comparison_current, comparison_previous, engine
+                    doc,
+                    payload,
+                    comparison_current,
+                    comparison_previous,
+                    engine,
+                    expanded_groups=expanded_groups,
                 )
                 if named_conclusion_groups:
                     engine_periods = [
@@ -3120,6 +3346,7 @@ def _render_metrika(doc, payload, blocks):
                             engine_periods,
                             named_conclusion_groups,
                             prefix=f"{engine}, раздел",
+                            subsections=subsection_groups,
                         )
                     )
         information_groups = _configured_url_groups(payload, "information")
@@ -3136,12 +3363,16 @@ def _render_metrika(doc, payload, blocks):
                 current_rows,
                 previous_rows,
                 [*information_groups, *commercial_groups],
+                expanded_groups=expanded_groups,
             )
             if information_groups:
                 doc.add_paragraph(_group_overview_text(landing_periods, information_groups))
                 doc.add_paragraph(
                     _group_dynamics_text(
-                        landing_periods, information_groups, prefix="Информационный раздел"
+                        landing_periods,
+                        information_groups,
+                        prefix="Информационный раздел",
+                        subsections=subsection_groups,
                     )
                 )
             if commercial_groups:
@@ -3150,7 +3381,10 @@ def _render_metrika(doc, payload, blocks):
                 )
                 doc.add_paragraph(
                     _group_dynamics_text(
-                        landing_periods, commercial_groups, prefix="Коммерческий раздел"
+                        landing_periods,
+                        commercial_groups,
+                        prefix="Коммерческий раздел",
+                        subsections=subsection_groups,
                     )
                 )
         if section_enabled(payload, "metrika_sections"):
@@ -3163,7 +3397,9 @@ def _render_metrika(doc, payload, blocks):
                     continue
                 doc.add_paragraph(heading, style="Chart Caption")
                 _add_report_picture(doc, _metrika_groups_chart(landing_periods, groups))
-                doc.add_paragraph(_group_dynamics_text(landing_periods, groups))
+                doc.add_paragraph(
+                    _group_dynamics_text(landing_periods, groups, subsections=subsection_groups)
+                )
             if not information_groups and not commercial_groups:
                 doc.add_paragraph(
                     "URL-сегменты информационных и коммерческих разделов не настроены.",
@@ -3171,7 +3407,6 @@ def _render_metrika(doc, payload, blocks):
                 )
         if section_enabled(payload, "metrika_categories"):
             doc.add_paragraph("Основные прорабатываемые категории", style="Table Heading")
-            category_groups = _configured_url_groups(payload, "categories")
             combined_categories = options.get("metrika_categories_combined", False)
             groups_to_render = (
                 [category_groups]
@@ -3191,7 +3426,12 @@ def _render_metrika(doc, payload, blocks):
                     width=18.5,
                 )
                 doc.add_paragraph(
-                    _group_dynamics_text(landing_periods, selected_groups, prefix="Категория")
+                    _group_dynamics_text(
+                        landing_periods,
+                        selected_groups,
+                        prefix="Раздел",
+                        subsections=subsection_groups,
+                    )
                 )
             if not category_groups:
                 doc.add_paragraph(
@@ -3219,8 +3459,6 @@ def _render_metrika(doc, payload, blocks):
         current_goals = goal_periods[-1]["rows"]
         if current_goals:
             doc.add_heading("4) Сводная информация по конверсии (Яндекс.Метрика).", level=1)
-            first_date = date.fromisoformat(str(period_details[0]["period_start"])[:10])
-            last_date = date.fromisoformat(str(period_details[-1]["period_end"])[:10])
             robotness_label = "только люди" if robotness == "humans" else "все визиты"
             segment_label = "переходы из поисковых систем" if segment == "search" else "весь трафик"
             segment_description = (
@@ -3230,11 +3468,16 @@ def _render_metrika(doc, payload, blocks):
                 "Ниже приведены диаграммы конверсии за квартал с детализацией "
                 f"по месяцам {segment_description}."
             )
+            _period_caption(
+                doc,
+                [
+                    {"date": str(period_details[0]["period_start"])[:10]},
+                    {"date": str(period_details[-1]["period_end"])[:10]},
+                ],
+                detail="по месяцам",
+            )
             doc.add_paragraph(
-                f"Период: {first_date:%d.%m.%Y} — {last_date:%d.%m.%Y} · "
-                f"Детализация: по месяцам · Сегмент: {segment_label} · "
-                f"Роботность: {robotness_label}",
-                style="Chart Caption",
+                f"Сегмент: {segment_label}. Роботность: {robotness_label}.", style="Compact"
             )
             for goal in current_goals:
                 goal_id = str(goal.get("goal_id"))
@@ -3457,8 +3700,8 @@ def _configure_document(doc, domain, period):
         ("KPI", 11, False),
         ("Depth Note", 9, True),
         ("Compact", 10, False),
-        ("Table Heading", 10, False),
-        ("Table Comment", 10, False),
+        ("Table Heading", 11, False),
+        ("Table Comment", 11, False),
     ):
         style = doc.styles.add_style(style_name, 1)
         style.font.name = "Calibri"
@@ -3473,7 +3716,7 @@ def _configure_document(doc, domain, period):
     table_style.base_style = doc.styles["Table Grid"]
     table_style.font.name = "Calibri"
     table_style._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
-    table_style.font.size = Pt(10)
+    table_style.font.size = Pt(11)
 
 
 def _docx(snapshot, narratives, issues, draft):

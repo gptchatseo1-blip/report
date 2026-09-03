@@ -9,7 +9,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, OuterRef, Subquery
 from django.http import (
     FileResponse,
@@ -23,8 +23,10 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from apps.projects.forms import ProjectQuickCreateForm
 from apps.projects.models import Project
 from apps.topvisor.models import TopvisorProjectMapping
+from apps.topvisor.services import configuration_id
 
 from .exporting import ExportBlocked, generate_artifact
 from .forms import (
@@ -139,6 +141,9 @@ def _validated_manual_rows(value):
         "top3",
         "top10",
         "top11_30",
+        "top3_percent",
+        "top10_percent",
+        "top11_30_percent",
     }
     cleaned = []
     for row in rows:
@@ -152,9 +157,22 @@ def _topvisor_editor_rows(project):
     """Latest snapshot in every configuration/month for the editable report table."""
     from apps.metrics.models import RankingSnapshot
 
+    if project.position_provider == Project.PositionProvider.SERPHUNT:
+        try:
+            from apps.serphunt.services import configurations as serphunt_configurations
+
+            active_configurations = serphunt_configurations(project.serphunt_mapping)
+        except (ImportError, AttributeError):
+            active_configurations = []
+    else:
+        mapping = TopvisorProjectMapping.objects.filter(project=project).first()
+        active_configurations = mapping.selected_configurations if mapping else []
+    active_ids = [configuration_id(item) for item in active_configurations]
+
     snapshots = (
         RankingSnapshot.objects.filter(
             project=project,
+            topvisor_configuration_id__in=active_ids,
             snapshot_date__gte=timezone.localdate() - timedelta(days=550),
         )
         .prefetch_related("positions")
@@ -184,6 +202,19 @@ def _topvisor_editor_rows(project):
                 "top3": sum(value <= 3 for value in ranked),
                 "top10": sum(value <= 10 for value in ranked),
                 "top11_30": sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked),
+                "top3_percent": round(sum(value <= 3 for value in ranked) * 100 / len(positions))
+                if positions
+                else 0,
+                "top10_percent": round(sum(value <= 10 for value in ranked) * 100 / len(positions))
+                if positions
+                else 0,
+                "top11_30_percent": round(
+                    sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked)
+                    * 100
+                    / len(positions)
+                )
+                if positions
+                else 0,
             }
         )
     return rows
@@ -194,6 +225,7 @@ def _url_segment_settings(cleaned):
         "information": parse_named_url_groups(cleaned.get("metrika_info_url_groups")),
         "commercial": parse_named_url_groups(cleaned.get("metrika_commercial_url_groups")),
         "categories": parse_named_url_groups(cleaned.get("metrika_category_url_groups")),
+        "subsections": parse_named_url_groups(cleaned.get("metrika_subsection_url_groups")),
     }
 
 
@@ -398,6 +430,18 @@ def _topvisor_report_url(payload, source):
     return options.get("topvisor_report_url", "")
 
 
+def _position_sync_url(project):
+    if project.position_provider == Project.PositionProvider.SERPHUNT:
+        if not hasattr(project, "serphunt_mapping"):
+            return ""
+        return reverse("serphunt:sync", args=[project.id])
+    return (
+        reverse("topvisor:sync", args=[project.id])
+        if TopvisorProjectMapping.objects.filter(project=project).exists()
+        else ""
+    )
+
+
 @login_required
 def home(request):
     return redirect("reports:projects")
@@ -413,7 +457,55 @@ def project_list(request):
     projects = Project.objects.annotate(
         report_count=Count("reports", distinct=True), latest_report=Subquery(latest_month)
     )
-    return render(request, "reports/project_list.html", {"projects": projects})
+    return render(
+        request,
+        "reports/project_list.html",
+        {
+            "projects": projects,
+            "project_form": ProjectQuickCreateForm(),
+            "open_project_modal": False,
+        },
+    )
+
+
+@login_required
+@require_POST
+def project_create(request):
+    form = ProjectQuickCreateForm(request.POST)
+    if form.is_valid():
+        project = form.save()
+        messages.success(request, f"Проект «{project.name}» создан.")
+        return redirect("reports:projects")
+    latest_month = (
+        Report.objects.filter(project=OuterRef("pk"))
+        .order_by("-report_month")
+        .values("report_month")[:1]
+    )
+    projects = Project.objects.annotate(
+        report_count=Count("reports", distinct=True), latest_report=Subquery(latest_month)
+    )
+    return render(
+        request,
+        "reports/project_list.html",
+        {"projects": projects, "project_form": form, "open_project_modal": True},
+        status=400,
+    )
+
+
+@login_required
+@require_POST
+def project_delete(request, project_id):
+    project = get_object_or_404(Project, pk=project_id)
+    project_name = project.name
+    with transaction.atomic():
+        project.delete()
+    messages.success(request, f"Проект «{project_name}» и связанные только с ним данные удалены.")
+    return redirect("reports:projects")
+
+
+@login_required
+def project_faq(request):
+    return render(request, "reports/project_faq.html")
 
 
 @login_required
@@ -445,9 +537,8 @@ def report_list(request, project_id):
         "source_period_fields": source_period_fields,
         "topvisor_report_link_fields": topvisor_report_link_fields,
         "can_create": can_create,
-        "topvisor_sync_url": reverse("topvisor:sync", args=[project.id])
-        if TopvisorProjectMapping.objects.filter(project=project).exists()
-        else "",
+        "position_sync_url": _position_sync_url(project),
+        "position_provider_label": project.get_position_provider_display(),
         "topvisor_editor_rows": _topvisor_editor_rows(project),
     }
     context.update(_metrika_goal_context(project, request.user))
@@ -514,7 +605,9 @@ def report_create(request, project_id):
                         for name in (
                             "show_urls",
                             "include_visibility",
+                            "include_visibility_table",
                             "include_monthly_dynamics",
+                            "include_monthly_dynamics_table",
                             "include_top_tables",
                             "include_top_5",
                             "include_top_10",
@@ -589,9 +682,8 @@ def report_create(request, project_id):
         "source_period_fields": source_period_fields,
         "topvisor_report_link_fields": topvisor_report_link_fields,
         "can_create": can_create,
-        "topvisor_sync_url": reverse("topvisor:sync", args=[project.id])
-        if TopvisorProjectMapping.objects.filter(project=project).exists()
-        else "",
+        "position_sync_url": _position_sync_url(project),
+        "position_provider_label": project.get_position_provider_display(),
         "topvisor_editor_rows": _topvisor_editor_rows(project),
     }
     context.update(_metrika_goal_context(project, request.user))
@@ -643,6 +735,7 @@ def report_settings_save(request, project_id):
         "metrika_info_url_groups",
         "metrika_commercial_url_groups",
         "metrika_category_url_groups",
+        "metrika_subsection_url_groups",
     ):
         try:
             parse_named_url_groups(values.get(name, ""))

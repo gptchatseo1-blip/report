@@ -1,8 +1,7 @@
 {% extends 'reports/base.html' %}
 {% block title %}{{ report.report_month|date:'F Y' }} — {{ report.project.name }}{% endblock %}
 {% block content %}
-<h1>{{ report.report_month|date:'F Y' }}</h1>
-<p>{{ report.project.name }} · {{ report.project.domain }}</p>
+<div class="page-head"><div><h1>{{ report.report_month|date:'F Y' }}</h1><p>{{ report.project.name }} · {{ report.project.domain }}</p></div><div class="actions"><a class="button secondary" href="{% url 'reports:report-list' report.project.id %}">Настроить отчёт</a><a class="button secondary" href="{% url 'reports:projects' %}">К проектам</a></div></div>
 <section class="card warning">
   <h2>Зафиксировать новую версию</h2>
   <p>Версия фиксирует текущие данные проекта. Snapshot после создания не изменяется.</p>
