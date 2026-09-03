@@ -262,6 +262,8 @@ def test_connection_and_project_configuration_selection(client, settings, monkey
     ).content.decode()
     assert 'class="configuration-form"' in page
     assert 'class="configuration-list"' in page
+    assert 'class="source-controls topvisor-project-picker"' in page
+    assert 'class="select-shell"' in page
 
 
 def test_sync_is_idempotent_and_keeps_depth_per_segment():

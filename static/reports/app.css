@@ -58,9 +58,12 @@
 .nested-setting { margin: .35rem 0 .7rem 1.45rem; padding: .55rem .65rem; border-left: 3px solid #cbd7eb; border-radius: 0 7px 7px 0; background: #fff; }
 .nested-setting.disabled-setting { opacity: .55; }
 .force-refresh { cursor: pointer; }
-.source-controls { display: grid; grid-template-columns: auto minmax(16rem, 1fr) auto; align-items: end; }
-.source-controls select { padding-right: 2.4rem; background-color: #fff; }
-.source-controls label { align-self: center; margin-bottom: .1rem; }
-.source-controls button { min-height: 2.7rem; }
+.source-controls { display: grid; grid-template-columns: minmax(16rem, 1fr) max-content; align-items: end; gap: .75rem; width: min(100%, 45rem); }
+.source-field { display: grid; gap: .35rem; min-width: 0; }
+.source-field label { margin: 0; font-weight: 600; }
+.select-shell { position: relative; min-width: 0; }
+.select-shell::after { content: ""; position: absolute; top: 50%; right: 1rem; width: .5rem; height: .5rem; border-right: 2px solid #526174; border-bottom: 2px solid #526174; transform: translateY(-70%) rotate(45deg); pointer-events: none; }
+.select-shell select { display: block; width: 100%; max-width: none; min-height: 2.75rem; padding: .55rem 3rem .55rem .75rem; appearance: none; -webkit-appearance: none; background: #fff; color: #172033; cursor: pointer; }
+.source-controls button { min-height: 2.75rem; white-space: nowrap; }
 @media (max-width: 950px) { .project-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 650px) { .project-cards { grid-template-columns: 1fr; } .settings-links { justify-content: flex-start; } .project-card-actions form { margin-left: 0; } .projects-head { align-items: flex-start; } .source-controls { grid-template-columns: 1fr; } }
+@media (max-width: 650px) { .project-cards { grid-template-columns: 1fr; } .settings-links { justify-content: flex-start; } .project-card-actions form { margin-left: 0; } .projects-head { align-items: flex-start; } .source-controls { grid-template-columns: 1fr; width: 100%; } .source-controls button { width: 100%; } }
