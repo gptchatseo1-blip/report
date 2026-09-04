@@ -144,10 +144,49 @@ def test_form_defaults_to_three_report_month_source_periods_and_preserves_bound_
 
     data = QueryDict(mutable=True)
     data.setlist("metrika_snapshots", [str(metrika[-1].id)])
+    data["include_metrika"] = "on"
+    data["include_webmaster"] = "on"
     bound = ReportCreateForm(data, project=project)
     assert bound["metrika_snapshots"].value() == [str(metrika[-1].id)]
     assert not bound.is_valid()
     assert "выберите хотя бы один" in bound.errors["webmaster_snapshots"][0]
+
+    data.pop("include_webmaster")
+    disabled = ReportCreateForm(data, project=project)
+    assert disabled.is_valid()
+
+
+def test_traffic_sources_use_total_from_same_metrika_response():
+    project = Project.objects.create(name="Traffic total", domain="traffic-total.example")
+    snapshot = SourceSnapshot.objects.create(
+        project=project,
+        source=SourceSnapshot.Source.METRIKA,
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        checksum="traffic-total",
+        payload={"traffic_source_total": {"visits": "1000"}},
+    )
+    for code, value in (
+        ("visits", 1100),
+        ("source_search_visits", 900),
+        ("source_direct_visits", 94),
+    ):
+        MetricPoint.objects.create(
+            snapshot=snapshot,
+            metric_code=code,
+            numeric_value=value,
+            unit=MetricPoint.Unit.COUNT,
+        )
+
+    traffic = build_source_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_snapshot_ids={SourceSnapshot.Source.METRIKA: [str(snapshot.id)]},
+    )["sources"][SourceSnapshot.Source.METRIKA]["traffic_sources"]
+
+    assert traffic.api_total == 1000
+    assert traffic.source_rows_total == 994
+    assert traffic.shares["search"] == 90
 
 
 def test_metrika_search_segment_changes_traffic_but_not_source_breakdown():

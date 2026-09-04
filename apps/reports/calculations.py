@@ -193,11 +193,16 @@ class SourceTrafficFacts:
     total: Decimal | None
     shares: Mapping[str, Decimal | None]
     warning: str | None
+    api_total: Decimal | None = None
+    source_rows_total: Decimal | None = None
 
 
 def calculate_source_shares(total, sources: Mapping[str, Decimal | int]) -> SourceTrafficFacts:
     if total is None:
-        return SourceTrafficFacts(None, {key: None for key in sources}, "missing_total")
+        rows_total = sum((_decimal(value) for value in sources.values()), ZERO)
+        return SourceTrafficFacts(
+            None, {key: None for key in sources}, "missing_total", None, rows_total
+        )
     total = _decimal(total)
     values = {key: _decimal(value) for key, value in sources.items()}
     if total == ZERO:
@@ -206,7 +211,7 @@ def calculate_source_shares(total, sources: Mapping[str, Decimal | int]) -> Sour
     else:
         shares = {key: _rounded(value / total * HUNDRED) for key, value in values.items()}
         warning = "source_total_mismatch" if sum(values.values()) != total else None
-    return SourceTrafficFacts(total, shares, warning)
+    return SourceTrafficFacts(total, shares, warning, total, sum(values.values()))
 
 
 @dataclass(frozen=True)

@@ -346,6 +346,50 @@ def test_invalid_traffic_share_sum_is_error():
     assert issue.severity == "error" and issue.details["shares_sum"] == "80"
 
 
+def test_small_metrika_source_total_difference_is_not_fatal():
+    version = make_version()
+    payload = version.snapshot.payload
+    payload["calculated"]["sources"]["sources"]["yandex_metrika"] = {
+        "traffic_sources": {
+            "total": "38403",
+            "api_total": "38403",
+            "source_rows_total": "38157",
+            "shares": {"search": "50.83", "direct": "48.53"},
+            "warning": "source_total_mismatch",
+        }
+    }
+    ReportDatasetSnapshot.objects.filter(pk=version.snapshot.pk).update(
+        payload=payload, checksum=snapshot_checksum(payload)
+    )
+    issues = validate_report_version(version)
+    assert not any(issue.code == "traffic_shares_arithmetic" for issue in issues)
+
+
+def test_disabled_metrika_and_webmaster_do_not_block_validation():
+    version = make_version()
+    payload = version.snapshot.payload
+    payload["display_options"].update({"include_metrika": False, "include_webmaster": False})
+    payload["source_snapshots"] = []
+    payload["calculated"]["sources"]["sources"] = {
+        "yandex_metrika": {
+            "traffic_sources": {
+                "total": "0",
+                "shares": {"search": None},
+                "warning": "nonzero_sources_with_zero_total",
+            }
+        },
+        "yandex_webmaster": {"ctr_check": {"reported": "150", "valid": False}},
+    }
+    ReportDatasetSnapshot.objects.filter(pk=version.snapshot.pk).update(
+        payload=payload, checksum=snapshot_checksum(payload)
+    )
+    issues = validate_report_version(version)
+    assert not any(
+        issue.section in {"yandex_metrika", "yandex_webmaster", "traffic_sources", "ctr"}
+        for issue in issues
+    )
+
+
 def test_generated_narrative_fields_are_immutable_and_edit_survives_regeneration():
     from django.core.exceptions import ValidationError
 

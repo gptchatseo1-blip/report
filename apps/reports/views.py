@@ -28,13 +28,19 @@ from apps.projects.models import Project
 from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import configuration_id, configuration_segment
 
-from .exporting import ExportBlocked, _manual_topvisor_segment, generate_artifact
+from .exporting import (
+    ExportBlocked,
+    _manual_topvisor_segment,
+    _topvisor_buckets,
+    generate_artifact,
+)
 from .forms import (
     BOOLEAN_REPORT_FIELDS,
     PERSISTED_REPORT_FIELDS,
     NarrativeEditForm,
     ReportCreateForm,
     parse_named_url_groups,
+    validate_topvisor_manual_rows,
 )
 from .models import (
     GeneratedArtifact,
@@ -125,47 +131,7 @@ def _persisted_report_values(form):
 
 
 def _validated_manual_rows(value):
-    try:
-        rows = json.loads(value or "[]") if isinstance(value, str) else value
-    except json.JSONDecodeError:
-        raise ValidationError("Некорректные ручные значения Topvisor.") from None
-    if not isinstance(rows, list) or len(rows) > 500:
-        raise ValidationError("Некорректные ручные значения Topvisor.")
-
-    def number(raw, *, maximum, integer=False):
-        try:
-            result = float(str(raw or 0).replace(",", "."))
-        except (TypeError, ValueError):
-            result = 0
-        result = max(0, min(maximum, result))
-        return int(round(result)) if integer else result
-
-    cleaned = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        month = str(row.get("month") or "")[:7]
-        try:
-            month = date.fromisoformat(f"{month}-01").isoformat() if month else ""
-        except ValueError:
-            month = ""
-        cleaned.append(
-            {
-                "configuration_id": str(row.get("configuration_id") or "")[:120],
-                "engine": str(row.get("engine") or "").casefold()[:16],
-                "region": str(row.get("region") or "").strip()[:120],
-                "month": month,
-                "visibility": number(row.get("visibility"), maximum=100),
-                "total": number(row.get("total"), maximum=10_000_000, integer=True),
-                "top3": number(row.get("top3"), maximum=10_000_000, integer=True),
-                "top10": number(row.get("top10"), maximum=10_000_000, integer=True),
-                "top11_30": number(row.get("top11_30"), maximum=10_000_000, integer=True),
-                "top3_percent": number(row.get("top3_percent"), maximum=100),
-                "top10_percent": number(row.get("top10_percent"), maximum=100),
-                "top11_30_percent": number(row.get("top11_30_percent"), maximum=100),
-            }
-        )
-    return cleaned
+    return validate_topvisor_manual_rows(value)
 
 
 def _topvisor_editor_data(project):
@@ -277,6 +243,9 @@ def _url_segment_settings(cleaned):
         "commercial": parse_named_url_groups(cleaned.get("metrika_commercial_url_groups")),
         "categories": parse_named_url_groups(cleaned.get("metrika_category_url_groups")),
         "subsections": parse_named_url_groups(cleaned.get("metrika_subsection_url_groups")),
+        "landing_comparison_subsections": parse_named_url_groups(
+            cleaned.get("metrika_landing_comparison_subsection_url_groups")
+        ),
     }
 
 
@@ -525,8 +494,22 @@ def project_create(request):
     form = ProjectQuickCreateForm(request.POST)
     if form.is_valid():
         project = form.save()
-        messages.success(request, f"Проект «{project.name}» создан.")
+        message = f"Проект «{project.name}» успешно добавлен."
+        messages.success(request, message)
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse(
+                {"ok": True, "message": message, "redirect_url": reverse("reports:projects")}
+            )
         return redirect("reports:projects")
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse(
+            {
+                "ok": False,
+                "message": "Проверьте поля формы.",
+                "errors": form.errors.get_json_data(),
+            },
+            status=400,
+        )
     latest_month = (
         Report.objects.filter(project=OuterRef("pk"))
         .order_by("-report_month")
@@ -618,9 +601,17 @@ def report_create(request, project_id):
             engine: form.cleaned_data[f"{engine}_dates"] for engine in ("yandex", "google")
         }
         selected_dates = sorted({day for dates in selected_by_engine.values() for day in dates})
-        selected_source_ids = (
-            form.cleaned_data["metrika_snapshots"] + form.cleaned_data["webmaster_snapshots"]
+        selected_metrika_ids = (
+            form.cleaned_data["metrika_snapshots"]
+            if form.cleaned_data.get("include_metrika")
+            else []
         )
+        selected_webmaster_ids = (
+            form.cleaned_data["webmaster_snapshots"]
+            if form.cleaned_data.get("include_webmaster")
+            else []
+        )
+        selected_source_ids = selected_metrika_ids + selected_webmaster_ids
         from apps.metrics.models import SourceSnapshot
 
         source_rows = SourceSnapshot.objects.filter(project=project, id__in=selected_source_ids)
@@ -674,7 +665,9 @@ def report_create(request, project_id):
                             "include_metrika",
                             "metrika_robotness",
                             "metrika_search_segment",
+                            "metrika_search_attribution",
                             "include_metrika_sources_table",
+                            "metrika_sources_compare_previous",
                             "include_metrika_search_engines",
                             "metrika_bar_search_engines",
                             "include_metrika_geography",
@@ -706,8 +699,8 @@ def report_create(request, project_id):
                     "webmaster_queries_comment": form.cleaned_data["webmaster_queries_comment"],
                     "webmaster_queries_screenshot": screenshot_payload,
                 },
-                "yandex_metrika": form.cleaned_data["metrika_snapshots"],
-                "yandex_webmaster": form.cleaned_data["webmaster_snapshots"],
+                "yandex_metrika": selected_metrika_ids,
+                "yandex_webmaster": selected_webmaster_ids,
             },
         )
         validate_report_version(version)
@@ -791,6 +784,7 @@ def report_settings_save(request, project_id):
         "metrika_commercial_url_groups",
         "metrika_category_url_groups",
         "metrika_subsection_url_groups",
+        "metrika_landing_comparison_subsection_url_groups",
     ):
         try:
             parse_named_url_groups(values.get(name, ""))
@@ -946,6 +940,23 @@ def _segment_rows(payload, code):
             source.get("search_engine"), source.get("search_engine") or "Поиск"
         )
         row["topvisor_report_url"] = _topvisor_report_url(payload, source)
+        if code == "position_distribution":
+            depth = row.get("ranking_depth") or 0
+            row["distribution_cards"] = [
+                {
+                    **bucket,
+                    "color": {
+                        "1-3": "blue",
+                        "1-10": "green-dark",
+                        "11-20": "green",
+                        "11-30": "green",
+                        "31-50": "green-light",
+                        "51-100": "gray",
+                        "101+": "yellow",
+                    }.get(bucket["label"], "gray"),
+                }
+                for bucket in _topvisor_buckets(row.get("distribution") or {}, depth)
+            ]
         if code in TOP_SECTION_RANGES:
             start, end = TOP_SECTION_RANGES[code]
             configuration_id = source.get("configuration_id")

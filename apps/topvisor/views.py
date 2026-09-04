@@ -31,6 +31,53 @@ def _legacy_configured():
 PROJECTS_CACHE_KEY = "topvisor:projects:global"
 
 
+def _annotated_configurations(items, *, project_id, project_name, primary_project_id):
+    result = []
+    for item in items:
+        item = dict(item)
+        raw_id = configuration_id(item)
+        item["_topvisor_project_id"] = str(project_id)
+        item["_topvisor_project_name"] = project_name
+        item["_configuration_id"] = (
+            raw_id if str(project_id) == str(primary_project_id) else f"{project_id}:{raw_id}"
+        )
+        result.append(item)
+    return result
+
+
+def _stored_configurations(mapping):
+    if not mapping:
+        return []
+    return (
+        _annotated_configurations(
+            mapping.selected_configurations,
+            project_id=mapping.topvisor_project_id,
+            project_name=mapping.topvisor_project_name,
+            primary_project_id=mapping.topvisor_project_id,
+        )
+        if not any(item.get("_topvisor_project_id") for item in mapping.selected_configurations)
+        else [dict(item) for item in mapping.selected_configurations]
+    )
+
+
+def _configured_projects(mapping):
+    grouped = {}
+    for item in _stored_configurations(mapping):
+        project_id = str(item.get("_topvisor_project_id") or mapping.topvisor_project_id)
+        group = grouped.setdefault(
+            project_id,
+            {
+                "id": project_id,
+                "name": item.get("_topvisor_project_name")
+                or mapping.topvisor_project_name
+                or project_id,
+                "configuration_count": 0,
+            },
+        )
+        group["configuration_count"] += 1
+    return list(grouped.values())
+
+
 def _cache_projects(projects):
     projects = tuple(projects)
     cache.set(
@@ -150,8 +197,35 @@ def credentials(request):
 def connection(request, project_id):
     project = get_object_or_404(Project, pk=project_id)
     credential = TopvisorCredential.objects.filter(pk=1).first()
-    action = "mapping" if request.POST.get("topvisor_project") else ""
+    action = request.POST.get("action") or (
+        "mapping" if request.method == "POST" and request.POST.get("topvisor_project") else ""
+    )
     mapping = TopvisorProjectMapping.objects.filter(project=project).first()
+
+    if request.method == "POST" and action == "remove_project" and mapping:
+        removed_id = str(request.POST.get("provider_project_id") or "")
+        remaining = [
+            item
+            for item in _stored_configurations(mapping)
+            if str(item.get("_topvisor_project_id") or mapping.topvisor_project_id) != removed_id
+        ]
+        if remaining:
+            primary = remaining[0]
+            mapping.topvisor_project_id = str(primary.get("_topvisor_project_id"))
+            mapping.topvisor_project_name = str(primary.get("_topvisor_project_name") or "")
+            mapping.selected_configurations = remaining
+            mapping.save(
+                update_fields=[
+                    "topvisor_project_id",
+                    "topvisor_project_name",
+                    "selected_configurations",
+                    "updated_at",
+                ]
+            )
+        else:
+            mapping.delete()
+        messages.success(request, "Проект Topvisor удалён из подключения.")
+        return redirect("topvisor:connection", project_id=project.id)
 
     legacy_fallback = credential is None and _legacy_configured()
     verified = bool(credential and credential.last_verified_at) or legacy_fallback
@@ -164,7 +238,21 @@ def connection(request, project_id):
             client, _ = client_for_project(project)
             projects = _projects_for_page(client)
             if selected:
-                configurations = tuple(client.get_search_configurations(selected))
+                project_by_id = {str(item["id"]): item for item in projects}
+                selected_name = (
+                    project_by_id.get(str(selected), {}).get("name")
+                    or project_by_id.get(str(selected), {}).get("site")
+                    or str(selected)
+                )
+                primary_id = mapping.topvisor_project_id if mapping else selected
+                configurations = tuple(
+                    _annotated_configurations(
+                        client.get_search_configurations(selected),
+                        project_id=selected,
+                        project_name=selected_name,
+                        primary_project_id=primary_id,
+                    )
+                )
         except CredentialConfigurationError:
             safe_error = (
                 "Не удалось прочитать сохранённые реквизиты. Проверьте ключ шифрования "
@@ -181,8 +269,13 @@ def connection(request, project_id):
         configurations=configurations,
         initial={
             "topvisor_project": selected,
-            "configurations": [configuration_id(item) for item in mapping.selected_configurations]
-            if mapping and str(mapping.topvisor_project_id) == str(selected)
+            "configurations": [
+                configuration_id(item)
+                for item in _stored_configurations(mapping)
+                if str(item.get("_topvisor_project_id") or mapping.topvisor_project_id)
+                == str(selected)
+            ]
+            if mapping
             else [],
         },
     )
@@ -191,19 +284,32 @@ def connection(request, project_id):
             project_by_id = {str(item["id"]): item for item in projects}
             config_by_id = {configuration_id(item): item for item in configurations}
             chosen_project = project_by_id[form.cleaned_data["topvisor_project"]]
+            existing = (
+                [
+                    item
+                    for item in _stored_configurations(mapping)
+                    if str(item.get("_topvisor_project_id") or mapping.topvisor_project_id)
+                    != str(chosen_project["id"])
+                ]
+                if mapping
+                else []
+            )
+            chosen = [config_by_id[item] for item in form.cleaned_data["configurations"]]
+            primary_id = mapping.topvisor_project_id if mapping else str(chosen_project["id"])
+            primary_name = (
+                mapping.topvisor_project_name if mapping else chosen_project.get("name", "")
+            )
             TopvisorProjectMapping.objects.update_or_create(
                 project=project,
                 defaults={
-                    "topvisor_project_id": str(chosen_project["id"]),
-                    "topvisor_project_name": chosen_project.get("name", ""),
-                    "selected_configurations": [
-                        config_by_id[item] for item in form.cleaned_data["configurations"]
-                    ],
+                    "topvisor_project_id": str(primary_id),
+                    "topvisor_project_name": primary_name,
+                    "selected_configurations": [*existing, *chosen],
                 },
             )
             project.position_provider = Project.PositionProvider.TOPVISOR
             project.save(update_fields=["position_provider", "updated_at"])
-            messages.success(request, "Проект Topvisor и конфигурации сохранены.")
+            messages.success(request, "Проект Topvisor и его конфигурации сохранены.")
             return redirect("topvisor:connection", project_id=project.id)
 
     return render(
@@ -218,6 +324,7 @@ def connection(request, project_id):
             "safe_error": safe_error,
             "form": form,
             "selected_project": selected,
+            "configured_projects": _configured_projects(mapping),
             "sync_form": TopvisorSyncForm(),
             "runs": Paginator(mapping.sync_runs.all(), 10).get_page(request.GET.get("page"))
             if mapping

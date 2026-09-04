@@ -68,7 +68,9 @@ def test_project_screen_has_one_settings_label_and_serphunt_button(client):
     assert ">Topvisor<" in body and ">Serphunt<" in body and ">Яндекс<" in body
     assert "Настройки Topvisor" not in body
     assert "Настройки Яндекса" not in body
-    assert ">Параметры<" in body and "Параметры проекта" not in body
+    assert 'class="button project-action-icon"' in body
+    assert 'title="Параметры"' in body
+    assert ">Параметры<" not in body
     assert 'class="project-delete-button"' in body
     assert 'title="Удалить проект"' in body
     assert 'class="cards project-cards"' in body
@@ -152,7 +154,8 @@ def test_report_header_handles_long_title_and_has_no_back_button(client):
 
     assert 'class="report-list-head"' in body
     assert 'class="report-provider-row"' in body
-    assert "Провайдер позиций:" in body
+    assert "Позиции:" in body
+    assert "Провайдер позиций:" not in body
     assert ">К проектам<" not in body
     assert "Сравнение с предыдущим месяцем" in body
     assert "По умолчанию данные за квартал." in body

@@ -269,9 +269,14 @@ def _validate_positions(payload, issues):
 
 
 def _validate_sources(payload, issues):
+    options = payload.get("display_options", {})
     raw_sources = payload.get("source_snapshots", [])
     present = {item.get("source") for item in raw_sources}
     for required in ("yandex_metrika", "yandex_webmaster"):
+        if required == "yandex_metrika" and not options.get("include_metrika", True):
+            continue
+        if required == "yandex_webmaster" and not options.get("include_webmaster", True):
+            continue
         if required not in present:
             _issue(
                 issues,
@@ -282,7 +287,9 @@ def _validate_sources(payload, issues):
                 details={"source": required},
             )
     calculated = payload.get("calculated", {}).get("sources", {}).get("sources", {})
-    webmaster = calculated.get("yandex_webmaster", {})
+    webmaster = (
+        calculated.get("yandex_webmaster", {}) if options.get("include_webmaster", True) else {}
+    )
     check = webmaster.get("ctr_check") or {}
     reported = _decimal(check.get("reported"))
     if reported is not None and not Decimal("0") <= reported <= Decimal("100"):
@@ -303,7 +310,13 @@ def _validate_sources(payload, issues):
             section="ctr",
             details=check,
         )
-    traffic = calculated.get("yandex_metrika", {}).get("traffic_sources") or {}
+    traffic = (
+        calculated.get("yandex_metrika", {}).get("traffic_sources") or {}
+        if options.get("include_metrika", True)
+        else {}
+    )
+    if not traffic:
+        return
     shares = traffic.get("shares") or {}
     share_values = [_decimal(value) for value in shares.values()]
     total = _decimal(traffic.get("total"))
@@ -315,7 +328,7 @@ def _validate_sources(payload, issues):
     invalid_sum = (
         total is not None
         and total > 0
-        and (shares_sum is None or abs(shares_sum - Decimal("100")) > Decimal("0.1"))
+        and (shares_sum is None or abs(shares_sum - Decimal("100")) > Decimal("1.0"))
     )
     if traffic.get("warning") == "missing_total":
         _issue(
@@ -327,7 +340,7 @@ def _validate_sources(payload, issues):
             details=traffic,
         )
     elif (
-        traffic.get("warning")
+        traffic.get("warning") == "nonzero_sources_with_zero_total"
         or invalid_sum
         or any(value is None or value < 0 or value > 100 for value in share_values)
     ):
@@ -336,6 +349,15 @@ def _validate_sources(payload, issues):
             "traffic_shares_arithmetic",
             "error",
             "Доли источников трафика арифметически некорректны.",
+            section="traffic_sources",
+            details={**traffic, "shares_sum": str(shares_sum) if shares_sum is not None else None},
+        )
+    elif traffic.get("warning") == "source_total_mismatch":
+        _issue(
+            issues,
+            "traffic_source_total_difference",
+            "warning",
+            "Метрика вернула небольшое расхождение между итогом и строками источников.",
             section="traffic_sources",
             details={**traffic, "shares_sum": str(shares_sum) if shares_sum is not None else None},
         )

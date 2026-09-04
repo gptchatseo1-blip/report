@@ -106,6 +106,8 @@ def normalize_depth(raw, searcher="google") -> int:
 
 def configuration_id(configuration):
     """Keep Topvisor's concrete variant ID, rather than collapsing device variants."""
+    if configuration.get("_configuration_id"):
+        return str(configuration["_configuration_id"])
     value = configuration.get("id")
     if value is None and configuration.get("searcher_id") is not None:
         value = f"{configuration['searcher_id']}:{configuration.get('region_id', '')}"
@@ -139,7 +141,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
     rows = payload.get("positions", payload.get("rows", []))
     retrieved_at = timezone.now()
     raw_visibility = payload.get("visibility")
-    if raw_visibility is None:
+    if "visibility" not in payload:
         raw_visibility = visibility_payload(rows, retrieved_at)
     visibility_value = (
         raw_visibility.get("value") if isinstance(raw_visibility, dict) else raw_visibility
@@ -163,7 +165,9 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
         "retrieved_at": retrieved_at,
         "provenance": {
             "method": "topvisor_api",
-            "topvisor_project_id": mapping.topvisor_project_id,
+            "topvisor_project_id": str(
+                configuration.get("_topvisor_project_id") or mapping.topvisor_project_id
+            ),
             "configuration_id": config_id,
             "provider_depth": provider_depth,
             "report_depth": depth,
@@ -304,6 +308,33 @@ def _history_rows(payload, configuration, project_id, frequency_map):
     return result
 
 
+def _summary_visibility(payload, project_id):
+    """Normalize provider visibility coordinates without recalculating them locally."""
+    if not isinstance(payload, dict):
+        return {}
+    dates = [
+        str(item.get("date", item)) if isinstance(item, dict) else str(item)
+        for item in payload.get("dates", [])
+    ]
+    projects = payload.get("seriesByProjectsId") or payload.get("series_by_projects_id") or {}
+    series = projects.get(str(project_id)) or {}
+    if not series:
+        try:
+            series = projects.get(int(project_id)) or {}
+        except (TypeError, ValueError):
+            pass
+    values = series.get("visibility") or series.get("visibilities") or []
+    if isinstance(values, dict):
+        values = values.get("values") or values.get("series") or []
+    result = {}
+    for day, value in zip(dates, values, strict=False):
+        if isinstance(value, dict):
+            value = value.get("value", value.get("visibility"))
+        if value is not None:
+            result[day] = value
+    return result
+
+
 def sync_positions(*, mapping, report_month=None, client=None):
     """Download existing checks only; this never starts a provider position check."""
     explicit_report_month = report_month is not None
@@ -343,28 +374,54 @@ def sync_positions(*, mapping, report_month=None, client=None):
             requested_volumes = sorted(yandex_volumes) or fallback_volumes[:1]
             downloaded = []
             for configuration in configurations.values():
+                provider_project_id = str(
+                    configuration.get("_topvisor_project_id") or mapping.topvisor_project_id
+                )
                 common = {
                     "regions_indexes": [str(configuration["region_index"])],
                     "fields": ["name", "group_name", *requested_volumes],
                     "positions_fields": ["position", "relevant_url"],
                 }
-                existing_dates = client.get_existing_position_dates(
-                    mapping.topvisor_project_id, **common
-                )
+                existing_dates = client.get_existing_position_dates(provider_project_id, **common)
                 pages = []
                 for start in range(0, len(existing_dates), 20):
                     pages.extend(
                         client.get_position_history(
-                            mapping.topvisor_project_id,
+                            provider_project_id,
                             dates=list(existing_dates[start : start + 20]),
                             **common,
                         )
                     )
-                downloaded.append((configuration, tuple(existing_dates), pages))
+                visibility_by_date = {}
+                if hasattr(client, "get_summary_chart"):
+                    for start in range(0, len(existing_dates), 31):
+                        summary = client.get_summary_chart(
+                            provider_project_id,
+                            region_index=configuration["region_index"],
+                            dates=existing_dates[start : start + 31],
+                        )
+                        visibility_by_date.update(_summary_visibility(summary, provider_project_id))
+                downloaded.append(
+                    (
+                        configuration,
+                        provider_project_id,
+                        tuple(existing_dates),
+                        pages,
+                        visibility_by_date,
+                    )
+                )
 
-            frequency_map = {}
-            all_queries = set()
-            for _configuration, _dates, pages in downloaded:
+            frequency_maps = {}
+            queries_by_project = {}
+            for (
+                _configuration,
+                provider_project_id,
+                _dates,
+                pages,
+                _visibility_by_date,
+            ) in downloaded:
+                frequency_map = frequency_maps.setdefault(provider_project_id, {})
+                all_queries = queries_by_project.setdefault(provider_project_id, set())
                 for page in pages:
                     candidates = _frequency_candidates(page, yandex_volumes)
                     for keyword in page.get("keywords", []):
@@ -383,31 +440,58 @@ def sync_positions(*, mapping, report_month=None, client=None):
                                     "В ответе Topvisor недопустимая частотность."
                                 ) from None
                             break
-            missing_count = len(all_queries - frequency_map.keys())
-            if missing_count:
-                missing_frequency_count += missing_count
-                for query in all_queries - frequency_map.keys():
+            for provider_project_id, all_queries in queries_by_project.items():
+                frequency_map = frequency_maps[provider_project_id]
+                missing = all_queries - frequency_map.keys()
+                missing_frequency_count += len(missing)
+                for query in missing:
                     frequency_map[query] = 1
 
-            for configuration, existing_dates, pages in downloaded:
+            for (
+                configuration,
+                provider_project_id,
+                existing_dates,
+                pages,
+                visibility_by_date,
+            ) in downloaded:
+                frequency_map = frequency_maps[provider_project_id]
                 combined = {}
                 for page in pages:
                     for snapshot_date, rows in _history_rows(
-                        page, configuration, str(mapping.topvisor_project_id), frequency_map
+                        page, configuration, provider_project_id, frequency_map
                     ).items():
                         combined.setdefault(snapshot_date, []).extend(rows)
                 if set(combined) != set(existing_dates):
                     raise TopvisorError("Не удалось полностью загрузить все даты Topvisor.")
                 for snapshot_date, rows in combined.items():
+                    provider_visibility = visibility_by_date.get(snapshot_date)
+                    visibility = {
+                        "value": (
+                            str(provider_visibility) if provider_visibility is not None else None
+                        ),
+                        "source": "topvisor_api_summary_chart",
+                        "retrieved_at": timezone.now().isoformat(),
+                    }
                     pending_snapshots.append(
                         (
                             configuration,
                             date.fromisoformat(snapshot_date),
-                            {"positions": rows, "tracked_keyword_count": len(rows)},
+                            {
+                                "positions": rows,
+                                "tracked_keyword_count": len(rows),
+                                **(
+                                    {"visibility": visibility}
+                                    if hasattr(client, "get_summary_chart")
+                                    else {}
+                                ),
+                            },
                         )
                     )
         else:  # compatibility with older adapters
             for configuration in configurations.values():
+                provider_project_id = str(
+                    configuration.get("_topvisor_project_id") or mapping.topvisor_project_id
+                )
                 months = (
                     (_shift_month(report_month, -2), _shift_month(report_month, -1), report_month)
                     if explicit_report_month
@@ -416,7 +500,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 for month in months:
                     rows = list(
                         client.get_positions(
-                            mapping.topvisor_project_id,
+                            provider_project_id,
                             regions_indexes=[str(configuration.get("region_index", ""))],
                         )
                     )

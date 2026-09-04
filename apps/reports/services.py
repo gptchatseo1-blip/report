@@ -125,6 +125,28 @@ def build_position_facts(*, project, report_month, selected_dates=None):
         .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
     )
     grouped = defaultdict(dict)
+    grouped_daily = defaultdict(dict)
+    chart_snapshots = (
+        RankingSnapshot.objects.filter(
+            project=project,
+            snapshot_date__range=(periods.three_months.start, periods.report.end),
+        )
+        .prefetch_related("positions")
+        .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
+        if selected_dates
+        else snapshots
+    )
+    for snapshot in chart_snapshots:
+        segment_key = (snapshot.search_engine, snapshot.region, snapshot.topvisor_configuration_id)
+        daily_existing = grouped_daily[segment_key].get(snapshot.snapshot_date)
+        daily_existing_key = (
+            (daily_existing.created_at, str(daily_existing.id)) if daily_existing else None
+        )
+        if (
+            daily_existing_key is None
+            or (snapshot.created_at, str(snapshot.id)) > daily_existing_key
+        ):
+            grouped_daily[segment_key][snapshot.snapshot_date] = snapshot
     for snapshot in snapshots:
         if selected_by_engine and snapshot.snapshot_date not in selected_by_engine.get(
             snapshot.search_engine, ()
@@ -195,6 +217,24 @@ def build_position_facts(*, project, report_month, selected_dates=None):
                     "ranking_depth": snapshot.ranking_depth,
                 }
             )
+        chart_series = []
+        for snapshot_day, snapshot in sorted(
+            grouped_daily[(engine, region, configuration_id)].items()
+        ):
+            chart_series.append(
+                {
+                    "month": snapshot_day,
+                    "visibility": snapshot.visibility,
+                    "distribution": calculate_position_distribution(
+                        (
+                            PositionItem(row.normalized_query, row.frequency, row.position_value)
+                            for row in snapshot.positions.all()
+                        ),
+                        ranking_depth=snapshot.ranking_depth,
+                    ),
+                    "ranking_depth": snapshot.ranking_depth,
+                }
+            )
         facts.append(
             {
                 "search_engine": engine,
@@ -242,6 +282,7 @@ def build_position_facts(*, project, report_month, selected_dates=None):
                 and report_snapshot.ranking_depth != previous_snapshot.ranking_depth
                 else (),
                 "three_month_series": tuple(monthly_series),
+                "chart_series": tuple(chart_series),
                 "semantics": compare_semantics(
                     (row.normalized_query for row in previous_rows),
                     (row.normalized_query for row in report_rows),
@@ -354,10 +395,21 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             for snapshot, _metrics in points
         ]
         if source == SourceSnapshot.Source.METRIKA:
+            source_api_total = None
+            if snapshots:
+                raw_total = (snapshots[-1].payload.get("traffic_source_total") or {}).get("visits")
+                try:
+                    source_api_total = Decimal(str(raw_total)) if raw_total is not None else None
+                except (ArithmeticError, ValueError):
+                    source_api_total = None
             all_traffic_total = (
-                all_traffic_totals[-1].numeric_value
-                if all_traffic_totals and all_traffic_totals[-1]
-                else None
+                source_api_total
+                if source_api_total is not None
+                else (
+                    all_traffic_totals[-1].numeric_value
+                    if all_traffic_totals and all_traffic_totals[-1]
+                    else None
+                )
             )
             sources = {
                 code.removeprefix("source_").removesuffix("_visits"): point.numeric_value

@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.urls import reverse
 from django.utils import timezone
 from docx import Document
@@ -264,6 +265,78 @@ def test_connection_and_project_configuration_selection(client, settings, monkey
     assert 'class="configuration-list"' in page
     assert 'class="source-controls topvisor-project-picker"' in page
     assert 'class="select-shell"' in page
+
+
+def test_connection_can_add_second_topvisor_project(client, settings, monkeypatch):
+    cache.clear()
+    settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY = "uid", "super-secret"
+    user = get_user_model().objects.create_user("multi-project", password="password")
+    project = Project.objects.create(name="Site", domain="multi.example")
+    client.force_login(user)
+    monkeypatch.setattr(
+        TopvisorClient,
+        "iter_projects",
+        lambda self: iter([{"id": 42, "name": "Москва"}, {"id": 43, "name": "Россия"}]),
+    )
+    monkeypatch.setattr(
+        TopvisorClient,
+        "get_search_configurations",
+        lambda self, project_id: [
+            {
+                "id": 7,
+                "search_engine": "google",
+                "region_name": "Москва" if str(project_id) == "42" else "Россия",
+                "depth": 50,
+            }
+        ],
+    )
+
+    url = reverse("topvisor:connection", args=[project.id])
+    assert client.post(url, {"topvisor_project": "42", "configurations": ["7"]}).status_code == 302
+    assert (
+        client.post(
+            url,
+            {"action": "mapping", "topvisor_project": "43", "configurations": ["43:7"]},
+        ).status_code
+        == 302
+    )
+
+    saved = project.topvisor_mapping
+    assert {item["_topvisor_project_id"] for item in saved.selected_configurations} == {"42", "43"}
+    assert {item["region_name"] for item in saved.selected_configurations} == {"Москва", "Россия"}
+
+
+def test_sync_routes_each_configuration_to_its_topvisor_project():
+    project = Project.objects.create(name="Multi sync", domain="multi-sync.example")
+    selected = TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="42",
+        selected_configurations=[
+            {"id": "7", "search_engine": "google", "region_name": "Москва", "depth": 20},
+            {
+                "id": "8",
+                "search_engine": "google",
+                "region_name": "Россия",
+                "depth": 20,
+                "_topvisor_project_id": "43",
+                "_configuration_id": "43:8",
+            },
+        ],
+    )
+
+    class LegacyClient:
+        def __init__(self):
+            self.project_ids = []
+
+        def get_positions(self, project_id, **_filters):
+            self.project_ids.append(project_id)
+            return []
+
+    fake = LegacyClient()
+    run = sync_positions(mapping=selected, report_month=date(2026, 8, 1), client=fake)
+    assert run.status == run.Status.SUCCESS
+    assert fake.project_ids.count("42") == 3
+    assert fake.project_ids.count("43") == 3
 
 
 def test_sync_is_idempotent_and_keeps_depth_per_segment():
@@ -912,6 +985,59 @@ def test_history_sync_uses_dates_and_normalizes_zero_and_missing_position():
     missing = KeywordPosition.objects.get(ranking_snapshot__snapshot_date=date(2026, 6, 30))
     assert missing.position_value is None
     assert missing.position_raw == "--"
+
+
+def test_summary_chart_client_requests_provider_visibility(monkeypatch):
+    api = TopvisorClient(credentials=TopvisorCredentials("user", "secret"))
+    captured = []
+
+    def request(method, params):
+        captured.append((method, params))
+        return {"dates": ["2026-07-31"], "seriesByProjectsId": {"42": {"visibility": [37.4]}}}
+
+    monkeypatch.setattr(api, "_request", request)
+    payload = api.get_summary_chart(42, region_index=2, dates=("2026-07-31",))
+
+    assert payload["seriesByProjectsId"]["42"]["visibility"] == [37.4]
+    assert captured == [
+        (
+            "get/positions_2/summary_chart",
+            {
+                "project_id": 42,
+                "region_index": 2,
+                "dates": ["2026-07-31"],
+                "type_range": 100,
+                "show_visibility": 1,
+            },
+        )
+    ]
+
+
+def test_history_sync_stores_exact_topvisor_visibility():
+    class ProviderVisibilityClient(RealHistoryClient):
+        def get_summary_chart(self, project_id, *, region_index, dates):
+            self.calls.append(("summary", project_id, region_index, dates))
+            values = {"2026-06-30": 21.25, "2026-07-15": 34.5, "2026-07-31": 48.75}
+            return {
+                "dates": list(dates),
+                "seriesByProjectsId": {
+                    str(project_id): {"visibility": [values[day] for day in dates]}
+                },
+            }
+
+    project = Project.objects.create(name="Provider visibility", domain="visibility.example")
+    run = sync_positions(mapping=history_mapping(project), client=ProviderVisibilityClient())
+
+    assert run.status == run.Status.SUCCESS
+    snapshots = RankingSnapshot.objects.order_by("snapshot_date")
+    assert list(snapshots.values_list("visibility", flat=True)) == [
+        Decimal("21.2500"),
+        Decimal("34.5000"),
+        Decimal("48.7500"),
+    ]
+    assert all(
+        snapshot.visibility_raw["source"] == "topvisor_api_summary_chart" for snapshot in snapshots
+    )
 
 
 def test_missing_frequency_uses_minimum_weight_and_late_failure_is_atomic():

@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime
 
 import pytest
@@ -76,6 +77,67 @@ def test_quick_project_create_reports_duplicate_normalized_domain_without_500(
     assert response.status_code == 400
     assert "Проект с таким доменом уже существует." in response.content.decode()
     assert Project.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_quick_project_create_ajax_returns_success_and_clean_redirect(client, user):
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:project-create"),
+        {"name": "Новый проект", "domain": "new.example", "position_provider": "topvisor"},
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "message": "Проект «Новый проект» успешно добавлен.",
+        "redirect_url": reverse("reports:projects"),
+    }
+    assert Project.objects.filter(domain="new.example").exists()
+
+
+@pytest.mark.django_db
+def test_manual_rows_and_landing_groups_are_frozen_in_report_snapshot(client, user, project):
+    client.force_login(user)
+    manual = [
+        {
+            "engine": "google",
+            "region": "Россия",
+            "month": "2026-05-01",
+            "top3": 10,
+            "top10": 20,
+            "top11_30": 5,
+            "top3_percent": 10,
+            "top10_percent": 20,
+            "top11_30_percent": 5,
+        }
+    ]
+    field_value = "УЗИ | https://example.test/diagnostika/uzi/*"
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "month": "2026-08",
+            "topvisor_manual_rows": json.dumps(manual),
+            "include_metrika_landing_page_comparison": "on",
+            "metrika_landing_comparison_subsection_url_groups": field_value,
+        },
+    )
+    assert response.status_code == 302
+    snapshot = ReportDatasetSnapshot.objects.get()
+    frozen = snapshot.payload["display_options"]
+    assert frozen["topvisor_manual_rows"][0]["month"] == "2026-05-01"
+    assert frozen["metrika_url_segments"]["landing_comparison_subsections"] == [
+        {"name": "УЗИ", "patterns": ["https://example.test/diagnostika/uzi/*"]}
+    ]
+
+    client.post(
+        reverse("reports:report-settings-save", args=[project.id]),
+        data=json.dumps({"topvisor_manual_rows": "[]"}),
+        content_type="application/json",
+    )
+    snapshot.refresh_from_db()
+    assert snapshot.payload["display_options"]["topvisor_manual_rows"][0]["month"] == "2026-05-01"
 
 
 @pytest.mark.django_db
@@ -343,7 +405,7 @@ def test_preview_renders_snapshot_metrics_segments_work_without_source_diagnosti
     html = response.content.decode()
     for expected in (
         "12.5",
-        "1-3: 1",
+        "1-3",
         "Google",
         "Яндекс",
         "Россия",
@@ -356,6 +418,7 @@ def test_preview_renders_snapshot_metrics_segments_work_without_source_diagnosti
         "Универсальный проект",
     ):
         assert expected in html
+    assert 'class="position-distribution"' in html
     assert "21-30" not in html and "31-50" not in html and "51-100" not in html
     assert "must-not-render" not in html and "safe-checksum" not in html
     assert "Источник данных" not in html

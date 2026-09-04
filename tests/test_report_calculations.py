@@ -238,6 +238,21 @@ def test_position_service_includes_all_three_months(tmp_path, settings):
     assert series[1]["distribution"].ranges["4-10"] == 1
     assert series[2]["distribution"].ranges["1-3"] == 1
 
+    selected = build_position_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_dates={"yandex": (date(2026, 5, 31), date(2026, 7, 31))},
+    )["segments"][0]
+    assert [item["month"] for item in selected["three_month_series"]] == [
+        date(2026, 5, 31),
+        date(2026, 7, 31),
+    ]
+    assert [item["month"] for item in selected["chart_series"]] == [
+        date(2026, 5, 31),
+        date(2026, 6, 30),
+        date(2026, 7, 31),
+    ]
+
 
 @pytest.mark.django_db
 def test_url_group_batch_facts_retain_all_intersections_and_warning():
