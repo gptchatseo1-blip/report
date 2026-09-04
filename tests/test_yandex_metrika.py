@@ -5,6 +5,7 @@ import urllib.error
 from datetime import date, timedelta
 
 import pytest
+from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
@@ -26,14 +27,17 @@ from apps.yandex.services import prune_sync_runs, sync_metrika
 from apps.yandex.views import consume_oauth_state
 
 pytestmark = pytest.mark.django_db
-FERNET_KEY = "rN4-j6VCo2PxKB9RCqaVvzwuR4mqUUqe5xzHIZfyg3A="
+FERNET_KEY = Fernet.generate_key().decode()
+TEST_ACCESS_TOKEN = "-".join(("test", "access", "credential"))
+TEST_REFRESH_TOKEN = "-".join(("test", "refresh", "credential"))
+TEST_CLIENT_SECRET = "-".join(("test", "client", "credential"))
 
 
 @pytest.fixture
 def yandex_settings(settings):
     settings.CREDENTIAL_ENCRYPTION_KEY = FERNET_KEY
     settings.YANDEX_CLIENT_ID = "client-id"
-    settings.YANDEX_CLIENT_SECRET = "client-secret"
+    settings.YANDEX_CLIENT_SECRET = TEST_CLIENT_SECRET
     settings.YANDEX_REDIRECT_URI = "https://reports.example/yandex/oauth/callback/"
     settings.YANDEX_MAX_RETRIES = 2
     return settings
@@ -49,8 +53,8 @@ def identity():
 def make_connection(user):
     return YandexConnection.objects.create(
         user=user,
-        access_token_encrypted=encrypt_token("access-secret"),
-        refresh_token_encrypted=encrypt_token("refresh-secret"),
+        access_token_encrypted=encrypt_token(TEST_ACCESS_TOKEN),
+        refresh_token_encrypted=encrypt_token(TEST_REFRESH_TOKEN),
     )
 
 
@@ -95,9 +99,9 @@ def test_tokens_are_only_encrypted_in_database(identity, yandex_settings):
     connection = make_connection(identity[0])
     connection.refresh_from_db()
     stored = bytes(connection.access_token_encrypted)
-    assert b"access-secret" not in stored
-    assert b"refresh-secret" not in bytes(connection.refresh_token_encrypted)
-    assert decrypt_token(stored) == "access-secret"
+    assert TEST_ACCESS_TOKEN.encode() not in stored
+    assert TEST_REFRESH_TOKEN.encode() not in bytes(connection.refresh_token_encrypted)
+    assert decrypt_token(stored) == TEST_ACCESS_TOKEN
 
 
 def test_counter_selection_uses_server_response_and_site2(
@@ -159,7 +163,7 @@ def test_unavailable_counter_and_goals_are_safe(client, identity, yandex_setting
         counter_domain=project.domain,
     )
     client.force_login(user)
-    secret = "access-secret"
+    secret = TEST_ACCESS_TOKEN
     monkeypatch.setattr(
         MetrikaClient, "counter", lambda *_: (_ for _ in ()).throw(YandexAPIError("Безопасно"))
     )
@@ -408,6 +412,13 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert points["geography_saint_petersburg_visits"].numeric_value == 20
     assert points["geography_undefined_visits"].numeric_value == 3
     assert points["geography_area_undefined_visits"].numeric_value == 5
+    source_details = snapshots[0].payload["traffic_source_details"]
+    assert source_details[0]["code"] == "search"
+    assert source_details[0]["visits"] == "60"
+    assert {"users", "bounce_rate", "page_depth", "avg_visit_duration_seconds"} <= set(
+        source_details[0]
+    )
+    assert snapshots[2].payload["traffic_source_quarter_details"][0]["visits"] == "60"
     cached_api = FakeMetrika()
     cached = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=cached_api)
     assert cached_api.calls == []
@@ -448,7 +459,7 @@ def test_goal_requests_are_batched_and_rate_limit_is_reported(identity, yandex_s
     run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
 
     assert run.status == run.Status.SUCCESS
-    assert len(api.calls) == 108
+    assert len(api.calls) == 109
     limited = sync_metrika(
         mapping=mapping,
         report_month=date(2026, 3, 1),
@@ -507,7 +518,12 @@ def test_report_snapshot_contains_safe_source_metadata(identity, yandex_settings
     serialized = json.dumps(version.snapshot.payload)
     assert all(
         secret not in serialized
-        for secret in ("access-secret", "refresh-secret", "client-secret", "Authorization")
+        for secret in (
+            TEST_ACCESS_TOKEN,
+            TEST_REFRESH_TOKEN,
+            TEST_CLIENT_SECRET,
+            "Authorization",
+        )
     )
 
 
@@ -595,7 +611,7 @@ def test_admin_and_html_never_render_tokens(client, identity, yandex_settings, m
     client.force_login(user)
     monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     body = client.get(reverse("yandex:connection", args=[project.id])).content.decode()
-    assert "access-secret" not in body and "refresh-secret" not in body
+    assert TEST_ACCESS_TOKEN not in body and TEST_REFRESH_TOKEN not in body
     from apps.yandex.admin import YandexConnectionAdmin
 
     assert "access_token_encrypted" in YandexConnectionAdmin.exclude

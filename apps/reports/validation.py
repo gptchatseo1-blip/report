@@ -11,9 +11,14 @@ from .services import snapshot_checksum
 NUMBER_RE = re.compile(r"(?<![\w])[-+]?\d+(?:[.,]\d+)?")
 PLACEHOLDER_RE = re.compile(r"(?:\{\{?[^{}]+\}?\}|\[\[[^]]+]])")
 SECRET_RE = re.compile(
-    r"(?i)(?:authorization\s*:\s*(?:bearer|basic)|oauth[_ -]?token|api[_ -]?key|"
+    r"(?i)(?:authorization\s*:\s*(?:bearer|basic|oauth)\s+\S{8,}|"
     r"sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9]{20,})"
 )
+SECRET_FIELD_RE = re.compile(
+    r"(?i)^(?:api[_ -]?key|oauth[_ -]?token|access[_ -]?token|"
+    r"refresh[_ -]?token|authorization)$"
+)
+SAFE_SECRET_VALUES = {"", "disabled", "none", "null", "redacted", "masked", "не настроено"}
 RANGES = {
     "1-3": (1, 3),
     "4-10": (4, 10),
@@ -73,9 +78,18 @@ def _all_values(value):
 
 
 def _contains_secret(value):
-    return bool(
-        SECRET_RE.search(" ".join(str(item) for item in _all_values(value) if item is not None))
-    )
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if SECRET_FIELD_RE.fullmatch(str(key).strip()):
+                rendered = str(item or "").strip()
+                if rendered.casefold() not in SAFE_SECRET_VALUES and len(rendered) >= 8:
+                    return True
+            if _contains_secret(item):
+                return True
+        return False
+    if isinstance(value, list | tuple | set):
+        return any(_contains_secret(item) for item in value)
+    return value is not None and bool(SECRET_RE.search(str(value)))
 
 
 def _host_matches(url, domain):

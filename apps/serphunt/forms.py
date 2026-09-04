@@ -14,6 +14,8 @@ class SerphuntCredentialsForm(forms.Form):
 
     def clean_api_key(self):
         value = self.cleaned_data["api_key"].strip()
+        if value.casefold().startswith("bearer "):
+            value = value[7:].strip()
         if not value and not self.has_key:
             raise forms.ValidationError("Введите API-ключ Serphunt.")
         return value

@@ -7,43 +7,64 @@
   let saveTimer;
 
   const manualField = form.querySelector('[name=topvisor_manual_rows]');
-  const manualBody = form.querySelector('[data-topvisor-manual-body]');
-  const defaultRows = (() => {
-    try { return JSON.parse(document.getElementById('topvisor-editor-defaults')?.textContent || '[]'); }
-    catch (_error) { return []; }
-  })();
-  let manualRows = (() => {
+  const manualContainer = form.querySelector('[data-topvisor-manual-segments]');
+  const manualStatus = form.querySelector('[data-topvisor-manual-status]');
+  const readJson = (id, fallback = []) => {
+    try { return JSON.parse(document.getElementById(id)?.textContent || JSON.stringify(fallback)); }
+    catch (_error) { return fallback; }
+  };
+  const defaultRows = readJson('topvisor-editor-defaults');
+  const defaultSegments = readJson('topvisor-editor-segments');
+  const savedRows = (() => {
     try { return JSON.parse(manualField?.value || '[]'); }
     catch (_error) { return []; }
   })();
-  if (!manualRows.length) manualRows = defaultRows;
+  const segmentKey = row => `${String(row.engine || '').toLowerCase()}\u0000${String(row.region || '').trim().toLowerCase()}`;
+  const rowKey = row => `${segmentKey(row)}\u0000${String(row.month || '').slice(0, 7)}`;
+  const manualRows = defaultRows.map(row => ({...row}));
+  savedRows.forEach(row => {
+    const index = row.month ? manualRows.findIndex(item => rowKey(item) === rowKey(row)) : -1;
+    if (index >= 0) manualRows[index] = {...manualRows[index], ...row};
+    else manualRows.push({...row});
+  });
+  let manualDirty = false;
+
+  function changeManualRows(delay = 500) {
+    if (!manualField) return;
+    manualField.value = JSON.stringify(manualRows);
+    manualDirty = true;
+    if (manualStatus) manualStatus.textContent = 'Сохранение…';
+    scheduleSave(delay);
+  }
 
   function renderManualRows() {
-    if (!manualBody || !manualField) return;
-    manualBody.replaceChildren();
-    const insertAt = index => {
-      const source = manualRows[Math.min(index, manualRows.length - 1)] || {configuration_id: '', engine: 'yandex', region: '', month: '', total: 0, top3: 0, top10: 0, top11_30: 0};
-      manualRows.splice(index, 0, {...source});
-      manualField.value = JSON.stringify(manualRows);
-      renderManualRows();
-      scheduleSave(150);
-    };
-    const insertBoundary = index => {
-      const boundary = document.createElement('tr');
-      boundary.className = 'manual-row-boundary';
-      const cell = document.createElement('td');
-      cell.colSpan = 5;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = '+';
-      button.title = index === 0 ? 'Добавить строку сверху' : index === manualRows.length ? 'Добавить строку снизу' : 'Добавить строку здесь';
-      button.addEventListener('click', () => insertAt(index));
-      cell.append(button); boundary.append(cell); manualBody.append(boundary);
-    };
-    manualRows.forEach((row, index) => {
-      insertBoundary(index);
+    if (!manualContainer || !manualField) return;
+    manualContainer.replaceChildren();
+    const segments = new Map(defaultSegments.map(item => [segmentKey(item), {...item}]));
+    manualRows.forEach(row => {
+      if (row.engine || row.region) segments.set(segmentKey(row), {...segments.get(segmentKey(row)), ...row});
+    });
+    if (!segments.size) {
+      const empty = document.createElement('p');
+      empty.textContent = 'Подключите поисковую систему и регион, чтобы заполнить таблицу.';
+      manualContainer.append(empty);
+      return;
+    }
+    segments.forEach(segment => {
+      const section = document.createElement('section');
+      section.className = 'manual-segment-card';
+      const title = document.createElement('h5');
+      const engineLabel = segment.engine_label || (segment.engine === 'yandex' ? 'Яндекс' : segment.engine === 'google' ? 'Google' : segment.engine || 'Поиск');
+      title.textContent = `${engineLabel} · ${segment.region || 'Регион не указан'}`;
+      section.append(title);
+      const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+      const table = document.createElement('table'); table.className = 'manual-topvisor-table';
+      table.innerHTML = `<thead><tr><th>Месяц</th><th>в топ 3</th><th>в топ 10</th><th>в топ ${Number(segment.ranking_depth || 30) >= 30 ? '11–30' : '11–20'}</th><th><span class="sr-only">Действия</span></th></tr></thead>`;
+      const body = document.createElement('tbody');
+      const segmentRows = manualRows.filter(row => segmentKey(row) === segmentKey(segment));
+      segmentRows.sort((a, b) => String(a.month || '').localeCompare(String(b.month || '')));
+      segmentRows.forEach(row => {
       const tr = document.createElement('tr');
-      tr.title = [row.engine, row.region].filter(Boolean).join(' · ');
       const fields = [['month', row.month || '', 'month'], ['top3', row.top3 ?? 0, 'metric'], ['top10', row.top10 ?? 0, 'metric'], ['top11_30', row.top11_30 ?? 0, 'metric']];
       fields.forEach(([name, value, type]) => {
         const td = document.createElement('td');
@@ -58,13 +79,13 @@
           input.setAttribute('aria-label', 'Процент и количество');
         }
         input.addEventListener('input', () => {
-          if (type === 'month') manualRows[index][name] = input.value ? `${input.value}-01` : '';
+          if (type === 'month') row[name] = input.value ? `${input.value}-01` : '';
           else {
             const numbers = input.value.match(/-?\d+(?:[.,]\d+)?/g) || [];
-            manualRows[index][`${name}_percent`] = Number((numbers[0] || '0').replace(',', '.'));
-            manualRows[index][name] = Math.max(0, Number(numbers[1] || numbers[0] || 0));
+            row[`${name}_percent`] = Math.max(0, Math.min(100, Number((numbers[0] || '0').replace(',', '.'))));
+            row[name] = Math.max(0, Math.round(Number(numbers[1] || numbers[0] || 0)));
           }
-          manualField.value = JSON.stringify(manualRows); scheduleSave(700);
+          changeManualRows(700);
         });
         td.append(input);
         tr.append(td);
@@ -74,12 +95,20 @@
       remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
       remove.title = 'Удалить строку';
       remove.addEventListener('click', () => {
-        manualRows.splice(index, 1); manualField.value = JSON.stringify(manualRows);
-        renderManualRows(); scheduleSave(150);
+        manualRows.splice(manualRows.indexOf(row), 1); renderManualRows(); changeManualRows(150);
       });
-      actions.append(remove); tr.append(actions); manualBody.append(tr);
+      actions.append(remove); tr.append(actions); body.append(tr);
     });
-    insertBoundary(manualRows.length);
+      if (!segmentRows.length) body.innerHTML = '<tr><td colspan="5" class="manual-empty-row">Данных пока нет</td></tr>';
+      table.append(body); wrap.append(table); section.append(wrap);
+      const add = document.createElement('button');
+      add.type = 'button'; add.className = 'secondary manual-add-row'; add.textContent = '+ Добавить строку';
+      add.addEventListener('click', () => {
+        manualRows.push({configuration_id: '', engine: segment.engine || '', region: segment.region || '', month: '', total: 0, top3: 0, top10: 0, top11_30: 0, top3_percent: 0, top10_percent: 0, top11_30_percent: 0});
+        renderManualRows(); changeManualRows(150);
+      });
+      section.append(add); manualContainer.append(section);
+    });
     manualField.value = JSON.stringify(manualRows);
   }
   renderManualRows();
@@ -146,6 +175,7 @@
         payload[field.name] = field.value;
       }
     });
+    if (manualField) payload.topvisor_manual_rows = manualField.value || '[]';
     return payload;
   }
 
@@ -159,7 +189,12 @@
       });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось сохранить настройки.');
+      if (manualDirty) {
+        manualDirty = false;
+        if (manualStatus) manualStatus.textContent = 'Сохранено';
+      }
     } catch (error) {
+      if (manualDirty && manualStatus) manualStatus.textContent = 'Ошибка автосохранения';
       showNotice(error.message || 'Не удалось сохранить настройки проекта.', 'error');
     }
   }

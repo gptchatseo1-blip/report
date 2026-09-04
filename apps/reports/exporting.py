@@ -438,6 +438,17 @@ def _visibility_chart(points, title=None):
 
 
 def _topvisor_buckets(distribution, depth):
+    manual = distribution.get("manual_buckets") or {}
+    if manual:
+        labels = ["1-3", "1-10", "11-30" if depth >= 30 else "11-20"]
+        return [
+            {
+                "label": label,
+                "count": (manual.get(label) or {}).get("count", 0),
+                "share": (manual.get(label) or {}).get("share"),
+            }
+            for label in labels
+        ]
     ranges = distribution.get("ranges") or {}
     total = distribution.get("total") or 0
     buckets = [
@@ -508,8 +519,8 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
         return None
     columns = 1 if engine == "google" else 2
     row_count = math.ceil(len(buckets) / columns)
-    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(4.8, 0.78 * row_count), dpi=200, facecolor="white")
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 12}):
+        figure, axis = plt.subplots(figsize=(5.4, 0.9 * row_count), dpi=240, facecolor="white")
         axis.set_xlim(0, columns)
         axis.set_ylim(0, row_count)
         axis.axis("off")
@@ -545,7 +556,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
                 ha="center",
                 va="center",
                 color="white",
-                fontsize=10,
+                fontsize=12,
                 fontweight="bold",
             )
             axis.text(
@@ -555,7 +566,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
                 ha="left",
                 va="center",
                 color="#91A0AF",
-                fontsize=9,
+                fontsize=12,
             )
             axis.text(
                 x + 0.82,
@@ -564,7 +575,7 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
                 ha="right",
                 va="center",
                 color="#5D6875",
-                fontsize=9,
+                fontsize=12,
             )
         figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         return _save_figure(figure)
@@ -839,22 +850,22 @@ def _render_topvisor_comparison(doc, segment, *, show_visibility=True):
     for label in ("1-3", "1-10", final_label):
         bucket = current_buckets.get(label) or {}
         now = bucket.get("share")
-        doc.add_paragraph(
+        paragraph = doc.add_paragraph(
             f"Запросов в топ {label} — {_number(now, '%', decimal_places=0)} "
-            f"({_number(bucket.get('count'), decimal_places=0)}).",
-            style="Compact",
+            f"({_number(bucket.get('count'), decimal_places=0)})."
         )
+        paragraph.paragraph_format.space_after = Pt(0)
     if show_visibility:
         now_visibility = current.get("visibility")
         previous_visibility = previous.get("visibility") if previous else None
         engine = ENGINE_LABELS.get(segment.get("search_engine"), "Поиск")
         region = segment.get("region") or "регион не указан"
-        doc.add_paragraph(
+        paragraph = doc.add_paragraph(
             f"Общая видимость сайта в ПС {engine}.{region} — "
             f"{_number(now_visibility, '%', decimal_places=0)} "
-            f"({_comparison_phrase(now_visibility, previous_visibility)}).",
-            style="Compact",
+            f"({_comparison_phrase(now_visibility, previous_visibility)})."
         )
+        paragraph.paragraph_format.space_after = Pt(0)
 
 
 def _manual_topvisor_segment(payload, segment):
@@ -883,18 +894,40 @@ def _manual_topvisor_segment(payload, segment):
     depth = segment.get("ranking_depth") or 30
     history = []
     for row in sorted(selected, key=lambda item: item["month"]):
-        total = max(int(row.get("total") or 0), 0)
         top3 = max(int(row.get("top3") or 0), 0)
         top10 = max(int(row.get("top10") or 0), top3)
         top11 = max(int(row.get("top11_30") or 0), 0)
+        shares = {
+            "1-3": max(0, min(100, float(row.get("top3_percent") or 0))),
+            "1-10": max(0, min(100, float(row.get("top10_percent") or 0))),
+            "11-30" if depth >= 30 else "11-20": max(
+                0, min(100, float(row.get("top11_30_percent") or 0))
+            ),
+        }
+        inferred_totals = [
+            round(count * 100 / shares[label])
+            for label, count in (("1-3", top3), ("1-10", top10))
+            if shares[label] > 0
+        ]
+        total = max(int(row.get("total") or 0), *(inferred_totals or [0]), top10 + top11)
         ranges = {"1-3": top3, "4-10": max(top10 - top3, 0), "11-20": top11}
         if depth >= 30:
             ranges["21-30"] = 0
+        final_label = "11-30" if depth >= 30 else "11-20"
         history.append(
             {
                 "month": row["month"],
                 "visibility": row.get("visibility"),
-                "distribution": {"total": total, "top_10": top10, "ranges": ranges},
+                "distribution": {
+                    "total": total,
+                    "top_10": top10,
+                    "ranges": ranges,
+                    "manual_buckets": {
+                        "1-3": {"count": top3, "share": shares["1-3"]},
+                        "1-10": {"count": top10, "share": shares["1-10"]},
+                        final_label: {"count": top11, "share": shares[final_label]},
+                    },
+                },
                 "ranking_depth": depth,
             }
         )
@@ -1740,6 +1773,8 @@ def _render_webmaster(doc, payload, blocks):
             current_summary, previous_summary = _webmaster_query_summary_from_changes(payload)
         if current_summary:
             _webmaster_query_summary_table(doc, current_summary, previous_summary)
+        if current_summary and previous_summary:
+            doc.add_paragraph(_webmaster_query_text(current_summary, previous_summary))
         doc.add_paragraph(
             "Красным шрифтом представлены цифры, показывающие спад показателя по сравнению "
             "с предыдущим периодом, зелёным — рост. Запросы, по которым начинает показываться "
@@ -1747,8 +1782,6 @@ def _render_webmaster(doc, payload, blocks):
             "показываются небрендовые (они менее кликабельные), которые появляются на более "
             "низких позициях. Поэтому показатели CTR и позиции могут снижаться."
         )
-        if current_summary and previous_summary:
-            doc.add_paragraph(_webmaster_query_text(current_summary, previous_summary))
     if section_enabled(payload, "webmaster_popular_queries"):
         doc.add_paragraph("Самые кликабельные запросы:", style="Table Heading")
         current_queries = latest.get("popular_queries") or []
@@ -1835,6 +1868,9 @@ def _metrika_source_label(name):
         "advertising": "Переходы по рекламе",
         "social": "Переходы из социальных сетей",
         "internal": "Внутренние переходы",
+        "recommend": "Переходы из рекомендательных систем",
+        "messenger": "Переходы из мессенджеров",
+        "saved": "Переходы с сохранённых страниц",
         "other": "Остальные источники",
     }.get(name, name)
 
@@ -1848,6 +1884,7 @@ def _style_traffic_source_icons(table):
         "Внутренние переходы": ("⌂", "0FBDA0"),
         "Переходы из рекомендательных систем": ("★", "FF3399"),
         "Переходы из мессенджеров": ("✉", "2D9CDB"),
+        "Переходы с сохранённых страниц": ("▣", "8B98A7"),
         "Переходы по рекламе": ("AD", "FF8A00"),
         "Остальные источники": ("●", "8B98A7"),
     }
@@ -1876,6 +1913,9 @@ def _metrika_sources_chart(facts):
         "advertising",
         "social",
         "internal",
+        "recommend",
+        "messenger",
+        "saved",
         "other",
     )
     color_map = {
@@ -1887,6 +1927,9 @@ def _metrika_sources_chart(facts):
         "advertising": "#3388FF",
         "social": "#FFB851",
         "internal": "#FFB851",
+        "recommend": "#FF3399",
+        "messenger": "#2D9CDB",
+        "saved": "#8B98A7",
         "other": "#8B98A7",
     }
     names = [name for name in order if name in facts]
@@ -1910,7 +1953,7 @@ def _metrika_sources_chart(facts):
             change = facts[name].get("change") or {}
             current = change.get("current")
             legend_label = (
-                f"{_metrika_source_label(name)} — {_number(current)}"
+                f"{_metrika_source_label(name)} — {_compact_number(current)}"
                 if current is not None
                 else _metrika_source_label(name)
             )
@@ -1938,7 +1981,10 @@ def _metrika_sources_chart(facts):
             frameon=False,
             fontsize=8,
         )
-        figure.subplots_adjust(left=0.09, right=0.98, top=0.9, bottom=0.27)
+        legend_rows = max(1, math.ceil(len(legend_handles) / 2))
+        figure.subplots_adjust(
+            left=0.09, right=0.98, top=0.9, bottom=min(0.48, 0.2 + legend_rows * 0.065)
+        )
         return _save_figure(figure)
 
 
@@ -1956,11 +2002,16 @@ def _metrika_period_rows(payload, key):
             or (source.get("search_details") or {}).get(robotness)
             or source
         )
+        rows = (
+            source.get("traffic_source_details") or []
+            if key == "traffic_source_details"
+            else variant.get(detail_key) or []
+        )
         periods.append(
             {
                 "period_start": detail.get("period_start"),
                 "period_end": detail.get("period_end"),
-                "rows": variant.get(detail_key) or [],
+                "rows": rows,
                 "payload": source,
             }
         )
@@ -1993,6 +2044,84 @@ def _aggregate_detail_rows(rows, key):
             values.pop("bounce_sum") / values["visits"] if values["visits"] else Decimal(0)
         )
     return result
+
+
+def _aggregate_traffic_source_rows(periods):
+    """Aggregate Metrika source rows using visit-weighted rate/average metrics."""
+    result = {}
+    for period in periods:
+        for row in period.get("rows") or []:
+            code = str(row.get("code") or _row_dimension(row, 0).get("id") or "other")
+            target = result.setdefault(
+                code,
+                {
+                    "visits": Decimal(0),
+                    "users": Decimal(0),
+                    "bounce_sum": Decimal(0),
+                    "page_depth_sum": Decimal(0),
+                    "duration_sum": Decimal(0),
+                },
+            )
+            visits = _decimal_or_none(row.get("visits")) or Decimal(0)
+            target["visits"] += visits
+            target["users"] += _decimal_or_none(row.get("users")) or Decimal(0)
+            target["bounce_sum"] += (_decimal_or_none(row.get("bounce_rate")) or 0) * visits
+            target["page_depth_sum"] += (_decimal_or_none(row.get("page_depth")) or 0) * visits
+            target["duration_sum"] += (
+                _decimal_or_none(row.get("avg_visit_duration_seconds")) or 0
+            ) * visits
+    for values in result.values():
+        visits = values["visits"]
+        values["bounce_rate"] = values.pop("bounce_sum") / visits if visits else Decimal(0)
+        values["page_depth"] = values.pop("page_depth_sum") / visits if visits else Decimal(0)
+        values["avg_visit_duration_seconds"] = (
+            values.pop("duration_sum") / visits if visits else Decimal(0)
+        )
+    return result
+
+
+def _duration(value):
+    seconds = max(0, int(round(float(_decimal_or_none(value) or 0))))
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes} м {seconds} с" if minutes else f"{seconds} с"
+
+
+def _metrika_sources_quarter_table(doc, periods):
+    quarter_rows = (
+        (periods[-1].get("payload") or {}).get("traffic_source_quarter_details") if periods else []
+    )
+    totals = _aggregate_traffic_source_rows(
+        [{"rows": quarter_rows}] if quarter_rows else periods[-3:]
+    )
+    ordered = sorted(
+        ((code, values) for code, values in totals.items() if values["visits"] > 0),
+        key=lambda item: item[1]["visits"],
+        reverse=True,
+    )
+    if not ordered:
+        return None
+    rows = [
+        (
+            _metrika_source_label(code),
+            _number(values["visits"], decimal_places=0),
+            _number(values["users"], decimal_places=0),
+            _number(values["bounce_rate"], "%", decimal_places=2),
+            _number(values["page_depth"], decimal_places=2),
+            _duration(values["avg_visit_duration_seconds"]),
+        )
+        for code, values in ordered
+    ]
+    table = _table(
+        doc,
+        ("Источник", "Визиты", "Посетители", "Отказы", "Глубина просмотра", "Время на сайте"),
+        rows,
+        [5.4, 2.3, 2.5, 2.3, 3.0, 2.7],
+        header_fill="F7F7F7",
+    )
+    _style_provider_table(table)
+    _style_traffic_source_icons(table)
+    _set_table_borders(table, "E2E4E8", size="3")
+    return table
 
 
 def _search_engine_name(row):
@@ -3021,61 +3150,44 @@ def _render_metrika(doc, payload, blocks):
         facts = _metric_source(payload, "yandex_metrika").get("traffic_source_dynamics", {})
         _add_report_picture(doc, _metrika_sources_chart(facts))
         if options.get("include_metrika_sources_table"):
-            source_rows = [
-                (
-                    _metrika_source_label(name),
-                    _number((fact.get("change") or {}).get("previous")),
-                    _number((fact.get("change") or {}).get("current")),
-                    _number(fact.get("share_percent"), "%", decimal_places=1),
-                    _number(
-                        (fact.get("change") or {}).get("relative_percent"),
-                        "%",
-                        decimal_places=1,
-                    ),
-                )
-                for name, fact in sorted(facts.items())
-            ]
-            if source_rows:
-                previous_total = sum(
-                    (
-                        _decimal_or_none((fact.get("change") or {}).get("previous")) or 0
-                        for fact in facts.values()
-                    ),
-                    Decimal(0),
-                )
-                current_total = sum(
-                    (
-                        _decimal_or_none((fact.get("change") or {}).get("current")) or 0
-                        for fact in facts.values()
-                    ),
-                    Decimal(0),
-                )
-                rows = [
-                    (
-                        "Итого и среднее",
-                        _number(previous_total, decimal_places=0),
-                        _number(current_total, decimal_places=0),
-                        "100,0%",
-                        _number(
-                            _relative_delta(current_total, previous_total), "%", decimal_places=1
-                        ),
-                    ),
-                    *source_rows,
+            source_periods = _metrika_period_rows(payload, "traffic_source_details")
+            if not any(period.get("rows") for period in source_periods):
+                source_periods = [
+                    {
+                        "rows": [
+                            {
+                                "code": name,
+                                "visits": (fact.get("change") or {}).get("current") or 0,
+                                "users": 0,
+                                "bounce_rate": 0,
+                                "page_depth": 0,
+                                "avg_visit_duration_seconds": 0,
+                            }
+                            for name, fact in facts.items()
+                        ]
+                    }
                 ]
-                table = _table(
-                    doc,
-                    ("Источник", "Предыдущий период", "Текущий период", "Доля", "Изменение"),
-                    rows,
-                    [5.4, 3.3, 3.3, 3.0, 3.5],
-                    header_fill="F7F7F7",
+            if options.get("metrika_sources_compare_previous") and source_periods:
+                current = _aggregate_traffic_source_rows(source_periods[-1:])
+                previous = _aggregate_traffic_source_rows(source_periods[-2:-1])
+                ordered = sorted(
+                    (code for code, values in current.items() if values["visits"] > 0),
+                    key=lambda code: current[code]["visits"],
+                    reverse=True,
                 )
-                _style_provider_table(table)
-                _style_traffic_source_icons(table)
-                for cell in table.rows[1].cells:
-                    _shade_cell(cell, "F7F7F7")
-                    for run in cell.paragraphs[0].runs:
-                        run.font.bold = True
-                _set_table_borders(table, "E2E4E8", size="3")
+                if ordered:
+                    table = _metrika_detail_table(
+                        doc,
+                        [
+                            (_metrika_source_label(code), current[code], previous.get(code, {}))
+                            for code in ordered
+                        ],
+                        first_header="Источник",
+                        include_total=False,
+                    )
+                    _style_traffic_source_icons(table)
+            else:
+                _metrika_sources_quarter_table(doc, source_periods)
     if traffic_enabled:
         search_periods = _metrika_period_rows(payload, "search_engines")
         if section_enabled(payload, "metrika_search_engines") and search_periods:
@@ -3363,7 +3475,7 @@ def _render_metrika(doc, payload, blocks):
                 current_rows,
                 previous_rows,
                 [*information_groups, *commercial_groups],
-                expanded_groups=expanded_groups,
+                expanded_groups=(),
             )
             if information_groups:
                 doc.add_paragraph(_group_overview_text(landing_periods, information_groups))
@@ -3847,7 +3959,8 @@ def _xlsx(snapshot, draft):
             positions.append(tuple(_xlsx_value(value) for value in values))
     history = workbook.create_sheet("История")
     history.append(("Система", "Регион", "Месяц", "Видимость", "Глубина", "Распределение"))
-    for segment in payload.get("calculated", {}).get("positions", {}).get("segments", []):
+    for raw_segment in payload.get("calculated", {}).get("positions", {}).get("segments", []):
+        segment = _manual_topvisor_segment(payload, raw_segment)
         for row in segment.get("three_month_series", []):
             history.append(
                 (
