@@ -230,6 +230,21 @@ class TopvisorClient:
             str(item.get("date", item)) if isinstance(item, dict) else str(item) for item in values
         )
 
+    def get_summary_chart(self, project_id, *, region_index, dates):
+        """Return Topvisor's own visibility values for concrete ranking checks."""
+        if not dates:
+            return {}
+        return self._request(
+            "get/positions_2/summary_chart",
+            {
+                "project_id": int(project_id),
+                "region_index": int(region_index),
+                "dates": list(dates),
+                "type_range": 100,
+                "show_visibility": 1,
+            },
+        )
+
     def get_positions(self, project_id, **filters):
         """Compatibility iterator; synchronization uses ``get_position_history``."""
         return self.iter_pages(

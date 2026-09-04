@@ -29,6 +29,7 @@ from apps.reports.exporting import (
     _monthly_topvisor_rows,
     _position_fill,
     _render_monthly_topvisor_table,
+    _render_topvisor_comparison,
     _webmaster_popular_table,
     _webmaster_query_summary_from_changes,
     generate_artifact,
@@ -365,6 +366,43 @@ def test_monthly_topvisor_table_hides_visibility_column_when_disabled():
     ]
 
 
+def test_topvisor_comparison_uses_percent_point_change_and_requested_labels():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 7, 1))
+    segment = {
+        "ranking_depth": 30,
+        "three_month_series": [
+            {
+                "month": "2026-06-01",
+                "distribution": {
+                    "manual_buckets": {
+                        "1-3": {"share": 34, "count": 340},
+                        "1-10": {"share": 60, "count": 600},
+                        "11-30": {"share": 40, "count": 400},
+                    }
+                },
+            },
+            {
+                "month": "2026-07-01",
+                "distribution": {
+                    "manual_buckets": {
+                        "1-3": {"share": 27, "count": 270},
+                        "1-10": {"share": 59, "count": 590},
+                        "11-30": {"share": 32, "count": 320},
+                    }
+                },
+            },
+        ],
+    }
+
+    _render_topvisor_comparison(document, segment, show_visibility=False)
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert "Запросов в топ 3 — 27% (уменьшилось на 7,0%)." in text
+    assert "Запросов в топ 10 — 59% (уменьшилось на 1,0%)." in text
+    assert "Запросов в топ 11-30 — 32% (уменьшилось на 8,0%)." in text
+
+
 def test_metrika_detail_table_adds_total_and_renders_missing_numbers_as_zero():
     document = Document()
     _configure_document(document, "site.test", date(2026, 7, 1))
@@ -375,8 +413,8 @@ def test_metrika_detail_table_adds_total_and_renders_missing_numbers_as_zero():
         metrics=("visits", "users"),
     )
     assert table.rows[1].cells[0].text == "Итого и среднее"
-    assert table.rows[2].cells[1].text == "3"
-    assert table.rows[2].cells[2].text == "0"
+    assert table.rows[2].cells[1].text == "0"
+    assert table.rows[2].cells[2].text == "3"
 
 
 def test_full_docx_matches_reference_report_structure_and_styles(rich_version, settings, tmp_path):
@@ -427,10 +465,14 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
     assert "WS" in table_text
     assert "демо запрос 0019" in table_text
     yandex_table = next(
-        table for table in document.tables if table.rows[0].cells[2].text == "Yandex"
+        table
+        for table in document.tables
+        if len(table.rows[0].cells) > 2 and table.rows[0].cells[2].text == "Yandex"
     )
     google_table = next(
-        table for table in document.tables if table.rows[0].cells[2].text == "Google"
+        table
+        for table in document.tables
+        if len(table.rows[0].cells) > 2 and table.rows[0].cells[2].text == "Google"
     )
     assert [round(cell.width.cm, 2) for cell in yandex_table.rows[0].cells] == [
         7.74,
@@ -487,7 +529,10 @@ def test_full_docx_matches_reference_report_structure_and_styles(rich_version, s
     assert str(search_table.rows[0].cells[1].paragraphs[0].runs[0].font.color.rgb) == "7A8796"
     assert search_table.rows[1].cells[0].paragraphs[0].runs[0].font.size.pt == 11
     assert search_table.rows[1].cells[1].paragraphs[0].runs[0].font.size.pt == 11
-    assert search_table.rows[1].cells[2].paragraphs[1].runs[0].font.size.pt == 8
+    search_data_row = next(
+        row for row in search_table.rows[1:] if row.cells[0].text != "Итого и среднее"
+    )
+    assert search_data_row.cells[1].paragraphs[1].runs[0].font.size.pt == 8
     provider_tables = [
         table
         for table in document.tables

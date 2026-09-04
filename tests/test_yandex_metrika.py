@@ -427,6 +427,18 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert MetricPoint.objects.filter(snapshot__project=mapping.project).count() == len(points) * 3
 
 
+def test_default_search_segment_uses_last_significant_attribution(identity, yandex_settings):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    api = FakeMetrika()
+
+    run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
+
+    assert run.status == "success"
+    assert all(call.get("attribution") == "lastsign" for call in api.calls)
+    assert any(call.get("dimensions") == "ym:s:lastsignTrafficSource" for call in api.calls)
+    assert any(call.get("dimensions") == "ym:s:lastsignSearchEngineRoot" for call in api.calls)
+
+
 def test_late_failure_preserves_existing_snapshots(identity, yandex_settings):
     mapping = mapping_with_goal(identity, yandex_settings)
     sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())

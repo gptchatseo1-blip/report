@@ -32,6 +32,7 @@ PERSISTED_REPORT_FIELDS = (
     "include_metrika",
     "metrika_robotness",
     "metrika_search_segment",
+    "metrika_search_attribution",
     "include_metrika_sources_table",
     "metrika_sources_compare_previous",
     "include_metrika_search_engines",
@@ -178,6 +179,16 @@ class ReportCreateForm(forms.Form):
         choices=(("humans", "Только люди"), ("all", "Люди и роботы")),
     )
     metrika_search_segment = forms.BooleanField(label="Сегмент ПС", required=False, initial=True)
+    metrika_search_attribution = forms.ChoiceField(
+        label="Модель атрибуции",
+        required=False,
+        initial="lastsign",
+        choices=(
+            ("automatic", "Автоматическая"),
+            ("last", "Последний переход"),
+            ("lastsign", "Последний значимый переход"),
+        ),
+    )
     include_metrika_sources_table = forms.BooleanField(
         label="Таблица по всем источникам", required=False, initial=False
     )

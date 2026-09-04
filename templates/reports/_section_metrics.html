@@ -4,9 +4,8 @@
 </tbody></table></div>
 {% elif section.code == 'position_distribution' and section.segments %}
 {% for segment in section.segments %}<article class="segment topvisor-segment">
-<div class="table-wrap"><table class="report-data-table distribution-table topvisor-table"><thead><tr><th>Поисковая система</th><th>Регион</th><th>Глубина</th><th>Распределение и количество</th><th>TOP-10</th><th>Всего запросов</th></tr></thead><tbody>
-<tr><td>{{ segment.engine_label }}</td><td>{{ segment.region|default:'—' }}</td><td>TOP-{{ segment.ranking_depth }}</td><td><div class="distribution-chips">{% for range, value in segment.distribution.ranges.items %}<span class="metric-chip range-{{ range|slugify }}" aria-label="{{ range }}: {{ value }}"><b>{{ range }}:</b>{{ value }}</span>{% empty %}—{% endfor %}</div></td><td>{{ segment.distribution.top_10 }}</td><td>{{ segment.distribution.total }}</td></tr>
-</tbody></table></div>
+<h3>{{ segment.engine_label }} · {{ segment.region|default:'Регион не указан' }}</h3>
+<div class="position-distribution">{% for item in segment.distribution_cards %}<div class="position-distribution__item"><span class="position-distribution__range position-distribution__range--{{ item.color }}">{{ item.label }}</span><span class="position-distribution__percent">{{ item.share|floatformat:0 }}%</span><span class="position-distribution__count">{{ item.count }}</span></div>{% empty %}<span>—</span>{% endfor %}</div>
 {% if segment.topvisor_report_url %}<p class="report-link">Подробный отчёт {{ segment.engine_label }} · {{ segment.region|default:'Регион не указан' }}: <a href="{{ segment.topvisor_report_url }}" rel="noopener noreferrer">открыть в Topvisor</a></p>{% endif %}
 </article>{% endfor %}
 {% elif section.code == 'position_dynamics' and section.segments %}

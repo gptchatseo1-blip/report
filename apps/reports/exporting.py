@@ -35,14 +35,15 @@ matplotlib.use("Agg")
 from matplotlib import dates as mdates  # noqa: E402
 from matplotlib import pyplot as plt  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
-from matplotlib.patches import FancyBboxPatch, Patch, Rectangle  # noqa: E402
+from matplotlib.patches import Circle, FancyBboxPatch, Patch, PathPatch, Rectangle  # noqa: E402
+from matplotlib.path import Path as MplPath  # noqa: E402
 from matplotlib.ticker import FuncFormatter, MaxNLocator  # noqa: E402
 
 from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, ValidationIssue
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.6-2026-09-03"
+GENERATOR_VERSION = "mvp1.7-2026-09-04"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -398,6 +399,60 @@ def _style_axis(axis, *, grid_axis="both"):
         spine.set_visible(False)
 
 
+def _plot_smooth_line(axis, x_values, y_values, *, color, linewidth=1.8, label=None):
+    """Draw a visually smooth path through real points without creating a data series."""
+    points = [(float(x), float(y)) for x, y in zip(x_values, y_values, strict=True)]
+    if len(points) < 3:
+        return axis.plot(
+            x_values,
+            y_values,
+            color=color,
+            linewidth=linewidth,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            label=label,
+        )[0]
+    vertices = [points[0]]
+    codes = [MplPath.MOVETO]
+    for index in range(len(points) - 1):
+        current = points[index]
+        following = points[index + 1]
+        before = points[index - 1] if index else current
+        after = points[index + 2] if index + 2 < len(points) else following
+        control_1 = (
+            current[0] + (following[0] - before[0]) / 6,
+            current[1] + (following[1] - before[1]) / 6,
+        )
+        control_2 = (
+            following[0] - (after[0] - current[0]) / 6,
+            following[1] - (after[1] - current[1]) / 6,
+        )
+        lower = min(current[1], following[1])
+        upper = max(current[1], following[1])
+        control_1 = (control_1[0], min(upper, max(lower, control_1[1])))
+        control_2 = (control_2[0], min(upper, max(lower, control_2[1])))
+        vertices.extend((control_1, control_2, following))
+        codes.extend((MplPath.CURVE4, MplPath.CURVE4, MplPath.CURVE4))
+    patch = PathPatch(
+        MplPath(vertices, codes),
+        fill=False,
+        edgecolor=color,
+        linewidth=linewidth,
+        capstyle="round",
+        joinstyle="round",
+        label=label,
+    )
+    axis.add_patch(patch)
+    return patch
+
+
+def _date_ticks(labels, maximum=7):
+    if len(labels) <= maximum:
+        return list(range(len(labels))), labels
+    indexes = sorted({round(index * (len(labels) - 1) / (maximum - 1)) for index in range(maximum)})
+    return indexes, [labels[index] for index in indexes]
+
+
 def _visibility_chart(points, title=None):
     useful = [(month, value) for month, value in points if value is not None]
     if not useful:
@@ -406,11 +461,15 @@ def _visibility_chart(points, title=None):
         figure = plt.figure(figsize=(7.2, 3.0), dpi=150, facecolor="white")
         grid = figure.add_gridspec(1, 2, width_ratios=(3.5, 1.2), wspace=0.22)
         axis = figure.add_subplot(grid[0, 0])
-        labels = [_month_short(month) for month, _value in useful]
+        labels = [_date_label(month) for month, _value in useful]
         values = [float(value) for _month, value in useful]
+        x_values = list(range(len(values)))
         green = TOPVISOR_COLORS["visibility"]
-        axis.plot(labels, values, color=green, linewidth=1.8, marker="o", markersize=3.5)
-        axis.fill_between(labels, values, color=green, alpha=0.07)
+        _plot_smooth_line(axis, x_values, values, color=green, linewidth=1.8)
+        axis.scatter(x_values, values, color=green, s=13, zorder=3)
+        axis.fill_between(x_values, values, color=green, alpha=0.07)
+        ticks, tick_labels = _date_ticks(labels)
+        axis.set_xticks(ticks, tick_labels)
         axis.set_ylim(0, 100)
         axis.set_yticks((0, 50, 100), labels=("0%", "50%", "100%"))
         _style_axis(axis)
@@ -479,23 +538,20 @@ def _distribution_chart(history, depth):
     if not useful_rows:
         return None
     bucket_rows = [_topvisor_buckets(row.get("distribution") or {}, depth) for row in useful_rows]
-    labels = [_month_short(row.get("month")) for row in useful_rows]
+    labels = [_date_label(row.get("month")) for row in useful_rows]
+    x_values = list(range(len(labels)))
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
         figure, axis = plt.subplots(figsize=(7.2, 3.35), dpi=150, facecolor="white")
-        for index, bucket in enumerate(bucket_rows[0]):
-            name = bucket["label"]
-            values = [float(row[index]["share"] or 0) for row in bucket_rows]
+        bucket_names = [bucket["label"] for bucket in bucket_rows[0]]
+        rows_by_name = [{bucket["label"]: bucket for bucket in buckets} for buckets in bucket_rows]
+        for name in bucket_names:
+            values = [float(row.get(name, {}).get("share") or 0) for row in rows_by_name]
             color = TOPVISOR_COLORS[name]
-            axis.plot(
-                labels,
-                values,
-                color=color,
-                linewidth=1.7,
-                marker="o",
-                markersize=3.2,
-                label=name,
-            )
-            axis.fill_between(labels, values, color=color, alpha=0.055)
+            _plot_smooth_line(axis, x_values, values, color=color, linewidth=1.7, label=name)
+            axis.scatter(x_values, values, color=color, s=12, zorder=3)
+            axis.fill_between(x_values, values, color=color, alpha=0.055)
+        ticks, tick_labels = _date_ticks(labels)
+        axis.set_xticks(ticks, tick_labels)
         top = max(float(bucket["share"] or 0) for row in bucket_rows for bucket in row)
         axis.set_ylim(0, max(10, math.ceil(top / 10) * 10 + 2))
         axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:.0f}%"))
@@ -503,7 +559,7 @@ def _distribution_chart(history, depth):
         axis.legend(
             loc="upper center",
             bbox_to_anchor=(0.5, -0.14),
-            ncol=min(6, len(bucket_rows[0])),
+            ncol=min(6, len(bucket_names)),
             frameon=False,
             fontsize=8,
         )
@@ -579,6 +635,53 @@ def _distribution_cards(distribution, depth, *, engine="yandex"):
             )
         figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         return _save_figure(figure)
+
+
+def _shade_run(run, color):
+    properties = run._element.get_or_add_rPr()
+    shading = properties.find(qn("w:shd"))
+    if shading is None:
+        shading = OxmlElement("w:shd")
+        properties.append(shading)
+    shading.set(qn("w:fill"), color)
+
+
+def _render_distribution_cards_table(doc, distribution, depth, *, engine="yandex"):
+    """Render the range summary as native Word content so PDF text stays sharp."""
+    buckets = _topvisor_buckets(distribution, 20 if engine == "google" else depth)
+    if engine == "google":
+        buckets = [bucket for bucket in buckets if bucket["label"] in {"1-3", "1-10", "11-20"}]
+    if not buckets:
+        return None
+    columns = 1 if engine == "google" else 2
+    row_count = math.ceil(len(buckets) / columns)
+    table = doc.add_table(rows=row_count, cols=columns)
+    table.autofit = False
+    for row in table.rows:
+        _prevent_row_split(row)
+        for cell in row.cells:
+            _set_cell_width(cell, 9.25 if columns == 2 else 9.6)
+            _set_cell_margins(cell, top=70, bottom=70, left=90, right=90)
+            _shade_cell(cell, "F0F2F5")
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            cell.text = ""
+    for index, bucket in enumerate(buckets):
+        column = index // row_count
+        row_index = index % row_count
+        paragraph = table.rows[row_index].cells[column].paragraphs[0]
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(0)
+        label = paragraph.add_run(f"  {bucket['label']}  ")
+        _style_run(label, size=12, color="FFFFFF", bold=True)
+        _shade_run(label, TOPVISOR_COLORS[bucket["label"]].removeprefix("#"))
+        share = paragraph.add_run(f"    {_number(bucket.get('share'), '%', decimal_places=0)}    ")
+        _style_run(share, size=12, color="8491A5")
+        count = paragraph.add_run(_number(bucket.get("count"), decimal_places=0))
+        _style_run(count, size=12, color="3D4655")
+    _set_table_borders(table, "FFFFFF", size="12")
+    gap = doc.add_paragraph()
+    gap.paragraph_format.space_after = Pt(2)
+    return table
 
 
 def _metric_source(payload, source_name):
@@ -845,14 +948,24 @@ def _render_topvisor_comparison(doc, segment, *, show_visibility=True):
     current_buckets = {
         item["label"]: item for item in _topvisor_buckets(current.get("distribution") or {}, depth)
     }
+    previous_buckets = (
+        {
+            item["label"]: item
+            for item in _topvisor_buckets(previous.get("distribution") or {}, depth)
+        }
+        if previous
+        else {}
+    )
     final_label = "11-30" if depth >= 30 else "11-20"
     doc.add_paragraph("В сравнении с прошлым месяцем доля запросов в топ:")
     for label in ("1-3", "1-10", final_label):
         bucket = current_buckets.get(label) or {}
         now = bucket.get("share")
+        before = (previous_buckets.get(label) or {}).get("share")
+        rendered_label = {"1-3": "3", "1-10": "10"}.get(label, label)
         paragraph = doc.add_paragraph(
-            f"Запросов в топ {label} — {_number(now, '%', decimal_places=0)} "
-            f"({_number(bucket.get('count'), decimal_places=0)})."
+            f"Запросов в топ {rendered_label} — {_number(now, '%', decimal_places=0)} "
+            f"({_comparison_phrase(now, before)})."
         )
         paragraph.paragraph_format.space_after = Pt(0)
     if show_visibility:
@@ -931,7 +1044,12 @@ def _manual_topvisor_segment(payload, segment):
                 "ranking_depth": depth,
             }
         )
-    return {**segment, "three_month_series": history, "distribution": history[-1]["distribution"]}
+    return {
+        **segment,
+        "three_month_series": history,
+        "chart_series": history,
+        "distribution": history[-1]["distribution"],
+    }
 
 
 def _top_table_title(segment, start, end):
@@ -947,12 +1065,15 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, report_url=""):
     region = segment.get("region") or "регион не указан"
     doc.add_heading(f"{engine}. {region}", level=2)
     history = segment.get("three_month_series") or []
+    chart_history = segment.get("chart_series") or history
     depth = segment.get("ranking_depth") or 0
     if section_enabled(payload, "visibility"):
         doc.add_paragraph("График видимости сайта по основным ключевым словам за отчётный период.")
         _add_report_picture(
             doc,
-            _visibility_chart([(point.get("month"), point.get("visibility")) for point in history]),
+            _visibility_chart(
+                [(point.get("month"), point.get("visibility")) for point in chart_history]
+            ),
         )
         doc.add_paragraph(
             "Видимость сайта — это доля показов сайта в поисковых системах, которая "
@@ -964,18 +1085,17 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, report_url=""):
     doc.add_paragraph(
         "График распределения по топам по основным ключевым словам за отчётный период."
     )
-    _add_report_picture(doc, _distribution_chart(history, depth), width=18.5)
+    _add_report_picture(doc, _distribution_chart(chart_history, depth), width=18.5)
     doc.add_paragraph(
         "Данная диаграмма не отражает зависимости запросов от частот и отражает только "
         "количество запросов в топ 3, топ 10, топ 30 и пр."
     )
     doc.add_paragraph("Данные по количеству запросов в топ:")
-    _add_report_picture(
+    _render_distribution_cards_table(
         doc,
-        _distribution_cards(
-            segment.get("distribution") or {}, depth, engine=segment.get("search_engine")
-        ),
-        width=9.6,
+        segment.get("distribution") or {},
+        depth,
+        engine=segment.get("search_engine"),
     )
     if section_enabled(payload, "position_dynamics") and payload.get("display_options", {}).get(
         "include_monthly_dynamics_table", True
@@ -1260,7 +1380,15 @@ def _webmaster_search_chart(payload):
                 (value - low) / (high - low) if high > low and not math.isnan(value) else 0.5
                 for value in raw
             ]
-            axis.plot(labels, values, linewidth=1.4, color=color, label=label)
+            _plot_smooth_line(
+                axis,
+                list(range(len(labels))),
+                values,
+                linewidth=1.4,
+                color=color,
+                label=label,
+            )
+        axis.set_xticks(range(len(labels)), labels)
         axis.set_title(
             "Показы, клики, CTR и средняя позиция",
             loc="left",
@@ -1520,14 +1648,14 @@ def _webmaster_query_text(current, previous):
     ctr_text = (
         ("увеличилось" if ctr_delta >= 0 else "снизилось")
         + " на "
-        + _number(abs(ctr_delta), "%", decimal_places=1)
+        + _number(abs(ctr_delta), "%", decimal_places=2)
         if ctr_delta is not None
         else "не рассчитано"
     )
     position_text = (
         ("улучшении" if position_delta < 0 else "снижении")
         + " средней позиции по всем запросам на "
-        + _number(abs(position_delta), decimal_places=1)
+        + _number(abs(position_delta), decimal_places=2)
         + " пункта"
         if position_delta is not None
         else "недоступной динамике средней позиции"
@@ -1601,11 +1729,20 @@ def _webmaster_popular_analysis(payload, current_rows, previous_rows):
 
     current_shows, current_clicks = brand_totals(current_rows)
     previous_shows, previous_clicks = brand_totals(previous_rows)
-    return (
-        f"Среди самых кликабельных запросов преобладают {kind}. "
-        f"Показы по брендовым запросам: {_comparison_phrase(current_shows, previous_shows)}; "
-        f"переходы: {_comparison_phrase(current_clicks, previous_clicks)}."
-    )
+    parts = [f"Среди самых кликабельных запросов преобладают {kind}."]
+    changes = []
+    for label, current, previous in (
+        ("Показы по брендовым запросам", current_shows, previous_shows),
+        ("переходы", current_clicks, previous_clicks),
+    ):
+        delta = _relative_delta(current, previous)
+        if delta in (None, 0):
+            continue
+        direction = "увеличилось" if delta > 0 else "уменьшилось"
+        changes.append(f"{label}: {direction} на {_number(abs(delta), '%', decimal_places=1)}")
+    if changes:
+        parts.append("; ".join(changes) + ".")
+    return " ".join(parts)
 
 
 def _add_uploaded_picture(doc, payload):
@@ -1720,7 +1857,7 @@ def _render_webmaster(doc, payload, blocks):
                     title=f"Индекс качества сайта (ИКС) — {_number(current)}",
                     color=WEBMASTER_COLORS[0],
                     minimum_step=10,
-                    step=False,
+                    step=True,
                 ),
             )
             _render_iks_explanation(doc)
@@ -1766,6 +1903,8 @@ def _render_webmaster(doc, payload, blocks):
         doc.add_paragraph(
             "Данные по показам, кликам и CTR по всем запросам:", style="Table Heading"
         )
+        query_rows = _daily_rows(details, "queries")
+        _period_caption(doc, query_rows)
         _add_report_picture(doc, _webmaster_search_chart(payload))
         current_summary = latest.get("query_summary") or {}
         previous_summary = latest.get("comparison_query_summary") or {}
@@ -1784,18 +1923,9 @@ def _render_webmaster(doc, payload, blocks):
         )
     if section_enabled(payload, "webmaster_popular_queries"):
         doc.add_paragraph("Самые кликабельные запросы:", style="Table Heading")
+        _period_caption(doc, _daily_rows(details, "queries"))
         current_queries = latest.get("popular_queries") or []
         previous_queries = latest.get("comparison_popular_queries") or []
-        if current_queries:
-            _webmaster_popular_table(doc, current_queries, previous_queries)
-            doc.add_paragraph(
-                _webmaster_popular_analysis(payload, current_queries, previous_queries)
-            )
-        elif not _add_uploaded_picture(doc, payload):
-            doc.add_paragraph(
-                "API не вернул список популярных запросов, и скриншот не загружен.",
-                style="Data Missing",
-            )
         comment = blocks.get("webmaster_popular_queries") or payload.get("display_options", {}).get(
             "webmaster_queries_comment"
         )
@@ -1808,6 +1938,16 @@ def _render_webmaster(doc, payload, blocks):
                 "периодом, зелёным — рост, серым — оставшиеся без изменений."
             )
         )
+        if current_queries:
+            _webmaster_popular_table(doc, current_queries, previous_queries)
+            doc.add_paragraph(
+                _webmaster_popular_analysis(payload, current_queries, previous_queries)
+            )
+        elif not _add_uploaded_picture(doc, payload):
+            doc.add_paragraph(
+                "API не вернул список популярных запросов, и скриншот не загружен.",
+                style="Data Missing",
+            )
 
 
 def _metrika_comparison_chart(payload, codes, *, title):
@@ -1940,13 +2080,16 @@ def _metrika_sources_chart(facts):
             [(point.get("month"), point.get("value")) for point in facts[name].get("series", [])],
         )
         for name in names
-        if any(point.get("value") is not None for point in facts[name].get("series", []))
+        if any(
+            _decimal_or_none(point.get("value")) not in (None, 0)
+            for point in facts[name].get("series", [])
+        )
     ]
     if not useful:
         return None
     labels = [_month_short(month) for month, _ in useful[0][1]]
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(7.2, 3.55), dpi=150, facecolor="white")
+        figure, axis = plt.subplots(figsize=(7.2, 4.35), dpi=150, facecolor="white")
         legend_handles = []
         for index, (name, points) in enumerate(useful):
             values = [float(value) if value is not None else float("nan") for _, value in points]
@@ -2012,6 +2155,11 @@ def _metrika_period_rows(payload, key):
                 "period_start": detail.get("period_start"),
                 "period_end": detail.get("period_end"),
                 "rows": rows,
+                "total": (
+                    source.get("traffic_source_total") or {}
+                    if key == "traffic_source_details"
+                    else variant.get(f"{detail_key}_total") or {}
+                ),
                 "payload": source,
             }
         )
@@ -2111,6 +2259,21 @@ def _metrika_sources_quarter_table(doc, periods):
         )
         for code, values in ordered
     ]
+    provider_total = (
+        (periods[-1].get("payload") or {}).get("traffic_source_quarter_total") if periods else {}
+    ) or {}
+    if provider_total:
+        rows.insert(
+            0,
+            (
+                "Итого и среднее",
+                _number(provider_total.get("visits"), decimal_places=0),
+                _number(provider_total.get("users"), decimal_places=0),
+                _number(provider_total.get("bounce_rate"), "%", decimal_places=2),
+                _number(provider_total.get("page_depth"), decimal_places=2),
+                _duration(provider_total.get("avg_visit_duration_seconds")),
+            ),
+        )
     table = _table(
         doc,
         ("Источник", "Визиты", "Посетители", "Отказы", "Глубина просмотра", "Время на сайте"),
@@ -2119,7 +2282,21 @@ def _metrika_sources_quarter_table(doc, periods):
         header_fill="F7F7F7",
     )
     _style_provider_table(table)
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(12)
     _style_traffic_source_icons(table)
+    if provider_total:
+        for column_index, cell in enumerate(table.rows[1].cells):
+            _shade_cell(cell, "F7F7F7")
+            for paragraph in cell.paragraphs:
+                paragraph.alignment = (
+                    WD_ALIGN_PARAGRAPH.LEFT if column_index == 0 else WD_ALIGN_PARAGRAPH.CENTER
+                )
+                for run in paragraph.runs:
+                    run.font.bold = True
     _set_table_borders(table, "E2E4E8", size="3")
     return table
 
@@ -2148,7 +2325,7 @@ def _compact_number(value):
     number = _decimal_or_none(value)
     if number is None:
         return "—"
-    if abs(number) >= 10000:
+    if abs(number) >= 1000:
         return f"{_number(number / Decimal(1000), decimal_places=1)} тыс."
     return _number(number, decimal_places=0)
 
@@ -2205,6 +2382,7 @@ def _metrika_search_quarter_chart(periods):
             FuncFormatter(lambda value, _position: _axis_compact_number(value))
         )
         axis.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
+        axis.set_ylim(bottom=0)
         _style_axis(axis)
         legend_handles = [
             Line2D(
@@ -2343,8 +2521,8 @@ def _metrika_detail_table(
         for code in metrics:
             values.extend(
                 (
-                    _provider_value(code, previous.get(code)),
                     _provider_value(code, current.get(code)),
+                    _provider_value(code, previous.get(code)),
                 )
             )
         table_rows.append(tuple(values))
@@ -2370,8 +2548,8 @@ def _metrika_detail_table(
         for run in label_cell.paragraphs[0].runs:
             _style_run(run, size=11)
         for metric_index, code in enumerate(metrics):
-            previous_cell = table.rows[row_index].cells[1 + metric_index * 2]
-            current_cell = table.rows[row_index].cells[2 + metric_index * 2]
+            current_cell = table.rows[row_index].cells[1 + metric_index * 2]
+            previous_cell = table.rows[row_index].cells[2 + metric_index * 2]
             previous_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             current_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             previous_cell.paragraphs[0].paragraph_format.space_after = Pt(0)
@@ -2381,7 +2559,7 @@ def _metrika_detail_table(
             for run in current_cell.paragraphs[0].runs:
                 _style_run(run, size=11)
             delta = _relative_delta(current.get(code), previous.get(code))
-            if delta is None:
+            if delta in (None, 0):
                 continue
             change = current_cell.add_paragraph(_number(delta, "%", decimal_places=2))
             change.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -2470,10 +2648,17 @@ def _comparison_period_pills(doc, periods):
     if len(periods) < 2:
         return
     labels = []
-    for period in periods[-2:]:
+    for period in reversed(periods[-2:]):
         start = date.fromisoformat(str(period["period_start"])[:10])
         end = date.fromisoformat(str(period.get("period_end") or period["period_start"])[:10])
-        labels.append(f"{start.day}—{end.day} {MONTHS_GENITIVE[end.month - 1]} ⌄")
+        labels.append(
+            f"{start.day}—{end.day} {MONTHS_GENITIVE[end.month - 1]} ⌄"
+            if start.month == end.month and start.year == end.year
+            else (
+                f"{start.day} {MONTHS_GENITIVE[start.month - 1]} — "
+                f"{end.day} {MONTHS_GENITIVE[end.month - 1]} ⌄"
+            )
+        )
     _add_report_picture(
         doc,
         _period_pills_image([(labels[0], "A"), ("⇄", "swap"), (labels[1], "B")]),
@@ -2524,6 +2709,25 @@ REGION_LABELS = {
 
 def _landing_url(row):
     return str(_row_dimension(row, 1).get("name") or _row_dimension(row, 1).get("id") or "")
+
+
+def _belongs_to_project(payload, row):
+    url = _landing_url(row).strip()
+    parsed = urlsplit(url)
+    if not parsed.netloc:
+        return True
+    expected = str(
+        payload.get("project", {}).get("normalized_domain")
+        or payload.get("project", {}).get("domain")
+        or ""
+    ).strip()
+    expected_host = urlsplit(expected if "://" in expected else f"//{expected}").hostname or ""
+    actual_host = parsed.hostname or ""
+
+    def normalize(value):
+        return value.casefold().removeprefix("www.").rstrip(".")
+
+    return bool(expected_host and normalize(actual_host) == normalize(expected_host))
 
 
 def _url_group(payload, url):
@@ -2681,6 +2885,7 @@ def _metrika_groups_chart(periods, groups, *, title="Визиты", only_group=N
             FuncFormatter(lambda value, _position: _axis_compact_number(value))
         )
         axis.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
+        axis.set_ylim(bottom=0)
         _style_axis(axis)
         axis.legend(
             handles=legend_handles,
@@ -2788,14 +2993,123 @@ def _metrika_goal_icon(goal):
         str(goal.get(key) or "") for key in ("label", "name", "identifier", "condition")
     ).casefold()
     if any(token in text for token in ("телефон", "phone", "звон")):
-        return "☎"
+        return "phone"
     if any(token in text for token in ("форма", "заяв", "заказ", "обратн", "отзыв")):
-        return "◎"
+        return "target"
     if any(token in text for token in ("переход", "url", "http", "страниц")):
-        return "↗"
+        return "page"
     if any(token in text for token in ("общая", "общий", "составная")):
-        return "⌘"
-    return "◎"
+        return "sliders"
+    return "target"
+
+
+def _draw_metrika_goal_icon(figure, goal, *, x=0.042, y=0.878, color="#7A45E5"):
+    """Draw compact vector goal icons matching Metrika without font glyphs."""
+    kind = _metrika_goal_icon(goal)
+    transform = figure.transFigure
+    linewidth = 1.15
+    if kind == "target":
+        figure.patches.extend(
+            (
+                Circle(
+                    (x, y),
+                    0.009,
+                    transform=transform,
+                    fill=False,
+                    edgecolor=color,
+                    linewidth=linewidth,
+                ),
+                Circle((x, y), 0.003, transform=transform, facecolor=color, edgecolor=color),
+            )
+        )
+        return
+    if kind == "page":
+        figure.patches.append(
+            Rectangle(
+                (x - 0.007, y - 0.012),
+                0.014,
+                0.024,
+                transform=transform,
+                fill=False,
+                edgecolor=color,
+                linewidth=linewidth,
+            )
+        )
+        figure.lines.extend(
+            (
+                Line2D(
+                    (x + 0.001, x + 0.007),
+                    (y + 0.012, y + 0.006),
+                    transform=transform,
+                    color=color,
+                    linewidth=linewidth,
+                ),
+                Line2D(
+                    (x + 0.001, x + 0.001),
+                    (y + 0.012, y + 0.006),
+                    transform=transform,
+                    color=color,
+                    linewidth=linewidth,
+                ),
+                Line2D(
+                    (x + 0.001, x + 0.007),
+                    (y + 0.006, y + 0.006),
+                    transform=transform,
+                    color=color,
+                    linewidth=linewidth,
+                ),
+            )
+        )
+        return
+    if kind == "sliders":
+        offsets = ((0.006, -0.003), (0, 0.003), (-0.006, -0.002))
+        for y_offset, knob_offset in offsets:
+            line_y = y + y_offset
+            figure.lines.append(
+                Line2D(
+                    (x - 0.009, x + 0.009),
+                    (line_y, line_y),
+                    transform=transform,
+                    color=color,
+                    linewidth=linewidth,
+                )
+            )
+            figure.patches.append(
+                Circle(
+                    (x + knob_offset, line_y),
+                    0.0026,
+                    transform=transform,
+                    facecolor="white",
+                    edgecolor=color,
+                    linewidth=linewidth,
+                )
+            )
+        return
+    figure.lines.extend(
+        (
+            Line2D(
+                (x - 0.006, x + 0.006),
+                (y + 0.008, y - 0.008),
+                transform=transform,
+                color=color,
+                linewidth=2.0,
+            ),
+            Line2D(
+                (x - 0.008, x - 0.004),
+                (y + 0.01, y + 0.006),
+                transform=transform,
+                color=color,
+                linewidth=linewidth,
+            ),
+            Line2D(
+                (x + 0.004, x + 0.008),
+                (y - 0.006, y - 0.01),
+                transform=transform,
+                color=color,
+                linewidth=linewidth,
+            ),
+        )
+    )
 
 
 def _metrika_goal_image(goal, periods):
@@ -2818,15 +3132,7 @@ def _metrika_goal_image(goal, periods):
         )
         title = _clean(goal.get("label") or goal.get("name") or "Цель")
         title_lines = textwrap.wrap(title, width=30)[:2] or ["Цель"]
-        figure.text(
-            0.03,
-            0.9,
-            _metrika_goal_icon(goal),
-            ha="left",
-            va="top",
-            fontsize=10,
-            color="#7A45E5",
-        )
+        _draw_metrika_goal_icon(figure, goal)
         figure.text(
             0.055, 0.9, "\n".join(title_lines), ha="left", va="top", fontsize=9, weight="bold"
         )
@@ -3147,6 +3453,15 @@ def _render_metrika(doc, payload, blocks):
         )
     if sources_enabled:
         doc.add_paragraph("Источники, сводка", style="Table Heading")
+        if period_details:
+            _period_caption(
+                doc,
+                [
+                    {"date": str(period_details[0]["period_start"])[:10]},
+                    {"date": str(period_details[-1]["period_end"])[:10]},
+                ],
+                detail="по месяцам",
+            )
         facts = _metric_source(payload, "yandex_metrika").get("traffic_source_dynamics", {})
         _add_report_picture(doc, _metrika_sources_chart(facts))
         if options.get("include_metrika_sources_table"):
@@ -3176,6 +3491,12 @@ def _render_metrika(doc, payload, blocks):
                     reverse=True,
                 )
                 if ordered:
+                    source_totals = None
+                    if len(source_periods) >= 2:
+                        current_total = source_periods[-1].get("total") or {}
+                        previous_total = source_periods[-2].get("total") or {}
+                        if current_total and previous_total:
+                            source_totals = (current_total, previous_total)
                     table = _metrika_detail_table(
                         doc,
                         [
@@ -3183,7 +3504,7 @@ def _render_metrika(doc, payload, blocks):
                             for code in ordered
                         ],
                         first_header="Источник",
-                        include_total=False,
+                        total_values=source_totals,
                     )
                     _style_traffic_source_icons(table)
             else:
@@ -3198,7 +3519,16 @@ def _render_metrika(doc, payload, blocks):
                 if len(search_periods) >= 2
                 else {}
             )
-            ordered = sorted(current, key=lambda key: current[key]["visits"], reverse=True)[:4]
+            ordered = sorted(
+                (
+                    label
+                    for label in current
+                    if current[label].get("visits", 0) > 0
+                    and previous.get(label, {}).get("visits", 0) > 0
+                ),
+                key=lambda key: current[key]["visits"],
+                reverse=True,
+            )
             colors = {
                 "Google": "#7A45E5",
                 "Яндекс": "#FF3399",
@@ -3225,6 +3555,14 @@ def _render_metrika(doc, payload, blocks):
                 "Динамика по поисковым системам за квартал:",
                 style="Chart Caption",
             )
+            _period_caption(
+                doc,
+                [
+                    {"date": str(search_periods[0]["period_start"])[:10]},
+                    {"date": str(search_periods[-1]["period_end"])[:10]},
+                ],
+                detail="по месяцам",
+            )
             _add_report_picture(doc, _metrika_search_quarter_chart(search_periods))
             directions = []
             for label in ("Яндекс", "Google"):
@@ -3239,9 +3577,21 @@ def _render_metrika(doc, payload, blocks):
                         if delta < 0
                         else "не изменилось"
                     )
-                    directions.append(f"из {'Яндекса' if label == 'Яндекс' else label} {direction}")
+                    directions.append((label, direction))
             if directions:
-                doc.add_paragraph("Число переходов " + ", ".join(directions) + ".")
+                if len(directions) == 2 and directions[0][1] == directions[1][1]:
+                    doc.add_paragraph(
+                        "Число переходов из Яндекса и Google " + directions[0][1] + "."
+                    )
+                else:
+                    doc.add_paragraph(
+                        "Число переходов "
+                        + ", ".join(
+                            f"из {'Яндекса' if label == 'Яндекс' else label} {direction}"
+                            for label, direction in directions
+                        )
+                        + "."
+                    )
             doc.add_paragraph(
                 "По поисковым системам в сравнении двух последних месяцев:",
                 style="Table Heading",
@@ -3259,6 +3609,13 @@ def _render_metrika(doc, payload, blocks):
                 doc,
                 [(label, current[label], previous.get(label, {})) for label in ordered],
                 first_header="Поисковая система",
+                total_values=(
+                    (search_periods[-1].get("total") or {}, search_periods[-2].get("total") or {})
+                    if len(search_periods) >= 2
+                    and search_periods[-1].get("total")
+                    and search_periods[-2].get("total")
+                    else None
+                ),
             )
             _style_search_engine_icons(search_table)
             movement = []
@@ -3332,6 +3689,16 @@ def _render_metrika(doc, payload, blocks):
                     for key in table_selected
                 ],
                 first_header="Регион",
+                total_values=(
+                    (
+                        geography_periods[-1].get("total") or {},
+                        geography_periods[-2].get("total") or {},
+                    )
+                    if len(geography_periods) >= 2
+                    and geography_periods[-1].get("total")
+                    and geography_periods[-2].get("total")
+                    else None
+                ),
             )
             total_current = sum((row["visits"] for row in current.values()), Decimal(0))
             total_previous = sum((row["visits"] for row in previous.values()), Decimal(0))
@@ -3358,7 +3725,13 @@ def _render_metrika(doc, payload, blocks):
                     f"{_number(current_share, '%', decimal_places=1)}."
                 )
 
-    landing_periods = _metrika_period_rows(payload, "landing_pages")
+    landing_periods = [
+        {
+            **period,
+            "rows": [row for row in period.get("rows") or [] if _belongs_to_project(payload, row)],
+        }
+        for period in _metrika_period_rows(payload, "landing_pages")
+    ]
     if landing_periods:
         current_rows = landing_periods[-1]["rows"]
         previous_rows = landing_periods[-2]["rows"] if len(landing_periods) >= 2 else []
@@ -3411,7 +3784,15 @@ def _render_metrika(doc, payload, blocks):
             if text:
                 doc.add_paragraph(". ".join(text) + ".")
         if section_enabled(payload, "metrika_landing_page_comparison"):
-            comparison_periods = _metrika_period_rows(payload, "search_landing_pages")
+            comparison_periods = [
+                {
+                    **period,
+                    "rows": [
+                        row for row in period.get("rows") or [] if _belongs_to_project(payload, row)
+                    ],
+                }
+                for period in _metrika_period_rows(payload, "search_landing_pages")
+            ]
             comparison_current = comparison_periods[-1]["rows"] if comparison_periods else []
             comparison_previous = (
                 comparison_periods[-2]["rows"] if len(comparison_periods) >= 2 else []
@@ -3508,6 +3889,14 @@ def _render_metrika(doc, payload, blocks):
                 if not groups:
                     continue
                 doc.add_paragraph(heading, style="Chart Caption")
+                _period_caption(
+                    doc,
+                    [
+                        {"date": str(landing_periods[0]["period_start"])[:10]},
+                        {"date": str(landing_periods[-1]["period_end"])[:10]},
+                    ],
+                    detail="по месяцам",
+                )
                 _add_report_picture(doc, _metrika_groups_chart(landing_periods, groups))
                 doc.add_paragraph(
                     _group_dynamics_text(landing_periods, groups, subsections=subsection_groups)
@@ -3528,6 +3917,14 @@ def _render_metrika(doc, payload, blocks):
             for selected_groups in groups_to_render:
                 if not combined_categories:
                     doc.add_paragraph(selected_groups[0]["name"], style="Table Heading")
+                _period_caption(
+                    doc,
+                    [
+                        {"date": str(landing_periods[0]["period_start"])[:10]},
+                        {"date": str(landing_periods[-1]["period_end"])[:10]},
+                    ],
+                    detail="по месяцам",
+                )
                 _add_report_picture(
                     doc,
                     _metrika_groups_chart(

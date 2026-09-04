@@ -343,7 +343,7 @@ def test_preview_renders_snapshot_metrics_segments_work_without_source_diagnosti
     html = response.content.decode()
     for expected in (
         "12.5",
-        "1-3: 1",
+        "1-3",
         "Google",
         "Яндекс",
         "Россия",
@@ -356,6 +356,7 @@ def test_preview_renders_snapshot_metrics_segments_work_without_source_diagnosti
         "Универсальный проект",
     ):
         assert expected in html
+    assert 'class="position-distribution"' in html
     assert "21-30" not in html and "31-50" not in html and "51-100" not in html
     assert "must-not-render" not in html and "safe-checksum" not in html
     assert "Источник данных" not in html

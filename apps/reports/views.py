@@ -28,7 +28,12 @@ from apps.projects.models import Project
 from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import configuration_id, configuration_segment
 
-from .exporting import ExportBlocked, _manual_topvisor_segment, generate_artifact
+from .exporting import (
+    ExportBlocked,
+    _manual_topvisor_segment,
+    _topvisor_buckets,
+    generate_artifact,
+)
 from .forms import (
     BOOLEAN_REPORT_FIELDS,
     PERSISTED_REPORT_FIELDS,
@@ -946,6 +951,23 @@ def _segment_rows(payload, code):
             source.get("search_engine"), source.get("search_engine") or "Поиск"
         )
         row["topvisor_report_url"] = _topvisor_report_url(payload, source)
+        if code == "position_distribution":
+            depth = row.get("ranking_depth") or 0
+            row["distribution_cards"] = [
+                {
+                    **bucket,
+                    "color": {
+                        "1-3": "blue",
+                        "1-10": "green-dark",
+                        "11-20": "green",
+                        "11-30": "green",
+                        "31-50": "green-light",
+                        "51-100": "gray",
+                        "101+": "yellow",
+                    }.get(bucket["label"], "gray"),
+                }
+                for bucket in _topvisor_buckets(row.get("distribution") or {}, depth)
+            ]
         if code in TOP_SECTION_RANGES:
             start, end = TOP_SECTION_RANGES[code]
             configuration_id = source.get("configuration_id")

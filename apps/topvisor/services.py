@@ -139,7 +139,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
     rows = payload.get("positions", payload.get("rows", []))
     retrieved_at = timezone.now()
     raw_visibility = payload.get("visibility")
-    if raw_visibility is None:
+    if "visibility" not in payload:
         raw_visibility = visibility_payload(rows, retrieved_at)
     visibility_value = (
         raw_visibility.get("value") if isinstance(raw_visibility, dict) else raw_visibility
@@ -304,6 +304,33 @@ def _history_rows(payload, configuration, project_id, frequency_map):
     return result
 
 
+def _summary_visibility(payload, project_id):
+    """Normalize provider visibility coordinates without recalculating them locally."""
+    if not isinstance(payload, dict):
+        return {}
+    dates = [
+        str(item.get("date", item)) if isinstance(item, dict) else str(item)
+        for item in payload.get("dates", [])
+    ]
+    projects = payload.get("seriesByProjectsId") or payload.get("series_by_projects_id") or {}
+    series = projects.get(str(project_id)) or {}
+    if not series:
+        try:
+            series = projects.get(int(project_id)) or {}
+        except (TypeError, ValueError):
+            pass
+    values = series.get("visibility") or series.get("visibilities") or []
+    if isinstance(values, dict):
+        values = values.get("values") or values.get("series") or []
+    result = {}
+    for day, value in zip(dates, values, strict=False):
+        if isinstance(value, dict):
+            value = value.get("value", value.get("visibility"))
+        if value is not None:
+            result[day] = value
+    return result
+
+
 def sync_positions(*, mapping, report_month=None, client=None):
     """Download existing checks only; this never starts a provider position check."""
     explicit_report_month = report_month is not None
@@ -360,11 +387,22 @@ def sync_positions(*, mapping, report_month=None, client=None):
                             **common,
                         )
                     )
-                downloaded.append((configuration, tuple(existing_dates), pages))
+                visibility_by_date = {}
+                if hasattr(client, "get_summary_chart"):
+                    for start in range(0, len(existing_dates), 31):
+                        summary = client.get_summary_chart(
+                            mapping.topvisor_project_id,
+                            region_index=configuration["region_index"],
+                            dates=existing_dates[start : start + 31],
+                        )
+                        visibility_by_date.update(
+                            _summary_visibility(summary, mapping.topvisor_project_id)
+                        )
+                downloaded.append((configuration, tuple(existing_dates), pages, visibility_by_date))
 
             frequency_map = {}
             all_queries = set()
-            for _configuration, _dates, pages in downloaded:
+            for _configuration, _dates, pages, _visibility_by_date in downloaded:
                 for page in pages:
                     candidates = _frequency_candidates(page, yandex_volumes)
                     for keyword in page.get("keywords", []):
@@ -389,7 +427,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 for query in all_queries - frequency_map.keys():
                     frequency_map[query] = 1
 
-            for configuration, existing_dates, pages in downloaded:
+            for configuration, existing_dates, pages, visibility_by_date in downloaded:
                 combined = {}
                 for page in pages:
                     for snapshot_date, rows in _history_rows(
@@ -399,11 +437,27 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 if set(combined) != set(existing_dates):
                     raise TopvisorError("Не удалось полностью загрузить все даты Topvisor.")
                 for snapshot_date, rows in combined.items():
+                    provider_visibility = visibility_by_date.get(snapshot_date)
+                    visibility = {
+                        "value": (
+                            str(provider_visibility) if provider_visibility is not None else None
+                        ),
+                        "source": "topvisor_api_summary_chart",
+                        "retrieved_at": timezone.now().isoformat(),
+                    }
                     pending_snapshots.append(
                         (
                             configuration,
                             date.fromisoformat(snapshot_date),
-                            {"positions": rows, "tracked_keyword_count": len(rows)},
+                            {
+                                "positions": rows,
+                                "tracked_keyword_count": len(rows),
+                                **(
+                                    {"visibility": visibility}
+                                    if hasattr(client, "get_summary_chart")
+                                    else {}
+                                ),
+                            },
                         )
                     )
         else:  # compatibility with older adapters

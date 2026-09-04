@@ -914,6 +914,59 @@ def test_history_sync_uses_dates_and_normalizes_zero_and_missing_position():
     assert missing.position_raw == "--"
 
 
+def test_summary_chart_client_requests_provider_visibility(monkeypatch):
+    api = TopvisorClient(credentials=TopvisorCredentials("user", "secret"))
+    captured = []
+
+    def request(method, params):
+        captured.append((method, params))
+        return {"dates": ["2026-07-31"], "seriesByProjectsId": {"42": {"visibility": [37.4]}}}
+
+    monkeypatch.setattr(api, "_request", request)
+    payload = api.get_summary_chart(42, region_index=2, dates=("2026-07-31",))
+
+    assert payload["seriesByProjectsId"]["42"]["visibility"] == [37.4]
+    assert captured == [
+        (
+            "get/positions_2/summary_chart",
+            {
+                "project_id": 42,
+                "region_index": 2,
+                "dates": ["2026-07-31"],
+                "type_range": 100,
+                "show_visibility": 1,
+            },
+        )
+    ]
+
+
+def test_history_sync_stores_exact_topvisor_visibility():
+    class ProviderVisibilityClient(RealHistoryClient):
+        def get_summary_chart(self, project_id, *, region_index, dates):
+            self.calls.append(("summary", project_id, region_index, dates))
+            values = {"2026-06-30": 21.25, "2026-07-15": 34.5, "2026-07-31": 48.75}
+            return {
+                "dates": list(dates),
+                "seriesByProjectsId": {
+                    str(project_id): {"visibility": [values[day] for day in dates]}
+                },
+            }
+
+    project = Project.objects.create(name="Provider visibility", domain="visibility.example")
+    run = sync_positions(mapping=history_mapping(project), client=ProviderVisibilityClient())
+
+    assert run.status == run.Status.SUCCESS
+    snapshots = RankingSnapshot.objects.order_by("snapshot_date")
+    assert list(snapshots.values_list("visibility", flat=True)) == [
+        Decimal("21.2500"),
+        Decimal("34.5000"),
+        Decimal("48.7500"),
+    ]
+    assert all(
+        snapshot.visibility_raw["source"] == "topvisor_api_summary_chart" for snapshot in snapshots
+    )
+
+
 def test_missing_frequency_uses_minimum_weight_and_late_failure_is_atomic():
     project = Project.objects.create(name="Atomic history", domain="atomic-history.example")
     selected = history_mapping(project)

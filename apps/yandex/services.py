@@ -17,7 +17,6 @@ from .client import (
     GOAL_CONVERSION_RATE,
     GOAL_REACHES,
     GOAL_VISITS,
-    LAST_SIGN_TRAFFIC_SOURCE,
     REGION_AREA,
     REGION_CITY,
     MetrikaClient,
@@ -54,10 +53,7 @@ GEOGRAPHY_CODES = (
     "undefined",
     "area_undefined",
 )
-LAST_SIGN_SEARCH_ENGINE = "ym:s:lastSignSearchEngineRoot"
 START_URL = "ym:s:startURL"
-SEARCH_HUMANS_FILTER = "ym:s:lastSignTrafficSource=='organic' AND ym:s:isRobot=='No'"
-SEARCH_ALL_FILTER = "ym:s:lastSignTrafficSource=='organic'"
 HUMANS_FILTER = "ym:s:isRobot=='No'"
 SEARCH_DETAIL_METRICS = "ym:s:visits,ym:s:users,ym:s:bounceRate"
 TRAFFIC_SOURCE_DETAIL_METRICS = (
@@ -65,7 +61,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-04-v2"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-04-v3"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-02-v1"
 GOALS_PER_REQUEST = 6
 
@@ -94,6 +90,10 @@ def _configuration_fingerprint(mapping, collector_version):
             }
             for goal in mapping.selected_goals
         ]
+        report_settings = getattr(getattr(mapping, "project", None), "report_settings", None)
+        configuration["search_attribution"] = (getattr(report_settings, "values", {}) or {}).get(
+            "metrika_search_attribution"
+        ) or "lastsign"
     return hashlib.sha256(
         json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -184,21 +184,50 @@ def _detail_rows(response, dimension_count, *, extended=False):
     return rows
 
 
+def _detail_total(response, *, extended=False):
+    totals = response.get("totals") or []
+    if not totals:
+        return {}
+    names = ["visits", "users", "bounce_rate"]
+    if extended:
+        names.extend(("page_depth", "avg_visit_duration_seconds"))
+    return {name: str(_value({"metrics": totals}, index)) for index, name in enumerate(names)}
+
+
 def _stat_with_filter(client, filter_value, **params):
     if filter_value:
         params["filters"] = filter_value
     return client.stat(**params)
 
 
-def _traffic_source_details(client, mapping, start, end):
+def _attribution_settings(value):
+    code = value if value in {"automatic", "last", "lastsign"} else "lastsign"
+    api_value, prefix = {
+        "automatic": ("cross_device_last_significant", "crossDeviceLastSign"),
+        "last": ("last", "last"),
+        "lastsign": ("lastsign", "lastsign"),
+    }[code]
+    traffic_source = f"ym:s:{prefix}TrafficSource"
+    return {
+        "code": code,
+        "api_value": api_value,
+        "traffic_source": traffic_source,
+        "search_engine": f"ym:s:{prefix}SearchEngineRoot",
+        "search_humans_filter": f"{traffic_source}=='organic' AND ym:s:isRobot=='No'",
+        "search_all_filter": f"{traffic_source}=='organic'",
+    }
+
+
+def _traffic_source_report(client, mapping, start, end, *, attribution="lastsign"):
+    attribution = _attribution_settings(attribution)
     response = client.stat(
         ids=mapping.counter_id,
         date1=start.isoformat(),
         date2=end.isoformat(),
         accuracy="full",
-        attribution="lastsign",
+        attribution=attribution["api_value"],
         metrics=TRAFFIC_SOURCE_DETAIL_METRICS,
-        dimensions=LAST_SIGN_TRAFFIC_SOURCE,
+        dimensions=attribution["traffic_source"],
         limit=10000,
         sort="-ym:s:visits",
         lang="ru",
@@ -216,7 +245,22 @@ def _traffic_source_details(client, mapping, start, end):
                 "code": TRAFFIC_SOURCE_CODES.get(source_id, "other"),
             }
         )
-    return rows
+    totals = response.get("totals") or []
+    total = (
+        {
+            code: str(_value({"metrics": totals}, index))
+            for index, code in enumerate(
+                ("visits", "users", "bounce_rate", "page_depth", "avg_visit_duration_seconds")
+            )
+        }
+        if totals
+        else {}
+    )
+    return rows, total
+
+
+def _traffic_source_details(client, mapping, start, end, *, attribution="lastsign"):
+    return _traffic_source_report(client, mapping, start, end, attribution=attribution)[0]
 
 
 def _geography_totals(rows):
@@ -303,13 +347,14 @@ def _fetch_goal_variant(client, common, goals, filter_value):
     return values, unavailable
 
 
-def _fetch_month(client, mapping, month):
+def _fetch_month(client, mapping, month, *, attribution="lastsign"):
+    attribution_settings = _attribution_settings(attribution)
     common = {
         "ids": mapping.counter_id,
         "date1": month.isoformat(),
         "date2": month_end(month).isoformat(),
         "accuracy": "full",
-        "attribution": "lastsign",
+        "attribution": attribution_settings["api_value"],
     }
     totals = client.stat(**common, metrics=",".join(CORE_METRICS))
     row = (totals.get("data") or [{"metrics": totals.get("totals", [])}])[0]
@@ -319,8 +364,8 @@ def _fetch_month(client, mapping, month):
     ]
     traffic_by_segment = {"search": {}, "all": {}}
     for segment, robotness, filter_value in (
-        ("search", "humans", SEARCH_HUMANS_FILTER),
-        ("search", "all", SEARCH_ALL_FILTER),
+        ("search", "humans", attribution_settings["search_humans_filter"]),
+        ("search", "all", attribution_settings["search_all_filter"]),
         ("all", "humans", HUMANS_FILTER),
         ("all", "all", None),
     ):
@@ -341,7 +386,9 @@ def _fetch_month(client, mapping, month):
             }
             for (code, value), unit in zip(values.items(), METRIC_UNITS, strict=True)
         )
-    cleaned_sources = _traffic_source_details(client, mapping, month, month_end(month))
+    cleaned_sources, traffic_source_total = _traffic_source_report(
+        client, mapping, month, month_end(month), attribution=attribution
+    )
     aggregated = {}
     for item in cleaned_sources:
         code = item["code"]
@@ -402,72 +449,68 @@ def _fetch_month(client, mapping, month):
 
     detail_variants = {"search": {}, "all": {}}
     for segment, robotness, filter_value in (
-        ("search", "humans", SEARCH_HUMANS_FILTER),
-        ("search", "all", SEARCH_ALL_FILTER),
+        ("search", "humans", attribution_settings["search_humans_filter"]),
+        ("search", "all", attribution_settings["search_all_filter"]),
         ("all", "humans", HUMANS_FILTER),
         ("all", "all", None),
     ):
-        geography_details = _detail_rows(
-            _stat_with_filter(
+        geography_response = _stat_with_filter(
+            client,
+            filter_value,
+            **common,
+            metrics=SEARCH_DETAIL_METRICS,
+            dimensions=f"{REGION_AREA},{REGION_CITY}",
+            limit=10000,
+            sort="-ym:s:visits",
+            lang="ru",
+        )
+        geography_details = _detail_rows(geography_response, 2)
+        if segment == "search":
+            search_engine_response = _stat_with_filter(
                 client,
                 filter_value,
                 **common,
                 metrics=SEARCH_DETAIL_METRICS,
-                dimensions=f"{REGION_AREA},{REGION_CITY}",
+                dimensions=attribution_settings["search_engine"],
+                limit=100,
+                sort="-ym:s:visits",
+                lang="ru",
+            )
+            search_engines = _detail_rows(search_engine_response, 1)
+            landing_pages_response = _stat_with_filter(
+                client,
+                filter_value,
+                **common,
+                metrics=SEARCH_DETAIL_METRICS,
+                dimensions=f"{attribution_settings['search_engine']},{START_URL}",
                 limit=10000,
                 sort="-ym:s:visits",
                 lang="ru",
-            ),
-            2,
-        )
-        if segment == "search":
-            search_engines = _detail_rows(
-                _stat_with_filter(
-                    client,
-                    filter_value,
-                    **common,
-                    metrics=SEARCH_DETAIL_METRICS,
-                    dimensions=LAST_SIGN_SEARCH_ENGINE,
-                    limit=100,
-                    sort="-ym:s:visits",
-                    lang="ru",
-                ),
-                1,
             )
-            landing_pages = _detail_rows(
-                _stat_with_filter(
-                    client,
-                    filter_value,
-                    **common,
-                    metrics=SEARCH_DETAIL_METRICS,
-                    dimensions=f"{LAST_SIGN_SEARCH_ENGINE},{START_URL}",
-                    limit=10000,
-                    sort="-ym:s:visits",
-                    lang="ru",
-                ),
-                2,
-            )
+            landing_pages = _detail_rows(landing_pages_response, 2)
         else:
+            search_engine_response = {}
             search_engines = []
-            landing_pages = _detail_rows(
-                _stat_with_filter(
-                    client,
-                    filter_value,
-                    **common,
-                    metrics=SEARCH_DETAIL_METRICS,
-                    dimensions=START_URL,
-                    limit=10000,
-                    sort="-ym:s:visits",
-                    lang="ru",
-                ),
-                1,
+            landing_pages_response = _stat_with_filter(
+                client,
+                filter_value,
+                **common,
+                metrics=SEARCH_DETAIL_METRICS,
+                dimensions=START_URL,
+                limit=10000,
+                sort="-ym:s:visits",
+                lang="ru",
             )
+            landing_pages = _detail_rows(landing_pages_response, 1)
             for landing in landing_pages:
                 landing["dimensions"].insert(0, {"id": "all", "name": "Все источники"})
         detail_variants[segment][robotness] = {
             "search_engines": search_engines,
+            "search_engines_total": _detail_total(search_engine_response),
             "search_geography": geography_details,
+            "search_geography_total": _detail_total(geography_response),
             "landing_pages": landing_pages,
+            "landing_pages_total": _detail_total(landing_pages_response),
         }
         for code, value in _geography_totals(geography_details).items():
             points.append(
@@ -488,8 +531,8 @@ def _fetch_month(client, mapping, month):
         "all": {"humans": [], "all": []},
     }
     variants = (
-        ("search", "humans", SEARCH_HUMANS_FILTER),
-        ("search", "all", SEARCH_ALL_FILTER),
+        ("search", "humans", attribution_settings["search_humans_filter"]),
+        ("search", "all", attribution_settings["search_all_filter"]),
         ("all", "humans", HUMANS_FILTER),
         ("all", "all", None),
     )
@@ -555,6 +598,7 @@ def _fetch_month(client, mapping, month):
         "metrics": points,
         "traffic_sources": cleaned_sources,
         "traffic_source_details": cleaned_sources,
+        "traffic_source_total": traffic_source_total,
         "geography": geography_rows,
         "traffic_by_segment": traffic_by_segment,
         "detail_variants": detail_variants,
@@ -567,7 +611,7 @@ def _fetch_month(client, mapping, month):
         "search_segment": {
             "traffic_source": "organic",
             "robotness": "humans",
-            "attribution": "lastsign",
+            "attribution": attribution_settings["code"],
         },
         "goals": cleaned_goals,
         "goals_by_robotness": goals_by_robotness,
@@ -585,6 +629,10 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
     try:
         prune_sync_runs(mapping.project)
         months = tuple(shift_month(month, offset) for offset in (-2, -1, 0))
+        report_settings = (
+            getattr(getattr(mapping.project, "report_settings", None), "values", {}) or {}
+        )
+        attribution = report_settings.get("metrika_search_attribution") or "lastsign"
         fingerprint = _configuration_fingerprint(mapping, METRIKA_COLLECTOR_VERSION)
         reusable = _reusable_snapshots(
             mapping,
@@ -594,13 +642,21 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
             force_refresh=force_refresh,
         )
         fetched = [
-            _fetch_month(client, mapping, period) for period in months if period not in reusable
+            _fetch_month(client, mapping, period, attribution=attribution)
+            for period in months
+            if period not in reusable
         ]
         for data in fetched:
             if data["period_start"] == month.isoformat():
-                data["traffic_source_quarter_details"] = _traffic_source_details(
-                    client, mapping, months[0], month_end(month)
+                quarter_rows, quarter_total = _traffic_source_report(
+                    client,
+                    mapping,
+                    months[0],
+                    month_end(month),
+                    attribution=attribution,
                 )
+                data["traffic_source_quarter_details"] = quarter_rows
+                data["traffic_source_quarter_total"] = quarter_total
         now = timezone.now()
         with transaction.atomic():
             for data in fetched:
