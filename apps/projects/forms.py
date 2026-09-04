@@ -1,9 +1,21 @@
 from django import forms
 
-from .models import Project, ProjectBrandRule, ProjectUrlGroup, ProjectUrlRule
+from .models import Project, ProjectBrandRule, ProjectUrlGroup, ProjectUrlRule, normalize_domain
 
 
-class ProjectForm(forms.ModelForm):
+class ProjectDomainFormMixin:
+    def clean_domain(self):
+        domain = self.cleaned_data["domain"]
+        normalized = normalize_domain(domain)
+        existing = Project.objects.filter(normalized_domain=normalized)
+        if self.instance.pk:
+            existing = existing.exclude(pk=self.instance.pk)
+        if existing.exists():
+            raise forms.ValidationError("Проект с таким доменом уже существует.")
+        return domain
+
+
+class ProjectForm(ProjectDomainFormMixin, forms.ModelForm):
     class Meta:
         model = Project
         fields = [
@@ -35,7 +47,7 @@ class ProjectForm(forms.ModelForm):
         )
 
 
-class ProjectQuickCreateForm(forms.ModelForm):
+class ProjectQuickCreateForm(ProjectDomainFormMixin, forms.ModelForm):
     class Meta:
         model = Project
         fields = ["name", "domain", "position_provider"]

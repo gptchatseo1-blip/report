@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
@@ -6,7 +7,7 @@ from urllib.parse import urlparse
 from django.db import transaction
 
 from .models import ReportDatasetSnapshot, ValidationIssue
-from .services import snapshot_checksum
+from .services import redact_sensitive_source_data, snapshot_checksum
 
 NUMBER_RE = re.compile(r"(?<![\w])[-+]?\d+(?:[.,]\d+)?")
 PLACEHOLDER_RE = re.compile(r"(?:\{\{?[^{}]+\}?\}|\[\[[^]]+]])")
@@ -90,6 +91,42 @@ def _contains_secret(value):
     if isinstance(value, list | tuple | set):
         return any(_contains_secret(item) for item in value)
     return value is not None and bool(SECRET_RE.search(str(value)))
+
+
+def _repair_legacy_source_credentials(snapshot, payload):
+    """Redact only provider-owned raw fields while preserving report facts."""
+    cleaned = deepcopy(payload)
+    changed = False
+
+    for source in cleaned.get("source_snapshots", []):
+        for field in ("payload", "provenance"):
+            if field in source:
+                safe = redact_sensitive_source_data(source[field])
+                changed = changed or safe != source[field]
+                source[field] = safe
+
+    calculated_sources = cleaned.get("calculated", {}).get("sources", {}).get("sources", {})
+    for source in calculated_sources.values():
+        for period in source.get("period_details", []):
+            if "payload" in period:
+                safe = redact_sensitive_source_data(period["payload"])
+                changed = changed or safe != period["payload"]
+                period["payload"] = safe
+
+    for source in cleaned.get("ranking_sources", []):
+        if "provenance" in source:
+            safe = redact_sensitive_source_data(source["provenance"])
+            changed = changed or safe != source["provenance"]
+            source["provenance"] = safe
+
+    if changed:
+        checksum = snapshot_checksum(cleaned)
+        ReportDatasetSnapshot.objects.filter(pk=snapshot.pk).update(
+            payload=cleaned, checksum=checksum
+        )
+        snapshot.payload = cleaned
+        snapshot.checksum = checksum
+    return cleaned
 
 
 def _host_matches(url, domain):
@@ -473,6 +510,7 @@ def validate_report_version(version):
             "Checksum snapshot не совпадает с payload.",
             details={"stored": snapshot.checksum, "calculated": snapshot_checksum(payload)},
         )
+    payload = _repair_legacy_source_credentials(snapshot, payload)
     missing = [field for field in REQUIRED_FIELDS if field not in payload]
     if missing:
         _issue(
