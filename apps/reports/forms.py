@@ -33,6 +33,7 @@ PERSISTED_REPORT_FIELDS = (
     "metrika_robotness",
     "metrika_search_segment",
     "include_metrika_sources_table",
+    "metrika_sources_compare_previous",
     "include_metrika_search_engines",
     "metrika_bar_search_engines",
     "include_metrika_geography",
@@ -68,6 +69,7 @@ BOOLEAN_REPORT_FIELDS = frozenset(
     in {
         "show_urls",
         "metrika_search_segment",
+        "metrika_sources_compare_previous",
         "geography_moscow",
         "geography_moscow_region",
         "geography_saint_petersburg",
@@ -178,6 +180,9 @@ class ReportCreateForm(forms.Form):
     metrika_search_segment = forms.BooleanField(label="Сегмент ПС", required=False, initial=True)
     include_metrika_sources_table = forms.BooleanField(
         label="Таблица по всем источникам", required=False, initial=False
+    )
+    metrika_sources_compare_previous = forms.BooleanField(
+        label="Сравнение с предыдущим месяцем", required=False, initial=False
     )
     include_metrika_search_engines = forms.BooleanField(
         label="Поисковые системы", required=False, initial=True

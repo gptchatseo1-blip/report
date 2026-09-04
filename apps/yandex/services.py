@@ -43,9 +43,9 @@ TRAFFIC_SOURCE_CODES = {
     "ad": "advertising",
     "social": "social",
     "internal": "internal",
-    "recommend": "other",
-    "messenger": "other",
-    "saved": "other",
+    "recommend": "recommend",
+    "messenger": "messenger",
+    "saved": "saved",
     "undefined": "other",
 }
 GEOGRAPHY_CODES = (
@@ -60,9 +60,12 @@ SEARCH_HUMANS_FILTER = "ym:s:lastSignTrafficSource=='organic' AND ym:s:isRobot==
 SEARCH_ALL_FILTER = "ym:s:lastSignTrafficSource=='organic'"
 HUMANS_FILTER = "ym:s:isRobot=='No'"
 SEARCH_DETAIL_METRICS = "ym:s:visits,ym:s:users,ym:s:bounceRate"
+TRAFFIC_SOURCE_DETAIL_METRICS = (
+    "ym:s:visits,ym:s:users,ym:s:bounceRate,ym:s:pageDepth,ym:s:avgVisitDurationSeconds"
+)
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-02-v1"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-04-v2"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-02-v1"
 GOALS_PER_REQUEST = 6
 
@@ -163,17 +166,21 @@ def _dimension(item, index):
     return {"id": str(value.get("id") or ""), "name": str(value.get("name") or "").strip()}
 
 
-def _detail_rows(response, dimension_count):
+def _detail_rows(response, dimension_count, *, extended=False):
     rows = []
     for item in response.get("data", []):
-        rows.append(
-            {
-                "dimensions": [_dimension(item, index) for index in range(dimension_count)],
-                "visits": str(_value(item, 0)),
-                "users": str(_value(item, 1)),
-                "bounce_rate": str(_value(item, 2)),
-            }
-        )
+        row = {
+            "dimensions": [_dimension(item, index) for index in range(dimension_count)],
+            "visits": str(_value(item, 0)),
+            "users": str(_value(item, 1)),
+            "bounce_rate": str(_value(item, 2)),
+        }
+        if extended:
+            row.update(
+                page_depth=str(_value(item, 3)),
+                avg_visit_duration_seconds=str(_value(item, 4)),
+            )
+        rows.append(row)
     return rows
 
 
@@ -181,6 +188,35 @@ def _stat_with_filter(client, filter_value, **params):
     if filter_value:
         params["filters"] = filter_value
     return client.stat(**params)
+
+
+def _traffic_source_details(client, mapping, start, end):
+    response = client.stat(
+        ids=mapping.counter_id,
+        date1=start.isoformat(),
+        date2=end.isoformat(),
+        accuracy="full",
+        attribution="lastsign",
+        metrics=TRAFFIC_SOURCE_DETAIL_METRICS,
+        dimensions=LAST_SIGN_TRAFFIC_SOURCE,
+        limit=10000,
+        sort="-ym:s:visits",
+        lang="ru",
+    )
+    rows = []
+    for item in response.get("data", []):
+        dimension = (item.get("dimensions") or [{}])[0]
+        source_id = str(dimension.get("id") or "undefined")
+        detail = _detail_rows({"data": [item]}, 1, extended=True)[0]
+        rows.append(
+            {
+                **detail,
+                "id": source_id,
+                "name": str(dimension.get("name") or ""),
+                "code": TRAFFIC_SOURCE_CODES.get(source_id, "other"),
+            }
+        )
+    return rows
 
 
 def _geography_totals(rows):
@@ -305,21 +341,24 @@ def _fetch_month(client, mapping, month):
             }
             for (code, value), unit in zip(values.items(), METRIC_UNITS, strict=True)
         )
-    sources = client.stat(
-        **common, metrics="ym:s:visits", dimensions=LAST_SIGN_TRAFFIC_SOURCE, limit=10000
-    )
-    cleaned_sources = []
+    cleaned_sources = _traffic_source_details(client, mapping, month, month_end(month))
     aggregated = {}
-    for item in sources.get("data", []):
-        dim = (item.get("dimensions") or [{}])[0]
-        source_id, source_name = str(dim.get("id", "undefined")), str(dim.get("name", ""))
-        normalized = TRAFFIC_SOURCE_CODES.get(source_id, "other")
-        value = _value(item, 0)
-        aggregated[normalized] = aggregated.get(normalized, Decimal(0)) + value
-        cleaned_sources.append(
-            {"id": source_id, "name": source_name, "code": normalized, "visits": str(value)}
-        )
-    for code in ("search", "direct", "referral", "advertising", "social", "internal", "other"):
+    for item in cleaned_sources:
+        code = item["code"]
+        value = Decimal(item["visits"])
+        aggregated[code] = aggregated.get(code, Decimal(0)) + value
+    for code in (
+        "search",
+        "direct",
+        "referral",
+        "advertising",
+        "social",
+        "internal",
+        "recommend",
+        "messenger",
+        "saved",
+        "other",
+    ):
         points.append(
             {
                 "code": f"source_{code}_visits",
@@ -515,6 +554,7 @@ def _fetch_month(client, mapping, month):
         "period_end": month_end(month).isoformat(),
         "metrics": points,
         "traffic_sources": cleaned_sources,
+        "traffic_source_details": cleaned_sources,
         "geography": geography_rows,
         "traffic_by_segment": traffic_by_segment,
         "detail_variants": detail_variants,
@@ -556,6 +596,11 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
         fetched = [
             _fetch_month(client, mapping, period) for period in months if period not in reusable
         ]
+        for data in fetched:
+            if data["period_start"] == month.isoformat():
+                data["traffic_source_quarter_details"] = _traffic_source_details(
+                    client, mapping, months[0], month_end(month)
+                )
         now = timezone.now()
         with transaction.atomic():
             for data in fetched:

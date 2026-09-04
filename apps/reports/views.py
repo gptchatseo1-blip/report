@@ -10,7 +10,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Max, OuterRef, Subquery
+from django.db.models import Count, Max, OuterRef, Q, Subquery
 from django.http import (
     FileResponse,
     Http404,
@@ -26,9 +26,9 @@ from django.views.decorators.http import require_POST
 from apps.projects.forms import ProjectQuickCreateForm
 from apps.projects.models import Project
 from apps.topvisor.models import TopvisorProjectMapping
-from apps.topvisor.services import configuration_id
+from apps.topvisor.services import configuration_id, configuration_segment
 
-from .exporting import ExportBlocked, generate_artifact
+from .exporting import ExportBlocked, _manual_topvisor_segment, generate_artifact
 from .forms import (
     BOOLEAN_REPORT_FIELDS,
     PERSISTED_REPORT_FIELDS,
@@ -131,30 +131,45 @@ def _validated_manual_rows(value):
         raise ValidationError("Некорректные ручные значения Topvisor.") from None
     if not isinstance(rows, list) or len(rows) > 500:
         raise ValidationError("Некорректные ручные значения Topvisor.")
-    allowed = {
-        "configuration_id",
-        "engine",
-        "region",
-        "month",
-        "visibility",
-        "total",
-        "top3",
-        "top10",
-        "top11_30",
-        "top3_percent",
-        "top10_percent",
-        "top11_30_percent",
-    }
+
+    def number(raw, *, maximum, integer=False):
+        try:
+            result = float(str(raw or 0).replace(",", "."))
+        except (TypeError, ValueError):
+            result = 0
+        result = max(0, min(maximum, result))
+        return int(round(result)) if integer else result
+
     cleaned = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        cleaned.append({key: row.get(key) for key in allowed if key in row})
+        month = str(row.get("month") or "")[:7]
+        try:
+            month = date.fromisoformat(f"{month}-01").isoformat() if month else ""
+        except ValueError:
+            month = ""
+        cleaned.append(
+            {
+                "configuration_id": str(row.get("configuration_id") or "")[:120],
+                "engine": str(row.get("engine") or "").casefold()[:16],
+                "region": str(row.get("region") or "").strip()[:120],
+                "month": month,
+                "visibility": number(row.get("visibility"), maximum=100),
+                "total": number(row.get("total"), maximum=10_000_000, integer=True),
+                "top3": number(row.get("top3"), maximum=10_000_000, integer=True),
+                "top10": number(row.get("top10"), maximum=10_000_000, integer=True),
+                "top11_30": number(row.get("top11_30"), maximum=10_000_000, integer=True),
+                "top3_percent": number(row.get("top3_percent"), maximum=100),
+                "top10_percent": number(row.get("top10_percent"), maximum=100),
+                "top11_30_percent": number(row.get("top11_30_percent"), maximum=100),
+            }
+        )
     return cleaned
 
 
-def _topvisor_editor_rows(project):
-    """Latest snapshot in every configuration/month for the editable report table."""
+def _topvisor_editor_data(project):
+    """Latest editable rows and every configured search-engine/region pair."""
     from apps.metrics.models import RankingSnapshot
 
     if project.position_provider == Project.PositionProvider.SERPHUNT:
@@ -167,16 +182,38 @@ def _topvisor_editor_rows(project):
     else:
         mapping = TopvisorProjectMapping.objects.filter(project=project).first()
         active_configurations = mapping.selected_configurations if mapping else []
-    active_ids = [configuration_id(item) for item in active_configurations]
-
-    snapshots = (
-        RankingSnapshot.objects.filter(
-            project=project,
-            topvisor_configuration_id__in=active_ids,
-            snapshot_date__gte=timezone.localdate() - timedelta(days=550),
+    active_ids = []
+    segments = {}
+    for item in active_configurations:
+        try:
+            stable_id = configuration_id(item)
+        except ValueError:
+            continue
+        active_ids.append(stable_id)
+        engine, normalized_region = configuration_segment(item)
+        region = " ".join(
+            str(item.get("region_name") or item.get("region") or "Регион не указан").split()
         )
-        .prefetch_related("positions")
-        .order_by("snapshot_date", "created_at", "id")
+        try:
+            depth = int(item.get("normalized_depth") or item.get("depth") or 100)
+        except (TypeError, ValueError):
+            depth = 100
+        segments[(engine, normalized_region)] = {
+            "engine": engine,
+            "engine_label": ENGINE_LABELS.get(engine, engine.capitalize() or "Поиск"),
+            "region": region,
+            "ranking_depth": depth,
+        }
+
+    snapshots = RankingSnapshot.objects.filter(
+        project=project, snapshot_date__gte=timezone.localdate() - timedelta(days=550)
+    )
+    if active_ids:
+        snapshots = snapshots.filter(
+            Q(topvisor_configuration_id__in=active_ids) | Q(topvisor_configuration_id="")
+        )
+    snapshots = snapshots.prefetch_related("positions").order_by(
+        "snapshot_date", "created_at", "id"
     )
     latest = {}
     for snapshot in snapshots:
@@ -189,6 +226,16 @@ def _topvisor_editor_rows(project):
         latest[key] = snapshot
     rows = []
     for (engine, region, configuration, month), snapshot in sorted(latest.items()):
+        segment_key = (engine.casefold(), " ".join(region.split()).casefold())
+        segments.setdefault(
+            segment_key,
+            {
+                "engine": engine.casefold(),
+                "engine_label": ENGINE_LABELS.get(engine.casefold(), engine or "Поиск"),
+                "region": region or "Регион не указан",
+                "ranking_depth": snapshot.ranking_depth,
+            },
+        )
         positions = list(snapshot.positions.all())
         ranked = [row.position_value for row in positions if row.position_value is not None]
         rows.append(
@@ -217,7 +264,11 @@ def _topvisor_editor_rows(project):
                 else 0,
             }
         )
-    return rows
+    engine_order = {"yandex": 0, "google": 1}
+    return rows, sorted(
+        segments.values(),
+        key=lambda item: (engine_order.get(item["engine"], 99), item["region"].casefold()),
+    )
 
 
 def _url_segment_settings(cleaned):
@@ -526,6 +577,7 @@ def report_list(request, project_id):
     calendar_fields = _calendar_fields(form)
     source_period_fields = _source_period_fields(form)
     topvisor_report_link_fields = _topvisor_report_link_fields(form)
+    topvisor_editor_rows, topvisor_editor_segments = _topvisor_editor_data(project)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -539,7 +591,8 @@ def report_list(request, project_id):
         "can_create": can_create,
         "position_sync_url": _position_sync_url(project),
         "position_provider_label": project.get_position_provider_display(),
-        "topvisor_editor_rows": _topvisor_editor_rows(project),
+        "topvisor_editor_rows": topvisor_editor_rows,
+        "topvisor_editor_segments": topvisor_editor_segments,
     }
     context.update(_metrika_goal_context(project, request.user))
     return render(
@@ -671,6 +724,7 @@ def report_create(request, project_id):
     calendar_fields = _calendar_fields(form)
     source_period_fields = _source_period_fields(form)
     topvisor_report_link_fields = _topvisor_report_link_fields(form)
+    topvisor_editor_rows, topvisor_editor_segments = _topvisor_editor_data(project)
     can_create = all(
         len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
     )
@@ -684,7 +738,8 @@ def report_create(request, project_id):
         "can_create": can_create,
         "position_sync_url": _position_sync_url(project),
         "position_provider_label": project.get_position_provider_display(),
-        "topvisor_editor_rows": _topvisor_editor_rows(project),
+        "topvisor_editor_rows": topvisor_editor_rows,
+        "topvisor_editor_segments": topvisor_editor_segments,
     }
     context.update(_metrika_goal_context(project, request.user))
     return render(
@@ -886,7 +941,7 @@ def _segment_rows(payload, code):
     segments = payload.get("calculated", {}).get("positions", {}).get("segments", [])
     rows = []
     for source in segments:
-        row = dict(source)
+        row = _manual_topvisor_segment(payload, dict(source))
         row["engine_label"] = ENGINE_LABELS.get(
             source.get("search_engine"), source.get("search_engine") or "Поиск"
         )
