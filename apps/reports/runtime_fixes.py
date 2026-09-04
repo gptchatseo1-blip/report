@@ -536,10 +536,7 @@ def apply():
         if selected_positions or selected_sources:
             cleaned["month"] = None
         elif cleaned.get("month") is None:
-            self.add_error(
-                None,
-                "Не удалось определить отчётный месяц: выберите даты позиций или период источника.",
-            )
+            cleaned["month"] = getattr(self, "report_month", None)
         return cleaned
 
     report_forms.ReportCreateForm.__init__ = patched_init

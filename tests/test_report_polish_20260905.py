@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.staticfiles.storage import staticfiles_storage
 from django.core.exceptions import ValidationError
 from django.urls import reverse
 from docx import Document
@@ -125,8 +126,8 @@ def test_report_builder_hides_manual_month_and_loads_modal_assets(
 
     assert "Отчётный месяц" not in html
     assert 'name="month"' in html and 'type="hidden"' in html
-    assert "reports/report-polish.css" in html
-    assert "reports/report-polish.js" in html
+    assert staticfiles_storage.url("reports/report-polish.css") in html
+    assert staticfiles_storage.url("reports/report-polish.js") in html
 
 
 def test_august_position_dates_create_august_report_even_when_current_period_is_later(
@@ -194,18 +195,27 @@ def test_without_position_dates_report_month_comes_from_latest_selected_source_s
     assert Report.objects.get().report_month == date(2026, 8, 1)
 
 
-def test_report_month_is_not_invented_from_today_without_selected_data(
+def test_without_selected_data_report_month_uses_previous_month_fallback(
     client,
     user,
     project,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        "apps.reports.forms.timezone.localdate",
+        lambda: date(2026, 9, 5),
+    )
+    monkeypatch.setattr(
+        "apps.reports.views.timezone.localdate",
+        lambda: date(2026, 9, 5),
+    )
     client.force_login(user)
     response = client.post(
         reverse("reports:report-create", args=[project.id]),
         {"topvisor_manual_rows": "[]"},
     )
-    assert response.status_code == 400
-    assert Report.objects.count() == 0
+    assert response.status_code == 302
+    assert Report.objects.get().report_month == date(2026, 8, 1)
 
 
 def test_manual_visibility_parser_accepts_percent_comma_zero_and_empty():
