@@ -45,7 +45,7 @@ jobs:
         run: ruff check .
 
       - name: Ruff format
-        run: ruff format --check .
+        run: ruff format --diff .
 
       - name: Django system check
         run: python manage.py check
