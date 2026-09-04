@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from docx import Document
 
@@ -19,12 +20,18 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def user(db):
-    return get_user_model().objects.create_user(username="report-polish", password="test-password")
+    return get_user_model().objects.create_user(
+        username="report-polish",
+        password="test-password",
+    )
 
 
 @pytest.fixture
 def project(db):
-    return Project.objects.create(name="Report polish", domain="report-polish.example")
+    return Project.objects.create(
+        name="Report polish",
+        domain="report-polish.example",
+    )
 
 
 def _connect_google(project):
@@ -77,8 +84,16 @@ def _segment():
         "region": "Москва",
         "ranking_depth": 30,
         "three_month_series": [
-            {"month": "2026-07-01", "visibility": 12, "distribution": _distribution()},
-            {"month": "2026-08-01", "visibility": 16, "distribution": _distribution()},
+            {
+                "month": "2026-07-01",
+                "visibility": 12,
+                "distribution": _distribution(),
+            },
+            {
+                "month": "2026-08-01",
+                "visibility": 16,
+                "distribution": _distribution(),
+            },
         ],
     }
 
@@ -100,7 +115,11 @@ def _manual(visibility=13, month="2026-08-01", region="Москва"):
     }
 
 
-def test_report_builder_hides_manual_month_and_loads_modal_assets(client, user, project):
+def test_report_builder_hides_manual_month_and_loads_modal_assets(
+    client,
+    user,
+    project,
+):
     client.force_login(user)
     html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
 
@@ -111,18 +130,30 @@ def test_report_builder_hides_manual_month_and_loads_modal_assets(client, user, 
 
 
 def test_august_position_dates_create_august_report_even_when_current_period_is_later(
-    client, user, project, monkeypatch
+    client,
+    user,
+    project,
+    monkeypatch,
 ):
     _connect_google(project)
     _ranking(project, date(2026, 7, 14), "12")
     _ranking(project, date(2026, 8, 17), "16")
-    monkeypatch.setattr("apps.reports.forms.timezone.localdate", lambda: date(2026, 9, 5))
-    monkeypatch.setattr("apps.reports.views.timezone.localdate", lambda: date(2026, 9, 5))
+    monkeypatch.setattr(
+        "apps.reports.forms.timezone.localdate",
+        lambda: date(2026, 9, 5),
+    )
+    monkeypatch.setattr(
+        "apps.reports.views.timezone.localdate",
+        lambda: date(2026, 9, 5),
+    )
     client.force_login(user)
 
     response = client.post(
         reverse("reports:report-create", args=[project.id]),
-        {"google_dates": ["2026-07-14", "2026-08-17"], "topvisor_manual_rows": "[]"},
+        {
+            "google_dates": ["2026-07-14", "2026-08-17"],
+            "topvisor_manual_rows": "[]",
+        },
     )
 
     assert response.status_code == 302
@@ -130,7 +161,9 @@ def test_august_position_dates_create_august_report_even_when_current_period_is_
 
 
 def test_without_position_dates_report_month_comes_from_latest_selected_source_snapshot(
-    client, user, project
+    client,
+    user,
+    project,
 ):
     older = SourceSnapshot.objects.create(
         project=project,
@@ -161,10 +194,15 @@ def test_without_position_dates_report_month_comes_from_latest_selected_source_s
     assert Report.objects.get().report_month == date(2026, 8, 1)
 
 
-def test_report_month_is_not_invented_from_today_without_selected_data(client, user, project):
+def test_report_month_is_not_invented_from_today_without_selected_data(
+    client,
+    user,
+    project,
+):
     client.force_login(user)
     response = client.post(
-        reverse("reports:report-create", args=[project.id]), {"topvisor_manual_rows": "[]"}
+        reverse("reports:report-create", args=[project.id]),
+        {"topvisor_manual_rows": "[]"},
     )
     assert response.status_code == 400
     assert Report.objects.count() == 0
@@ -181,11 +219,13 @@ def test_manual_visibility_parser_accepts_percent_comma_zero_and_empty():
 
 @pytest.mark.parametrize("value", ["abc", -1, 100.01, "101%"])
 def test_manual_visibility_rejects_invalid_values(value):
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         validate_topvisor_manual_rows([_manual(value)])
 
 
-def test_manual_visibility_overrides_auto_value_without_mutating_source_snapshot(project):
+def test_manual_visibility_overrides_auto_value_without_mutating_source_snapshot(
+    project,
+):
     source = _ranking(project, date(2026, 8, 17), "16")
     payload = {"display_options": {"topvisor_manual_rows": [_manual(13)]}}
     effective = exporting._manual_topvisor_segment(payload, _segment())
@@ -198,21 +238,27 @@ def test_manual_visibility_overrides_auto_value_without_mutating_source_snapshot
 def test_missing_manual_visibility_returns_to_automatic_value():
     row = _manual(None)
     effective = exporting._manual_topvisor_segment(
-        {"display_options": {"topvisor_manual_rows": [row]}}, _segment()
+        {"display_options": {"topvisor_manual_rows": [row]}},
+        _segment(),
     )
     assert effective["three_month_series"][-1]["visibility"] == 16
 
 
 def test_manual_zero_visibility_is_not_replaced_by_automatic_value():
     effective = exporting._manual_topvisor_segment(
-        {"display_options": {"topvisor_manual_rows": [_manual(0)]}}, _segment()
+        {"display_options": {"topvisor_manual_rows": [_manual(0)]}},
+        _segment(),
     )
     assert effective["three_month_series"][-1]["visibility"] == 0
 
 
 def test_manual_previous_month_is_added_to_effective_chart_series():
     effective = exporting._manual_topvisor_segment(
-        {"display_options": {"topvisor_manual_rows": [_manual(9, "2026-06-01")]}},
+        {
+            "display_options": {
+                "topvisor_manual_rows": [_manual(9, "2026-06-01")]
+            }
+        },
         _segment(),
     )
     assert [row["month"][:7] for row in effective["chart_series"]] == [
@@ -221,32 +267,50 @@ def test_manual_previous_month_is_added_to_effective_chart_series():
         "2026-08",
     ]
     assert effective["chart_series"][0]["visibility"] == 9
-    assert effective["chart_series"][0]["distribution"]["manual_buckets"]["1-10"]["share"] == 35
+    first_buckets = effective["chart_series"][0]["distribution"]["manual_buckets"]
+    assert first_buckets["1-10"]["share"] == 35
 
 
 def test_manual_visibility_isolated_by_search_engine_and_region():
     effective = exporting._manual_topvisor_segment(
-        {"display_options": {"topvisor_manual_rows": [_manual(3, region="Санкт-Петербург")]}},
+        {
+            "display_options": {
+                "topvisor_manual_rows": [
+                    _manual(3, region="Санкт-Петербург")
+                ]
+            }
+        },
         _segment(),
     )
     assert effective["three_month_series"][-1]["visibility"] == 16
 
 
-def test_saved_manual_visibility_survives_source_data_refresh(client, user, project):
+def test_saved_manual_visibility_survives_source_data_refresh(
+    client,
+    user,
+    project,
+):
     client.force_login(user)
     response = client.post(
         reverse("reports:report-settings-save", args=[project.id]),
-        data=json.dumps({"topvisor_manual_rows": json.dumps([_manual(13)])}),
+        data=json.dumps(
+            {"topvisor_manual_rows": json.dumps([_manual(13)])}
+        ),
         content_type="application/json",
     )
     assert response.status_code == 200
     _ranking(project, date(2026, 8, 17), "18")
 
-    stored = json.loads(ProjectReportSettings.objects.get(project=project).values["topvisor_manual_rows"])
+    settings_values = ProjectReportSettings.objects.get(project=project).values
+    stored = json.loads(settings_values["topvisor_manual_rows"])
     assert stored[0]["visibility"] == 13
 
 
-def test_created_report_version_freezes_manual_visibility(client, user, project):
+def test_created_report_version_freezes_manual_visibility(
+    client,
+    user,
+    project,
+):
     client.force_login(user)
     response = client.post(
         reverse("reports:report-create", args=[project.id]),
@@ -256,15 +320,19 @@ def test_created_report_version_freezes_manual_visibility(client, user, project)
         },
     )
     assert response.status_code == 302
-    frozen = ReportDatasetSnapshot.objects.get().payload["display_options"]["topvisor_manual_rows"]
+    snapshot = ReportDatasetSnapshot.objects.get()
+    frozen = snapshot.payload["display_options"]["topvisor_manual_rows"]
     assert frozen[0]["visibility"] == 13
 
     client.post(
         reverse("reports:report-settings-save", args=[project.id]),
-        data=json.dumps({"topvisor_manual_rows": json.dumps([_manual(18)])}),
+        data=json.dumps(
+            {"topvisor_manual_rows": json.dumps([_manual(18)])}
+        ),
         content_type="application/json",
     )
-    assert ReportDatasetSnapshot.objects.get().payload["display_options"]["topvisor_manual_rows"][0][
+    snapshot.refresh_from_db()
+    assert snapshot.payload["display_options"]["topvisor_manual_rows"][0][
         "visibility"
     ] == 13
 
@@ -272,18 +340,27 @@ def test_created_report_version_freezes_manual_visibility(client, user, project)
 def test_visibility_chart_uses_fifty_percent_ceiling_for_low_series(monkeypatch):
     monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
     figure = exporting._visibility_chart(
-        [("2026-06-17", 7), ("2026-07-14", 10), ("2026-08-17", 13)]
+        [
+            ("2026-06-17", 7),
+            ("2026-07-14", 10),
+            ("2026-08-17", 13),
+        ]
     )
     try:
         assert figure.axes[0].get_ylim() == (0.0, 50.0)
         assert list(figure.axes[0].get_yticks()) == [0, 25, 50]
         assert len(figure.axes[1].patches) == 2
-        assert all(getattr(wedge, "width", None) == 0.35 for wedge in figure.axes[1].patches)
+        assert all(
+            getattr(wedge, "width", None) == 0.35
+            for wedge in figure.axes[1].patches
+        )
     finally:
         exporting.plt.close(figure)
 
 
-def test_distribution_legend_uses_topvisor_dot_markers_and_exact_palette(monkeypatch):
+def test_distribution_legend_uses_topvisor_dot_markers_and_exact_palette(
+    monkeypatch,
+):
     monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
     history = [
         {"month": "2026-07-01", "distribution": _distribution()},
@@ -300,10 +377,14 @@ def test_distribution_legend_uses_topvisor_dot_markers_and_exact_palette(monkeyp
             "51-100",
             "101+",
         ]
-        handles = getattr(legend, "legend_handles", getattr(legend, "legendHandles", []))
-        assert handles and all(handle.get_marker() == "o" for handle in handles)
-        assert exporting.TOPVISOR_COLORS == {
-            **exporting.TOPVISOR_COLORS,
+        handles = getattr(
+            legend,
+            "legend_handles",
+            getattr(legend, "legendHandles", []),
+        )
+        assert handles
+        assert all(handle.get_marker() == "o" for handle in handles)
+        expected_colors = {
             "1-3": "#3198DD",
             "1-10": "#21936C",
             "11-20": "#1ABC9C",
@@ -312,6 +393,8 @@ def test_distribution_legend_uses_topvisor_dot_markers_and_exact_palette(monkeyp
             "51-100": "#B0C7C7",
             "101+": "#FBC02D",
         }
+        for name, color in expected_colors.items():
+            assert exporting.TOPVISOR_COLORS[name] == color
     finally:
         exporting.plt.close(figure)
 
@@ -330,7 +413,12 @@ def test_visibility_sentence_agrees_with_feminine_noun():
 
 def test_distribution_summary_uses_equal_centered_label_cells():
     document = Document()
-    exporting._render_distribution_cards_table(document, _distribution(), 100, engine="yandex")
+    exporting._render_distribution_cards_table(
+        document,
+        _distribution(),
+        100,
+        engine="yandex",
+    )
     outer = document.tables[0]
     label_cells = []
     for row in outer.rows:
@@ -339,7 +427,10 @@ def test_distribution_summary_uses_equal_centered_label_cells():
                 label_cells.append(cell.tables[0].rows[0].cells[0])
     assert len(label_cells) == 6
     assert len({cell.width for cell in label_cells}) == 1
-    assert all(cell.paragraphs[0].alignment is not None for cell in label_cells)
+    assert all(
+        cell.paragraphs[0].alignment is not None
+        for cell in label_cells
+    )
 
 
 def test_polish_assets_define_modal_visibility_editor_and_fixed_layout(settings):
@@ -358,5 +449,11 @@ def test_polish_assets_define_modal_visibility_editor_and_fixed_layout(settings)
     assert "<form" not in javascript
     assert ".report-modal-backdrop" in css
     assert "details[data-topvisor-manual-editor]{display:none}" in css
-    assert ".report-config-grid{grid-template-columns:repeat(3,minmax(0,1fr))}" in css
-    assert ".position-distribution__range{width:58px;min-width:58px;max-width:58px" in css
+    assert (
+        ".report-config-grid{grid-template-columns:repeat(3,minmax(0,1fr))}"
+        in css
+    )
+    assert (
+        ".position-distribution__range{width:58px;min-width:58px;max-width:58px"
+        in css
+    )
