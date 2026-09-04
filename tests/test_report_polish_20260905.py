@@ -254,11 +254,7 @@ def test_manual_zero_visibility_is_not_replaced_by_automatic_value():
 
 def test_manual_previous_month_is_added_to_effective_chart_series():
     effective = exporting._manual_topvisor_segment(
-        {
-            "display_options": {
-                "topvisor_manual_rows": [_manual(9, "2026-06-01")]
-            }
-        },
+        {"display_options": {"topvisor_manual_rows": [_manual(9, "2026-06-01")]}},
         _segment(),
     )
     assert [row["month"][:7] for row in effective["chart_series"]] == [
@@ -273,13 +269,7 @@ def test_manual_previous_month_is_added_to_effective_chart_series():
 
 def test_manual_visibility_isolated_by_search_engine_and_region():
     effective = exporting._manual_topvisor_segment(
-        {
-            "display_options": {
-                "topvisor_manual_rows": [
-                    _manual(3, region="Санкт-Петербург")
-                ]
-            }
-        },
+        {"display_options": {"topvisor_manual_rows": [_manual(3, region="Санкт-Петербург")]}},
         _segment(),
     )
     assert effective["three_month_series"][-1]["visibility"] == 16
@@ -293,9 +283,7 @@ def test_saved_manual_visibility_survives_source_data_refresh(
     client.force_login(user)
     response = client.post(
         reverse("reports:report-settings-save", args=[project.id]),
-        data=json.dumps(
-            {"topvisor_manual_rows": json.dumps([_manual(13)])}
-        ),
+        data=json.dumps({"topvisor_manual_rows": json.dumps([_manual(13)])}),
         content_type="application/json",
     )
     assert response.status_code == 200
@@ -326,15 +314,11 @@ def test_created_report_version_freezes_manual_visibility(
 
     client.post(
         reverse("reports:report-settings-save", args=[project.id]),
-        data=json.dumps(
-            {"topvisor_manual_rows": json.dumps([_manual(18)])}
-        ),
+        data=json.dumps({"topvisor_manual_rows": json.dumps([_manual(18)])}),
         content_type="application/json",
     )
     snapshot.refresh_from_db()
-    assert snapshot.payload["display_options"]["topvisor_manual_rows"][0][
-        "visibility"
-    ] == 13
+    assert snapshot.payload["display_options"]["topvisor_manual_rows"][0]["visibility"] == 13
 
 
 def test_visibility_chart_uses_fifty_percent_ceiling_for_low_series(monkeypatch):
@@ -350,10 +334,7 @@ def test_visibility_chart_uses_fifty_percent_ceiling_for_low_series(monkeypatch)
         assert figure.axes[0].get_ylim() == (0.0, 50.0)
         assert list(figure.axes[0].get_yticks()) == [0, 25, 50]
         assert len(figure.axes[1].patches) == 2
-        assert all(
-            getattr(wedge, "width", None) == 0.35
-            for wedge in figure.axes[1].patches
-        )
+        assert all(getattr(wedge, "width", None) == 0.35 for wedge in figure.axes[1].patches)
     finally:
         exporting.plt.close(figure)
 
@@ -427,10 +408,7 @@ def test_distribution_summary_uses_equal_centered_label_cells():
                 label_cells.append(cell.tables[0].rows[0].cells[0])
     assert len(label_cells) == 6
     assert len({cell.width for cell in label_cells}) == 1
-    assert all(
-        cell.paragraphs[0].alignment is not None
-        for cell in label_cells
-    )
+    assert all(cell.paragraphs[0].alignment is not None for cell in label_cells)
 
 
 def test_polish_assets_define_modal_visibility_editor_and_fixed_layout(settings):
@@ -449,11 +427,5 @@ def test_polish_assets_define_modal_visibility_editor_and_fixed_layout(settings)
     assert "<form" not in javascript
     assert ".report-modal-backdrop" in css
     assert "details[data-topvisor-manual-editor]{display:none}" in css
-    assert (
-        ".report-config-grid{grid-template-columns:repeat(3,minmax(0,1fr))}"
-        in css
-    )
-    assert (
-        ".position-distribution__range{width:58px;min-width:58px;max-width:58px"
-        in css
-    )
+    assert ".report-config-grid{grid-template-columns:repeat(3,minmax(0,1fr))}" in css
+    assert ".position-distribution__range{width:58px;min-width:58px;max-width:58px" in css

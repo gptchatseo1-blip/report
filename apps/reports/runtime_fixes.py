@@ -198,9 +198,7 @@ def _manual_topvisor_segment(payload, segment):
             **existing,
             "month": row["month"],
             "visibility": (
-                manual_visibility
-                if manual_visibility is not None
-                else existing.get("visibility")
+                manual_visibility if manual_visibility is not None else existing.get("visibility")
             ),
             "distribution": distribution,
             "ranking_depth": existing.get("ranking_depth", depth),
@@ -269,16 +267,11 @@ def _visibility_chart(exp, points, title=None):
 
 
 def _distribution_chart(exp, history, depth):
-    useful_rows = [
-        row
-        for row in history
-        if (row.get("distribution") or {}).get("total")
-    ]
+    useful_rows = [row for row in history if (row.get("distribution") or {}).get("total")]
     if not useful_rows:
         return None
     bucket_rows = [
-        exp._topvisor_buckets(row.get("distribution") or {}, depth)
-        for row in useful_rows
+        exp._topvisor_buckets(row.get("distribution") or {}, depth) for row in useful_rows
     ]
     labels = [exp._date_label(row.get("month")) for row in useful_rows]
     x_values = list(range(len(labels)))
@@ -289,16 +282,10 @@ def _distribution_chart(exp, history, depth):
             facecolor="white",
         )
         bucket_names = [bucket["label"] for bucket in bucket_rows[0]]
-        rows_by_name = [
-            {bucket["label"]: bucket for bucket in buckets}
-            for buckets in bucket_rows
-        ]
+        rows_by_name = [{bucket["label"]: bucket for bucket in buckets} for buckets in bucket_rows]
         handles = []
         for name in bucket_names:
-            values = [
-                float(row.get(name, {}).get("share") or 0)
-                for row in rows_by_name
-            ]
+            values = [float(row.get(name, {}).get("share") or 0) for row in rows_by_name]
             color = exp.TOPVISOR_COLORS[name]
             exp._plot_smooth_line(
                 axis,
@@ -323,15 +310,9 @@ def _distribution_chart(exp, history, depth):
             )
         ticks, tick_labels = exp._date_ticks(labels)
         axis.set_xticks(ticks, tick_labels)
-        top = max(
-            float(bucket["share"] or 0)
-            for row in bucket_rows
-            for bucket in row
-        )
+        top = max(float(bucket["share"] or 0) for row in bucket_rows for bucket in row)
         axis.set_ylim(0, max(10, math.ceil(top / 10) * 10 + 2))
-        axis.yaxis.set_major_formatter(
-            exp.FuncFormatter(lambda value, _pos: f"{value:.0f}%")
-        )
+        axis.yaxis.set_major_formatter(exp.FuncFormatter(lambda value, _pos: f"{value:.0f}%"))
         exp._style_axis(axis)
         legend = axis.legend(
             handles=handles,
@@ -366,11 +347,7 @@ def _render_distribution_cards_table(
         20 if engine == "google" else depth,
     )
     if engine == "google":
-        buckets = [
-            bucket
-            for bucket in buckets
-            if bucket["label"] in {"1-3", "1-10", "11-20"}
-        ]
+        buckets = [bucket for bucket in buckets if bucket["label"] in {"1-3", "1-10", "11-20"}]
     if not buckets:
         return None
     columns = 1 if engine == "google" else 2
@@ -465,11 +442,7 @@ def _visibility_comparison_phrase(exp, current, previous):
         return "не изменилась"
     if previous_number == 0:
         return "изменение не рассчитывается из-за нулевой базы"
-    delta = (
-        (current_number - previous_number)
-        / abs(previous_number)
-        * Decimal(100)
-    )
+    delta = (current_number - previous_number) / abs(previous_number) * Decimal(100)
     direction = "увеличилась" if delta > 0 else "уменьшилась"
     rendered = exp._number(abs(delta), "%", decimal_places=0)
     return f"{direction} на {rendered}"
@@ -555,27 +528,17 @@ def apply():
 
     def patched_clean(self):
         cleaned = original_clean(self)
-        selected_positions = any(
-            cleaned.get(f"{engine}_dates")
-            for engine in ("yandex", "google")
-        )
+        selected_positions = any(cleaned.get(f"{engine}_dates") for engine in ("yandex", "google"))
         selected_sources = bool(
-            (
-                cleaned.get("include_metrika")
-                and cleaned.get("metrika_snapshots")
-            )
-            or (
-                cleaned.get("include_webmaster")
-                and cleaned.get("webmaster_snapshots")
-            )
+            (cleaned.get("include_metrika") and cleaned.get("metrika_snapshots"))
+            or (cleaned.get("include_webmaster") and cleaned.get("webmaster_snapshots"))
         )
         if selected_positions or selected_sources:
             cleaned["month"] = None
         elif cleaned.get("month") is None:
             self.add_error(
                 None,
-                "Не удалось определить отчётный месяц: "
-                "выберите даты позиций или период источника.",
+                "Не удалось определить отчётный месяц: выберите даты позиций или период источника.",
             )
         return cleaned
 
@@ -597,31 +560,23 @@ def apply():
         }
     )
     exp._manual_topvisor_segment = _manual_topvisor_segment
-    exp._visibility_chart = (
-        lambda points, title=None: _visibility_chart(exp, points, title)
-    )
-    exp._distribution_chart = (
-        lambda history, depth: _distribution_chart(exp, history, depth)
-    )
-    exp._render_distribution_cards_table = (
-        lambda doc, distribution, depth, *, engine="yandex": (
-            _render_distribution_cards_table(
-                exp,
-                doc,
-                distribution,
-                depth,
-                engine=engine,
-            )
+    exp._visibility_chart = lambda points, title=None: _visibility_chart(exp, points, title)
+    exp._distribution_chart = lambda history, depth: _distribution_chart(exp, history, depth)
+    exp._render_distribution_cards_table = lambda doc, distribution, depth, *, engine="yandex": (
+        _render_distribution_cards_table(
+            exp,
+            doc,
+            distribution,
+            depth,
+            engine=engine,
         )
     )
-    exp._render_topvisor_comparison = (
-        lambda doc, segment, *, show_visibility=True: (
-            _render_topvisor_comparison(
-                exp,
-                doc,
-                segment,
-                show_visibility=show_visibility,
-            )
+    exp._render_topvisor_comparison = lambda doc, segment, *, show_visibility=True: (
+        _render_topvisor_comparison(
+            exp,
+            doc,
+            segment,
+            show_visibility=show_visibility,
         )
     )
 
