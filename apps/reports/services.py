@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import urllib.request
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
@@ -44,6 +45,32 @@ from .models import (
 
 SNAPSHOT_SCHEMA_VERSION = "mvp1.1"
 logger = logging.getLogger(__name__)
+SENSITIVE_SOURCE_KEY_RE = re.compile(
+    r"(?i)^(?:api[_ -]?key|authorization|oauth[_ -]?token|access[_ -]?token|"
+    r"refresh[_ -]?token|client[_ -]?secret|password|cookie|set[_ -]?cookie)$"
+)
+SENSITIVE_SOURCE_TEXT_RE = re.compile(
+    r"(?i)(?:authorization\s*:\s*(?:bearer|basic|oauth)\s+\S+|"
+    r"sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9]{20,})"
+)
+
+
+def redact_sensitive_source_data(value):
+    """Remove credentials accidentally retained in legacy provider payloads."""
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                "redacted"
+                if SENSITIVE_SOURCE_KEY_RE.fullmatch(str(key).strip())
+                else redact_sensitive_source_data(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [redact_sensitive_source_data(item) for item in value]
+    if isinstance(value, str) and SENSITIVE_SOURCE_TEXT_RE.search(value):
+        return "redacted"
+    return value
 
 
 def _project_favicon(domain):
@@ -322,7 +349,7 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             {
                 "period_start": snapshot.period_start,
                 "period_end": snapshot.period_end,
-                "payload": snapshot.payload,
+                "payload": redact_sensitive_source_data(snapshot.payload),
             }
             for snapshot, _metrics in points
         ]
@@ -472,7 +499,7 @@ def _external_source_data(project, periods, selected_ids=None):
             "source": row.source,
             "period_start": row.period_start,
             "period_end": row.period_end,
-            "payload": row.payload,
+            "payload": redact_sensitive_source_data(row.payload),
             "metrics": [
                 {
                     "code": point.metric_code,
@@ -485,7 +512,7 @@ def _external_source_data(project, periods, selected_ids=None):
             "retrieval_method": row.retrieval_method,
             "checksum": row.checksum,
             "retrieved_at": row.retrieved_at,
-            "provenance": row.provenance,
+            "provenance": redact_sensitive_source_data(row.provenance),
             "sampling": row.sampling,
             "contains_sensitive_data": row.contains_sensitive_data,
         }

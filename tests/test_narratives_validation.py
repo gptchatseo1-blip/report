@@ -200,6 +200,29 @@ def test_validator_detects_arithmetic_ctr_domain_provenance_and_secret():
     }
 
 
+def test_validator_repairs_credentials_in_legacy_source_payloads():
+    version = make_version()
+    snapshot = version.snapshot
+    payload = snapshot.payload
+    payload["source_snapshots"] = [
+        {
+            "payload": {"access_token": "legacy-provider-token"},
+            "provenance": {"authorization": "Bearer legacy-provider-token"},
+        }
+    ]
+    ReportDatasetSnapshot.objects.filter(pk=snapshot.pk).update(
+        payload=payload, checksum=snapshot_checksum(payload)
+    )
+
+    codes = {issue.code for issue in validate_report_version(version)}
+    snapshot.refresh_from_db()
+
+    assert "secret_detected" not in codes
+    assert snapshot.payload["source_snapshots"][0]["payload"]["access_token"] == "redacted"
+    assert snapshot.payload["source_snapshots"][0]["provenance"]["authorization"] == "redacted"
+    assert snapshot.checksum == snapshot_checksum(snapshot.payload)
+
+
 def test_warning_allows_draft_and_services_read_only_snapshot(monkeypatch):
     version = make_version(previous=False)
 

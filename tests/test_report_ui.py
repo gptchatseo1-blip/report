@@ -60,6 +60,25 @@ def test_report_creation_normalizes_month_and_reuses_report(client, user, projec
 
 
 @pytest.mark.django_db
+def test_quick_project_create_reports_duplicate_normalized_domain_without_500(
+    client, user, project
+):
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:project-create"),
+        {
+            "name": "Дубликат",
+            "domain": f"https://www.{project.domain}/",
+            "position_provider": "serphunt",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Проект с таким доменом уже существует." in response.content.decode()
+    assert Project.objects.count() == 1
+
+
+@pytest.mark.django_db
 def test_report_creation_freezes_project_specific_rich_work_text(client, user, project):
     client.force_login(user)
     response = client.post(
