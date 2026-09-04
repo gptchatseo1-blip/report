@@ -9,6 +9,12 @@
   const manualField = form.querySelector('[name=topvisor_manual_rows]');
   const manualContainer = form.querySelector('[data-topvisor-manual-segments]');
   const manualStatus = form.querySelector('[data-topvisor-manual-status]');
+  const reportMonth = form.querySelector('[name=month]');
+  reportMonth?.addEventListener('change', () => {
+    document.querySelectorAll('[data-sync-month-for]').forEach(input => {
+      input.value = reportMonth.value;
+    });
+  });
   const readJson = (id, fallback = []) => {
     try { return JSON.parse(document.getElementById(id)?.textContent || JSON.stringify(fallback)); }
     catch (_error) { return fallback; }
@@ -21,17 +27,19 @@
   })();
   const segmentKey = row => `${String(row.engine || '').toLowerCase()}\u0000${String(row.region || '').trim().toLowerCase()}`;
   const rowKey = row => `${segmentKey(row)}\u0000${String(row.month || '').slice(0, 7)}`;
-  const manualRows = defaultRows.map(row => ({...row}));
+  const manualRows = defaultRows.map(row => ({...row, _manual: false}));
   savedRows.forEach(row => {
     const index = row.month ? manualRows.findIndex(item => rowKey(item) === rowKey(row)) : -1;
-    if (index >= 0) manualRows[index] = {...manualRows[index], ...row};
-    else manualRows.push({...row});
+    if (index >= 0) manualRows[index] = {...manualRows[index], ...row, _manual: true};
+    else manualRows.push({...row, _manual: true});
   });
   let manualDirty = false;
 
   function changeManualRows(delay = 500) {
     if (!manualField) return;
-    manualField.value = JSON.stringify(manualRows);
+    manualField.value = JSON.stringify(
+      manualRows.filter(row => row._manual && row.month).map(({_manual, ...row}) => row)
+    );
     manualDirty = true;
     if (manualStatus) manualStatus.textContent = 'Сохранение…';
     scheduleSave(delay);
@@ -79,6 +87,7 @@
           input.setAttribute('aria-label', 'Процент и количество');
         }
         input.addEventListener('input', () => {
+          row._manual = true;
           if (type === 'month') row[name] = input.value ? `${input.value}-01` : '';
           else {
             const numbers = input.value.match(/-?\d+(?:[.,]\d+)?/g) || [];
@@ -91,25 +100,30 @@
         tr.append(td);
       });
       const actions = document.createElement('td');
-      const remove = document.createElement('button');
-      remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
-      remove.title = 'Удалить строку';
-      remove.addEventListener('click', () => {
-        manualRows.splice(manualRows.indexOf(row), 1); renderManualRows(); changeManualRows(150);
-      });
-      actions.append(remove); tr.append(actions); body.append(tr);
+      if (row._manual) {
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
+        remove.title = 'Удалить ручную строку';
+        remove.addEventListener('click', () => {
+          manualRows.splice(manualRows.indexOf(row), 1); renderManualRows(); changeManualRows(150);
+        });
+        actions.append(remove);
+      }
+      tr.append(actions); body.append(tr);
     });
       if (!segmentRows.length) body.innerHTML = '<tr><td colspan="5" class="manual-empty-row">Данных пока нет</td></tr>';
       table.append(body); wrap.append(table); section.append(wrap);
       const add = document.createElement('button');
       add.type = 'button'; add.className = 'secondary manual-add-row'; add.textContent = '+ Добавить строку';
       add.addEventListener('click', () => {
-        manualRows.push({configuration_id: '', engine: segment.engine || '', region: segment.region || '', month: '', total: 0, top3: 0, top10: 0, top11_30: 0, top3_percent: 0, top10_percent: 0, top11_30_percent: 0});
-        renderManualRows(); changeManualRows(150);
+        manualRows.push({configuration_id: '', engine: segment.engine || '', region: segment.region || '', month: '', total: 0, top3: 0, top10: 0, top11_30: 0, top3_percent: 0, top10_percent: 0, top11_30_percent: 0, _manual: true});
+        renderManualRows();
       });
       section.append(add); manualContainer.append(section);
     });
-    manualField.value = JSON.stringify(manualRows);
+    manualField.value = JSON.stringify(
+      manualRows.filter(row => row._manual && row.month).map(({_manual, ...row}) => row)
+    );
   }
   renderManualRows();
 
@@ -193,9 +207,11 @@
         manualDirty = false;
         if (manualStatus) manualStatus.textContent = 'Сохранено';
       }
+      return true;
     } catch (error) {
       if (manualDirty && manualStatus) manualStatus.textContent = 'Ошибка автосохранения';
       showNotice(error.message || 'Не удалось сохранить настройки проекта.', 'error');
+      return false;
     }
   }
 
@@ -319,11 +335,20 @@
     button.disabled = true;
     const results = [];
     try {
-      await Promise.all(sources.map(async source => {
+      clearTimeout(saveTimer);
+      if (!await saveSettings()) {
+        if (status) status.textContent = 'Сначала исправьте ошибку сохранения настроек.';
+        return;
+      }
+      for (const source of sources) {
         const label = source.dataset.globalSourceLabel || 'Источник';
+        if (status) status.textContent = `Синхронизация: ${label}…`;
         try {
           const response = await fetch(source.action, {method: 'POST', credentials: 'same-origin', headers: {'X-Requested-With': 'XMLHttpRequest'}, body: new FormData(source)});
-          const data = await response.json();
+          const contentType = response.headers.get('content-type') || '';
+          const data = contentType.includes('application/json')
+            ? await response.json()
+            : {ok: false, message: `Сервер вернул некорректный ответ (${response.status}).`};
           if (!response.ok || !data.ok) throw new Error(data.message || 'ошибка синхронизации');
           if (source.dataset.sourceName && data.periods) {
             const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
@@ -333,7 +358,7 @@
         } catch (error) {
           results.push({label, ok: false, message: error.message || 'ошибка синхронизации'});
         }
-      }));
+      }
       if (status) status.textContent = results.map(item => `${item.label} — ${item.ok ? 'готово' : `ошибка: ${item.message}`}`).join('; ');
     } finally {
       button.disabled = false;

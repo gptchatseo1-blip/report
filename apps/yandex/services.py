@@ -45,6 +45,8 @@ TRAFFIC_SOURCE_CODES = {
     "recommend": "recommend",
     "messenger": "messenger",
     "saved": "saved",
+    "email": "email",
+    "qrcode": "qrcode",
     "undefined": "other",
 }
 GEOGRAPHY_CODES = (
@@ -61,7 +63,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-04-v3"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-04-v4"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-02-v1"
 GOALS_PER_REQUEST = 6
 
@@ -404,6 +406,8 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
         "recommend",
         "messenger",
         "saved",
+        "email",
+        "qrcode",
         "other",
     ):
         points.append(

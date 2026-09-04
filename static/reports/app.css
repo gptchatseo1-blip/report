@@ -48,12 +48,19 @@
 .project-delete-button { display: inline-grid; place-items: center; width: 2.25rem; height: 2.25rem; padding: .48rem; border: 1px solid #d99; border-radius: 6px; background: #fff; color: #c72c40; }
 .project-delete-button:hover, .project-delete-button:focus-visible { border-color: #a51d2d; background: #fee1e1; }
 .project-delete-button svg { width: 1.2rem; height: 1.2rem; fill: currentColor; }
-.project-modal { width: min(34rem, calc(100% - 2rem)); padding: 0; border: 0; border-radius: 12px; box-shadow: 0 1.5rem 4rem #10204455; }
+.project-modal { width: min(35rem, calc(100% - 2rem)); padding: 0; border: 0; border-radius: 14px; box-shadow: 0 1.5rem 4rem #10204455; }
 .project-modal::backdrop { background: #10204488; }
-.project-modal > form { padding: 1.25rem; }
-.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.project-modal > form { padding: 1.5rem; }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e8ef; }
 .modal-head h2 { margin: 0; }
-.modal-close { padding: .15rem .55rem; background: transparent; color: #526174; font-size: 1.5rem; }
+.modal-head p { margin: .35rem 0 0; color: #667085; font-size: .9rem; }
+.modal-close { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; padding: 0; background: #f4f6fa; color: #526174; }
+.modal-close svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 2; }
+.modal-field > label { font-weight: 600; }
+.modal-actions { justify-content: flex-end; margin-top: 1.35rem; }
+.connected-provider-projects { display: grid; gap: .65rem; }
+.connected-provider-projects article { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem; border: 1px solid #e1e6ee; border-radius: 8px; background: #f8fafc; }
+.connected-provider-projects small { display: block; color: #667085; }
 .modal-field { display: grid; gap: .3rem; margin: .8rem 0; }
 .provider-choice > div, .provider-choice ul { display: flex; gap: 1rem; padding: 0; list-style: none; }
 .provider-choice label:has(input) { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
@@ -61,6 +68,8 @@
 .faq { max-width: 54rem; }
 .report-list-head { display: grid; gap: .8rem; margin-bottom: 1rem; }
 .report-list-head h1 { max-width: 100%; margin: 0; overflow-wrap: anywhere; }
+.report-month-field { max-width: 16rem; margin-bottom: 1rem; }
+.report-month-field label { display: grid; gap: .35rem; }
 .report-provider-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem 1.25rem; flex-wrap: wrap; width: 100%; }
 .report-provider-actions { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; flex-wrap: wrap; margin-left: auto; }
 .option-card:last-child { grid-column: 1 / -1; width: 100%; }

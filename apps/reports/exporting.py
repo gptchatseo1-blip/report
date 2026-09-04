@@ -43,7 +43,7 @@ from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, Va
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.7-2026-09-04"
+GENERATOR_VERSION = "mvp1.8-2026-09-04"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -983,13 +983,6 @@ def _render_topvisor_comparison(doc, segment, *, show_visibility=True):
 
 def _manual_topvisor_segment(payload, segment):
     rows = payload.get("display_options", {}).get("topvisor_manual_rows") or []
-    selected_dates = (
-        payload.get("source_selection", {})
-        .get("topvisor", {})
-        .get(segment.get("search_engine"), {})
-        .get("selected_dates", [])
-    )
-    selected_months = {str(value)[:7] for value in selected_dates}
     selected = [
         row
         for row in rows
@@ -1000,12 +993,15 @@ def _manual_topvisor_segment(payload, segment):
         and (not row.get("engine") or row.get("engine") == segment.get("search_engine"))
         and (not row.get("region") or row.get("region") == segment.get("region"))
         and row.get("month")
-        and (not selected_months or str(row.get("month"))[:7] in selected_months)
     ]
     if not selected:
         return segment
     depth = segment.get("ranking_depth") or 30
-    history = []
+    history_by_month = {
+        str(point.get("month"))[:7]: dict(point)
+        for point in segment.get("three_month_series") or []
+        if point.get("month")
+    }
     for row in sorted(selected, key=lambda item: item["month"]):
         top3 = max(int(row.get("top3") or 0), 0)
         top10 = max(int(row.get("top10") or 0), top3)
@@ -1027,23 +1023,23 @@ def _manual_topvisor_segment(payload, segment):
         if depth >= 30:
             ranges["21-30"] = 0
         final_label = "11-30" if depth >= 30 else "11-20"
-        history.append(
-            {
-                "month": row["month"],
-                "visibility": row.get("visibility"),
-                "distribution": {
-                    "total": total,
-                    "top_10": top10,
-                    "ranges": ranges,
-                    "manual_buckets": {
-                        "1-3": {"count": top3, "share": shares["1-3"]},
-                        "1-10": {"count": top10, "share": shares["1-10"]},
-                        final_label: {"count": top11, "share": shares[final_label]},
-                    },
+        history_by_month[str(row["month"])[:7]] = {
+            "month": row["month"],
+            "visibility": row.get("visibility"),
+            "distribution": {
+                "total": total,
+                "top_10": top10,
+                "ranges": ranges,
+                "manual_buckets": {
+                    "1-3": {"count": top3, "share": shares["1-3"]},
+                    "1-10": {"count": top10, "share": shares["1-10"]},
+                    final_label: {"count": top11, "share": shares[final_label]},
                 },
-                "ranking_depth": depth,
-            }
-        )
+            },
+            "ranking_depth": depth,
+            "manual_override": True,
+        }
+    history = [history_by_month[key] for key in sorted(history_by_month)]
     return {
         **segment,
         "three_month_series": history,
@@ -2011,6 +2007,8 @@ def _metrika_source_label(name):
         "recommend": "Переходы из рекомендательных систем",
         "messenger": "Переходы из мессенджеров",
         "saved": "Переходы с сохранённых страниц",
+        "email": "Переходы из почтовых рассылок",
+        "qrcode": "Переходы по QR-кодам",
         "other": "Остальные источники",
     }.get(name, name)
 
@@ -2056,6 +2054,8 @@ def _metrika_sources_chart(facts):
         "recommend",
         "messenger",
         "saved",
+        "email",
+        "qrcode",
         "other",
     )
     color_map = {
@@ -3784,6 +3784,10 @@ def _render_metrika(doc, payload, blocks):
             if text:
                 doc.add_paragraph(". ".join(text) + ".")
         if section_enabled(payload, "metrika_landing_page_comparison"):
+            comparison_subsection_groups = _configured_url_groups(
+                payload, "landing_comparison_subsections"
+            )
+            comparison_expanded_groups = [*category_groups, *comparison_subsection_groups]
             comparison_periods = [
                 {
                     **period,
@@ -3820,7 +3824,7 @@ def _render_metrika(doc, payload, blocks):
                     comparison_current,
                     comparison_previous,
                     engine,
-                    expanded_groups=expanded_groups,
+                    expanded_groups=comparison_expanded_groups,
                 )
                 if named_conclusion_groups:
                     engine_periods = [
@@ -3839,7 +3843,7 @@ def _render_metrika(doc, payload, blocks):
                             engine_periods,
                             named_conclusion_groups,
                             prefix=f"{engine}, раздел",
-                            subsections=subsection_groups,
+                            subsections=comparison_subsection_groups,
                         )
                     )
         information_groups = _configured_url_groups(payload, "information")

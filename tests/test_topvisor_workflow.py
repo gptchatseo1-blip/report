@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.urls import reverse
 from django.utils import timezone
 from docx import Document
@@ -264,6 +265,78 @@ def test_connection_and_project_configuration_selection(client, settings, monkey
     assert 'class="configuration-list"' in page
     assert 'class="source-controls topvisor-project-picker"' in page
     assert 'class="select-shell"' in page
+
+
+def test_connection_can_add_second_topvisor_project(client, settings, monkeypatch):
+    cache.clear()
+    settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY = "uid", "super-secret"
+    user = get_user_model().objects.create_user("multi-project", password="password")
+    project = Project.objects.create(name="Site", domain="multi.example")
+    client.force_login(user)
+    monkeypatch.setattr(
+        TopvisorClient,
+        "iter_projects",
+        lambda self: iter([{"id": 42, "name": "Москва"}, {"id": 43, "name": "Россия"}]),
+    )
+    monkeypatch.setattr(
+        TopvisorClient,
+        "get_search_configurations",
+        lambda self, project_id: [
+            {
+                "id": 7,
+                "search_engine": "google",
+                "region_name": "Москва" if str(project_id) == "42" else "Россия",
+                "depth": 50,
+            }
+        ],
+    )
+
+    url = reverse("topvisor:connection", args=[project.id])
+    assert client.post(url, {"topvisor_project": "42", "configurations": ["7"]}).status_code == 302
+    assert (
+        client.post(
+            url,
+            {"action": "mapping", "topvisor_project": "43", "configurations": ["43:7"]},
+        ).status_code
+        == 302
+    )
+
+    saved = project.topvisor_mapping
+    assert {item["_topvisor_project_id"] for item in saved.selected_configurations} == {"42", "43"}
+    assert {item["region_name"] for item in saved.selected_configurations} == {"Москва", "Россия"}
+
+
+def test_sync_routes_each_configuration_to_its_topvisor_project():
+    project = Project.objects.create(name="Multi sync", domain="multi-sync.example")
+    selected = TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="42",
+        selected_configurations=[
+            {"id": "7", "search_engine": "google", "region_name": "Москва", "depth": 20},
+            {
+                "id": "8",
+                "search_engine": "google",
+                "region_name": "Россия",
+                "depth": 20,
+                "_topvisor_project_id": "43",
+                "_configuration_id": "43:8",
+            },
+        ],
+    )
+
+    class LegacyClient:
+        def __init__(self):
+            self.project_ids = []
+
+        def get_positions(self, project_id, **_filters):
+            self.project_ids.append(project_id)
+            return []
+
+    fake = LegacyClient()
+    run = sync_positions(mapping=selected, report_month=date(2026, 8, 1), client=fake)
+    assert run.status == run.Status.SUCCESS
+    assert fake.project_ids.count("42") == 3
+    assert fake.project_ids.count("43") == 3
 
 
 def test_sync_is_idempotent_and_keeps_depth_per_segment():

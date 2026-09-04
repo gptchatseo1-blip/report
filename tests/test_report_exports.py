@@ -25,6 +25,7 @@ from apps.reports.exporting import (
     _goal_card,
     _landing_hierarchy_order,
     _landing_pages_table,
+    _manual_topvisor_segment,
     _metrika_detail_table,
     _monthly_topvisor_rows,
     _position_fill,
@@ -38,6 +39,80 @@ from apps.reports.models import Report, ReportDatasetSnapshot
 from apps.reports.services import create_report_version
 
 pytestmark = pytest.mark.django_db
+
+
+def test_manual_dynamics_merge_history_override_and_sort_by_month():
+    segment = {
+        "configuration_id": "google",
+        "search_engine": "google",
+        "region": "Россия",
+        "ranking_depth": 30,
+        "three_month_series": [
+            {"month": "2026-07-31", "distribution": {"total": 100}},
+            {"month": "2026-08-31", "distribution": {"total": 100}},
+        ],
+    }
+    payload = {
+        "display_options": {
+            "topvisor_manual_rows": [
+                {
+                    "engine": "google",
+                    "region": "Россия",
+                    "month": "2026-06-01",
+                    "top3": 20,
+                    "top10": 50,
+                    "top11_30": 30,
+                    "top3_percent": 20,
+                    "top10_percent": 50,
+                    "top11_30_percent": 30,
+                },
+                {
+                    "engine": "google",
+                    "region": "Россия",
+                    "month": "2026-05-01",
+                    "top3": 10,
+                    "top10": 40,
+                    "top11_30": 20,
+                    "top3_percent": 10,
+                    "top10_percent": 40,
+                    "top11_30_percent": 20,
+                },
+                {
+                    "engine": "google",
+                    "region": "Россия",
+                    "month": "2026-07-01",
+                    "top3": 27,
+                    "top10": 59,
+                    "top11_30": 32,
+                    "top3_percent": 27,
+                    "top10_percent": 59,
+                    "top11_30_percent": 32,
+                },
+                {
+                    "engine": "yandex",
+                    "region": "Россия",
+                    "month": "2026-04-01",
+                    "top3": 99,
+                    "top10": 99,
+                    "top11_30": 0,
+                    "top3_percent": 99,
+                    "top10_percent": 99,
+                    "top11_30_percent": 0,
+                },
+            ]
+        }
+    }
+
+    merged = _manual_topvisor_segment(payload, segment)
+    assert [str(row["month"])[:7] for row in merged["three_month_series"]] == [
+        "2026-05",
+        "2026-06",
+        "2026-07",
+        "2026-08",
+    ]
+    july = merged["three_month_series"][2]
+    assert july["manual_override"] is True
+    assert july["distribution"]["manual_buckets"]["1-10"] == {"count": 59, "share": 59.0}
 
 
 def _ranking(project, month, depth=100, count=36, engine="google", region="Россия"):

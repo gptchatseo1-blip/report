@@ -395,10 +395,21 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             for snapshot, _metrics in points
         ]
         if source == SourceSnapshot.Source.METRIKA:
+            source_api_total = None
+            if snapshots:
+                raw_total = (snapshots[-1].payload.get("traffic_source_total") or {}).get("visits")
+                try:
+                    source_api_total = Decimal(str(raw_total)) if raw_total is not None else None
+                except (ArithmeticError, ValueError):
+                    source_api_total = None
             all_traffic_total = (
-                all_traffic_totals[-1].numeric_value
-                if all_traffic_totals and all_traffic_totals[-1]
-                else None
+                source_api_total
+                if source_api_total is not None
+                else (
+                    all_traffic_totals[-1].numeric_value
+                    if all_traffic_totals and all_traffic_totals[-1]
+                    else None
+                )
             )
             sources = {
                 code.removeprefix("source_").removesuffix("_visits"): point.numeric_value

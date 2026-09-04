@@ -1,6 +1,6 @@
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import urlsplit
 
 from django import forms
@@ -57,6 +57,7 @@ PERSISTED_REPORT_FIELDS = (
     "metrika_commercial_url_groups",
     "metrika_category_url_groups",
     "metrika_subsection_url_groups",
+    "metrika_landing_comparison_subsection_url_groups",
     "include_completed_work",
     "completed_work_text",
     "sync_log_retention_months",
@@ -109,9 +110,86 @@ def parse_named_url_groups(value):
     return [{"name": name, "patterns": patterns} for name, patterns in groups.items()]
 
 
+def validate_topvisor_manual_rows(value):
+    try:
+        rows = json.loads(value or "[]") if isinstance(value, str) else value
+    except json.JSONDecodeError:
+        raise forms.ValidationError("Некорректные ручные значения Topvisor.") from None
+    if not isinstance(rows, list) or len(rows) > 500:
+        raise forms.ValidationError("Некорректные ручные значения Topvisor.")
+
+    def number(raw, *, maximum, integer=False, label="значение"):
+        try:
+            result = float(str(raw).replace(",", "."))
+        except (TypeError, ValueError):
+            raise forms.ValidationError(f"Некорректное поле «{label}» в ручной строке.") from None
+        if result < 0 or result > maximum or (integer and not result.is_integer()):
+            raise forms.ValidationError(f"Некорректное поле «{label}» в ручной строке.")
+        return int(round(result)) if integer else result
+
+    cleaned = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise forms.ValidationError("Некорректная ручная строка динамики.")
+        engine = str(row.get("engine") or "").casefold()[:16]
+        region = str(row.get("region") or "").strip()[:120]
+        month = str(row.get("month") or "")[:7]
+        try:
+            month = date.fromisoformat(f"{month}-01").isoformat() if month else ""
+        except ValueError:
+            raise forms.ValidationError("Укажите корректный месяц в ручной строке.") from None
+        if not month:
+            raise forms.ValidationError("Месяц в ручной строке обязателен.")
+        if not engine:
+            raise forms.ValidationError("Поисковая система в ручной строке обязательна.")
+        key = (engine, region.casefold(), month[:7])
+        if key in seen:
+            raise forms.ValidationError(
+                "Для одной поисковой системы и региона месяц не должен повторяться."
+            )
+        seen.add(key)
+        cleaned.append(
+            {
+                "configuration_id": str(row.get("configuration_id") or "")[:120],
+                "engine": engine,
+                "region": region,
+                "month": month,
+                "visibility": number(row.get("visibility", 0), maximum=100, label="видимость"),
+                "total": number(
+                    row.get("total", 0), maximum=10_000_000, integer=True, label="всего"
+                ),
+                "top3": number(
+                    row.get("top3", 0), maximum=10_000_000, integer=True, label="в топ 3"
+                ),
+                "top10": number(
+                    row.get("top10", 0), maximum=10_000_000, integer=True, label="в топ 10"
+                ),
+                "top11_30": number(
+                    row.get("top11_30", 0), maximum=10_000_000, integer=True, label="в топ 11–30"
+                ),
+                "top3_percent": number(
+                    row.get("top3_percent", 0), maximum=100, label="процент в топ 3"
+                ),
+                "top10_percent": number(
+                    row.get("top10_percent", 0), maximum=100, label="процент в топ 10"
+                ),
+                "top11_30_percent": number(
+                    row.get("top11_30_percent", 0), maximum=100, label="процент в топ 11–30"
+                ),
+            }
+        )
+    return sorted(cleaned, key=lambda row: (row["engine"], row["region"].casefold(), row["month"]))
+
+
 class ReportCreateForm(forms.Form):
     submission_token = forms.CharField(widget=forms.HiddenInput(), required=False)
-    month = forms.DateField(required=False, input_formats=["%Y-%m"], widget=forms.HiddenInput())
+    month = forms.DateField(
+        label="Отчётный месяц",
+        required=False,
+        input_formats=["%Y-%m"],
+        widget=forms.DateInput(format="%Y-%m", attrs={"type": "month"}),
+    )
     yandex_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
     google_dates = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple)
     show_urls = forms.BooleanField(label="Выводить URL", required=False, initial=False)
@@ -291,6 +369,20 @@ class ReportCreateForm(forms.Form):
         ),
         help_text="Название и URL подраздела. Эти URL раскрываются вторым уровнем в таблицах.",
     )
+    metrika_landing_comparison_subsection_url_groups = forms.CharField(
+        label="Подразделы для страниц входа: Яндекс и Google",
+        required=False,
+        widget=forms.Textarea(
+            attrs={
+                "rows": 7,
+                "placeholder": "УЗИ | https://site.ru/diagnostika/uzi/*\nМРТ | https://site.ru/diagnostika/mrt/*",
+            }
+        ),
+        help_text=(
+            "URL-группы, используемые для детализации таблиц и текстовых выводов блока "
+            "«Страницы входа: Яндекс и Google»."
+        ),
+    )
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
     metrika_goals_quarter = forms.BooleanField(
         label="Выводить значения за квартал", required=False, initial=True
@@ -449,12 +541,13 @@ class ReportCreateForm(forms.Form):
         latest_ranking = (
             RankingSnapshot.objects.filter(project=project).order_by("-snapshot_date").first()
         )
-        report_month = (
-            latest_ranking.snapshot_date.replace(day=1)
-            if latest_ranking
-            else timezone.localdate().replace(day=1)
-        )
+        current_month = timezone.localdate().replace(day=1)
+        previous_month = (current_month - timedelta(days=1)).replace(day=1)
+        latest_month = latest_ranking.snapshot_date.replace(day=1) if latest_ranking else None
+        report_month = min(latest_month, previous_month) if latest_month else previous_month
         self.report_month = report_month
+        if not self.is_bound:
+            self.initial.setdefault("month", report_month)
         month_indexes = {
             report_month.year * 12 + report_month.month - 1 - offset for offset in range(3)
         }
@@ -496,14 +589,10 @@ class ReportCreateForm(forms.Form):
                 self.initial.setdefault(field, defaults)
 
     def clean_topvisor_manual_rows(self):
-        value = self.cleaned_data.get("topvisor_manual_rows") or "[]"
-        try:
-            rows = json.loads(value)
-        except (TypeError, ValueError):
-            raise forms.ValidationError("Некорректные ручные значения Topvisor.") from None
-        if not isinstance(rows, list) or len(rows) > 500:
-            raise forms.ValidationError("Некорректные ручные значения Topvisor.")
-        return value
+        return json.dumps(
+            validate_topvisor_manual_rows(self.cleaned_data.get("topvisor_manual_rows") or "[]"),
+            ensure_ascii=False,
+        )
 
     def clean_month(self):
         value = self.cleaned_data.get("month")
@@ -521,7 +610,13 @@ class ReportCreateForm(forms.Form):
         ):
             selected = cleaned.get(field, [])
             availability = self.source_availability.get(source, {})
-            if availability.get("connected") and availability.get("count") and not selected:
+            include_field = "include_metrika" if source == "yandex_metrika" else "include_webmaster"
+            if (
+                cleaned.get(include_field)
+                and availability.get("connected")
+                and availability.get("count")
+                and not selected
+            ):
                 self.add_error(
                     field,
                     f"{label}: выберите хотя бы один синхронизированный период или "
@@ -594,6 +689,11 @@ class ReportCreateForm(forms.Form):
 
     def clean_metrika_subsection_url_groups(self):
         value = self.cleaned_data.get("metrika_subsection_url_groups", "")
+        parse_named_url_groups(value)
+        return value
+
+    def clean_metrika_landing_comparison_subsection_url_groups(self):
+        value = self.cleaned_data.get("metrika_landing_comparison_subsection_url_groups", "")
         parse_named_url_groups(value)
         return value
 
