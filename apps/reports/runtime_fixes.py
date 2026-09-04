@@ -1,8 +1,4 @@
-"""Targeted report-builder and export fixes agreed on 2026-09-05.
-
-The module is applied from ``ReportsConfig.ready`` so the changes stay isolated from the
-large legacy renderer while preserving the frozen report-data contract.
-"""
+"""Targeted report-builder and export fixes agreed on 2026-09-05."""
 
 import json
 import math
@@ -31,7 +27,7 @@ def _number(raw, *, maximum, integer=False, label="значение", allow_none
 
 
 def validate_manual_rows(value):
-    """Validate manual dynamics while keeping ``None`` distinct from a real 0% visibility."""
+    """Validate dynamics and distinguish missing visibility from a real 0%."""
     try:
         rows = json.loads(value or "[]") if isinstance(value, str) else value
     except json.JSONDecodeError:
@@ -74,13 +70,22 @@ def validate_manual_rows(value):
                     allow_none=True,
                 ),
                 "total": _number(
-                    row.get("total", 0), maximum=10_000_000, integer=True, label="всего"
+                    row.get("total", 0),
+                    maximum=10_000_000,
+                    integer=True,
+                    label="всего",
                 ),
                 "top3": _number(
-                    row.get("top3", 0), maximum=10_000_000, integer=True, label="в топ 3"
+                    row.get("top3", 0),
+                    maximum=10_000_000,
+                    integer=True,
+                    label="в топ 3",
                 ),
                 "top10": _number(
-                    row.get("top10", 0), maximum=10_000_000, integer=True, label="в топ 10"
+                    row.get("top10", 0),
+                    maximum=10_000_000,
+                    integer=True,
+                    label="в топ 10",
                 ),
                 "top11_30": _number(
                     row.get("top11_30", 0),
@@ -89,10 +94,14 @@ def validate_manual_rows(value):
                     label="в топ 11–30",
                 ),
                 "top3_percent": _number(
-                    row.get("top3_percent", 0), maximum=100, label="процент в топ 3"
+                    row.get("top3_percent", 0),
+                    maximum=100,
+                    label="процент в топ 3",
                 ),
                 "top10_percent": _number(
-                    row.get("top10_percent", 0), maximum=100, label="процент в топ 10"
+                    row.get("top10_percent", 0),
+                    maximum=100,
+                    label="процент в топ 10",
                 ),
                 "top11_30_percent": _number(
                     row.get("top11_30_percent", 0),
@@ -101,7 +110,10 @@ def validate_manual_rows(value):
                 ),
             }
         )
-    return sorted(cleaned, key=lambda row: (row["engine"], row["region"].casefold(), row["month"]))
+    return sorted(
+        cleaned,
+        key=lambda row: (row["engine"], row["region"].casefold(), row["month"]),
+    )
 
 
 def _normalized(value):
@@ -109,7 +121,7 @@ def _normalized(value):
 
 
 def _manual_topvisor_segment(payload, segment):
-    """Apply manual distribution/visibility overrides without mutating RankingSnapshot data."""
+    """Apply manual distribution and visibility without mutating RankingSnapshot."""
     rows = payload.get("display_options", {}).get("topvisor_manual_rows") or []
     if isinstance(rows, str):
         try:
@@ -147,15 +159,26 @@ def _manual_topvisor_segment(payload, segment):
         shares = {
             "1-3": max(0, min(100, float(row.get("top3_percent") or 0))),
             "1-10": max(0, min(100, float(row.get("top10_percent") or 0))),
-            final_label: max(0, min(100, float(row.get("top11_30_percent") or 0))),
+            final_label: max(
+                0,
+                min(100, float(row.get("top11_30_percent") or 0)),
+            ),
         }
         inferred_totals = [
             round(count * 100 / shares[label])
             for label, count in (("1-3", top3), ("1-10", top10))
             if shares[label] > 0
         ]
-        total = max(int(row.get("total") or 0), *(inferred_totals or [0]), top10 + top11)
-        ranges = {"1-3": top3, "4-10": max(top10 - top3, 0), "11-20": top11}
+        total = max(
+            int(row.get("total") or 0),
+            *(inferred_totals or [0]),
+            top10 + top11,
+        )
+        ranges = {
+            "1-3": top3,
+            "4-10": max(top10 - top3, 0),
+            "11-20": top11,
+        }
         if depth >= 30:
             ranges["21-30"] = 0
         distribution = {
@@ -220,8 +243,6 @@ def _visibility_chart(exp, points, title=None):
             axis.set_yticks((0, 50, 100), labels=("0%", "50%", "100%"))
         exp._style_axis(axis)
 
-        # Topvisor summary ring: 42x42 viewBox, r=15.915..., stroke-width=9,
-        # which corresponds to a visually thick ring of roughly 44% of the outer radius.
         donut = figure.add_subplot(grid[0, 1])
         current = max(0, min(100, values[-1]))
         donut.pie(
@@ -248,21 +269,44 @@ def _visibility_chart(exp, points, title=None):
 
 
 def _distribution_chart(exp, history, depth):
-    useful_rows = [row for row in history if (row.get("distribution") or {}).get("total")]
+    useful_rows = [
+        row
+        for row in history
+        if (row.get("distribution") or {}).get("total")
+    ]
     if not useful_rows:
         return None
-    bucket_rows = [exp._topvisor_buckets(row.get("distribution") or {}, depth) for row in useful_rows]
+    bucket_rows = [
+        exp._topvisor_buckets(row.get("distribution") or {}, depth)
+        for row in useful_rows
+    ]
     labels = [exp._date_label(row.get("month")) for row in useful_rows]
     x_values = list(range(len(labels)))
     with exp.plt.rc_context({"font.family": exp.CHART_FONT, "font.size": 9}):
-        figure, axis = exp.plt.subplots(figsize=(7.2, 3.35), dpi=150, facecolor="white")
+        figure, axis = exp.plt.subplots(
+            figsize=(7.2, 3.35),
+            dpi=150,
+            facecolor="white",
+        )
         bucket_names = [bucket["label"] for bucket in bucket_rows[0]]
-        rows_by_name = [{bucket["label"]: bucket for bucket in buckets} for buckets in bucket_rows]
+        rows_by_name = [
+            {bucket["label"]: bucket for bucket in buckets}
+            for buckets in bucket_rows
+        ]
         handles = []
         for name in bucket_names:
-            values = [float(row.get(name, {}).get("share") or 0) for row in rows_by_name]
+            values = [
+                float(row.get(name, {}).get("share") or 0)
+                for row in rows_by_name
+            ]
             color = exp.TOPVISOR_COLORS[name]
-            exp._plot_smooth_line(axis, x_values, values, color=color, linewidth=1.7)
+            exp._plot_smooth_line(
+                axis,
+                x_values,
+                values,
+                color=color,
+                linewidth=1.7,
+            )
             axis.scatter(x_values, values, color=color, s=12, zorder=3)
             axis.fill_between(x_values, values, color=color, alpha=0.055)
             handles.append(
@@ -279,9 +323,15 @@ def _distribution_chart(exp, history, depth):
             )
         ticks, tick_labels = exp._date_ticks(labels)
         axis.set_xticks(ticks, tick_labels)
-        top = max(float(bucket["share"] or 0) for row in bucket_rows for bucket in row)
+        top = max(
+            float(bucket["share"] or 0)
+            for row in bucket_rows
+            for bucket in row
+        )
         axis.set_ylim(0, max(10, math.ceil(top / 10) * 10 + 2))
-        axis.yaxis.set_major_formatter(exp.FuncFormatter(lambda value, _pos: f"{value:.0f}%"))
+        axis.yaxis.set_major_formatter(
+            exp.FuncFormatter(lambda value, _pos: f"{value:.0f}%")
+        )
         exp._style_axis(axis)
         legend = axis.legend(
             handles=handles,
@@ -303,10 +353,24 @@ def _distribution_chart(exp, history, depth):
         return exp._save_figure(figure)
 
 
-def _render_distribution_cards_table(exp, doc, distribution, depth, *, engine="yandex"):
-    buckets = exp._topvisor_buckets(distribution, 20 if engine == "google" else depth)
+def _render_distribution_cards_table(
+    exp,
+    doc,
+    distribution,
+    depth,
+    *,
+    engine="yandex",
+):
+    buckets = exp._topvisor_buckets(
+        distribution,
+        20 if engine == "google" else depth,
+    )
     if engine == "google":
-        buckets = [bucket for bucket in buckets if bucket["label"] in {"1-3", "1-10", "11-20"}]
+        buckets = [
+            bucket
+            for bucket in buckets
+            if bucket["label"] in {"1-3", "1-10", "11-20"}
+        ]
     if not buckets:
         return None
     columns = 1 if engine == "google" else 2
@@ -317,7 +381,13 @@ def _render_distribution_cards_table(exp, doc, distribution, depth, *, engine="y
         exp._prevent_row_split(row)
         for cell in row.cells:
             exp._set_cell_width(cell, 9.25 if columns == 2 else 9.6)
-            exp._set_cell_margins(cell, top=55, bottom=55, left=70, right=70)
+            exp._set_cell_margins(
+                cell,
+                top=55,
+                bottom=55,
+                left=70,
+                right=70,
+            )
             exp._shade_cell(cell, "F0F2F5")
             cell.vertical_alignment = exp.WD_CELL_VERTICAL_ALIGNMENT.CENTER
             cell.text = ""
@@ -328,17 +398,35 @@ def _render_distribution_cards_table(exp, doc, distribution, depth, *, engine="y
         nested = outer.add_table(rows=1, cols=3)
         nested.autofit = False
         widths = (1.55, 1.45, 1.45)
-        for grid_column, width in zip(nested._tbl.tblGrid.gridCol_lst, widths, strict=True):
+        for grid_column, width in zip(
+            nested._tbl.tblGrid.gridCol_lst,
+            widths,
+            strict=True,
+        ):
             grid_column.w = exp.Cm(width)
         label_cell, share_cell, count_cell = nested.rows[0].cells
-        for cell, width in zip((label_cell, share_cell, count_cell), widths, strict=True):
+        for cell, width in zip(
+            (label_cell, share_cell, count_cell),
+            widths,
+            strict=True,
+        ):
             exp._set_cell_width(cell, width)
-            exp._set_cell_margins(cell, top=35, bottom=35, left=35, right=35)
+            exp._set_cell_margins(
+                cell,
+                top=35,
+                bottom=35,
+                left=35,
+                right=35,
+            )
             exp._shade_cell(cell, "F0F2F5")
             cell.vertical_alignment = exp.WD_CELL_VERTICAL_ALIGNMENT.CENTER
         exp._shade_cell(label_cell, exp.TOPVISOR_COLORS[bucket["label"]])
         label_cell.text = str(bucket["label"])
-        share_cell.text = exp._number(bucket.get("share"), "%", decimal_places=0)
+        share_cell.text = exp._number(
+            bucket.get("share"),
+            "%",
+            decimal_places=0,
+        )
         count_cell.text = exp._number(bucket.get("count"), decimal_places=0)
         for paragraph in label_cell.paragraphs:
             paragraph.alignment = exp.WD_ALIGN_PARAGRAPH.CENTER
@@ -377,9 +465,14 @@ def _visibility_comparison_phrase(exp, current, previous):
         return "не изменилась"
     if previous_number == 0:
         return "изменение не рассчитывается из-за нулевой базы"
-    delta = (current_number - previous_number) / abs(previous_number) * Decimal(100)
+    delta = (
+        (current_number - previous_number)
+        / abs(previous_number)
+        * Decimal(100)
+    )
     direction = "увеличилась" if delta > 0 else "уменьшилась"
-    return f"{direction} на {exp._number(abs(delta), '%', decimal_places=0)}"
+    rendered = exp._number(abs(delta), "%", decimal_places=0)
+    return f"{direction} на {rendered}"
 
 
 def _render_topvisor_comparison(exp, doc, segment, *, show_visibility=True):
@@ -390,12 +483,19 @@ def _render_topvisor_comparison(exp, doc, segment, *, show_visibility=True):
     previous = history[-2] if len(history) >= 2 else None
     depth = segment.get("ranking_depth") or 0
     current_buckets = {
-        item["label"]: item for item in exp._topvisor_buckets(current.get("distribution") or {}, depth)
+        item["label"]: item
+        for item in exp._topvisor_buckets(
+            current.get("distribution") or {},
+            depth,
+        )
     }
     previous_buckets = (
         {
             item["label"]: item
-            for item in exp._topvisor_buckets(previous.get("distribution") or {}, depth)
+            for item in exp._topvisor_buckets(
+                previous.get("distribution") or {},
+                depth,
+            )
         }
         if previous
         else {}
@@ -408,7 +508,8 @@ def _render_topvisor_comparison(exp, doc, segment, *, show_visibility=True):
         before = (previous_buckets.get(label) or {}).get("share")
         rendered_label = {"1-3": "3", "1-10": "10"}.get(label, label)
         paragraph = doc.add_paragraph(
-            f"Запросов в топ {rendered_label} — {exp._number(now, '%', decimal_places=0)} "
+            f"Запросов в топ {rendered_label} — "
+            f"{exp._number(now, '%', decimal_places=0)} "
             f"({exp._comparison_phrase(now, before)})."
         )
         paragraph.paragraph_format.space_after = exp.Pt(0)
@@ -417,10 +518,15 @@ def _render_topvisor_comparison(exp, doc, segment, *, show_visibility=True):
         previous_visibility = previous.get("visibility") if previous else None
         engine = exp.ENGINE_LABELS.get(segment.get("search_engine"), "Поиск")
         region = segment.get("region") or "регион не указан"
+        comparison = _visibility_comparison_phrase(
+            exp,
+            now_visibility,
+            previous_visibility,
+        )
         paragraph = doc.add_paragraph(
             f"Общая видимость сайта в ПС {engine}.{region} — "
             f"{exp._number(now_visibility, '%', decimal_places=0)} "
-            f"({_visibility_comparison_phrase(exp, now_visibility, previous_visibility)})."
+            f"({comparison})."
         )
         paragraph.paragraph_format.space_after = exp.Pt(0)
 
@@ -450,18 +556,26 @@ def apply():
     def patched_clean(self):
         cleaned = original_clean(self)
         selected_positions = any(
-            cleaned.get(f"{engine}_dates") for engine in ("yandex", "google")
+            cleaned.get(f"{engine}_dates")
+            for engine in ("yandex", "google")
         )
         selected_sources = bool(
-            cleaned.get("metrika_snapshots") or cleaned.get("webmaster_snapshots")
+            (
+                cleaned.get("include_metrika")
+                and cleaned.get("metrika_snapshots")
+            )
+            or (
+                cleaned.get("include_webmaster")
+                and cleaned.get("webmaster_snapshots")
+            )
         )
         if selected_positions or selected_sources:
-            # The visible month picker is gone: selected data always wins over a stale/legacy value.
             cleaned["month"] = None
         elif cleaned.get("month") is None:
             self.add_error(
                 None,
-                "Не удалось определить отчётный месяц: выберите даты позиций или период источника.",
+                "Не удалось определить отчётный месяц: "
+                "выберите даты позиций или период источника.",
             )
         return cleaned
 
@@ -483,20 +597,35 @@ def apply():
         }
     )
     exp._manual_topvisor_segment = _manual_topvisor_segment
-    exp._visibility_chart = lambda points, title=None: _visibility_chart(exp, points, title)
-    exp._distribution_chart = lambda history, depth: _distribution_chart(exp, history, depth)
+    exp._visibility_chart = (
+        lambda points, title=None: _visibility_chart(exp, points, title)
+    )
+    exp._distribution_chart = (
+        lambda history, depth: _distribution_chart(exp, history, depth)
+    )
     exp._render_distribution_cards_table = (
-        lambda doc, distribution, depth, *, engine="yandex": _render_distribution_cards_table(
-            exp, doc, distribution, depth, engine=engine
+        lambda doc, distribution, depth, *, engine="yandex": (
+            _render_distribution_cards_table(
+                exp,
+                doc,
+                distribution,
+                depth,
+                engine=engine,
+            )
         )
     )
     exp._render_topvisor_comparison = (
-        lambda doc, segment, *, show_visibility=True: _render_topvisor_comparison(
-            exp, doc, segment, show_visibility=show_visibility
+        lambda doc, segment, *, show_visibility=True: (
+            _render_topvisor_comparison(
+                exp,
+                doc,
+                segment,
+                show_visibility=show_visibility,
+            )
         )
     )
 
-    # views imports these helpers by value, so keep its references aligned with the patched contract.
+    # Views imports helpers by value, so keep its references aligned too.
     from . import views
 
     views._validated_manual_rows = validate_manual_rows
