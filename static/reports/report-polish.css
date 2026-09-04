@@ -2,6 +2,7 @@
 .report-month-field{display:none!important}
 .report-config-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 .position-distribution__range{width:58px;min-width:58px;max-width:58px;padding:0;display:flex;align-items:center;justify-content:center;text-align:center}
+details[data-topvisor-manual-editor]{display:none}
 
 .manual-dynamics-trigger{display:flex;align-items:center;gap:.4rem;width:100%;min-height:2rem;margin:.45rem 0 .7rem;padding:.42rem .55rem;border:1px solid #dce2ec;border-radius:7px;background:#fff;color:#2257c7;text-align:left;font-size:.85rem;font-weight:600}
 .manual-dynamics-trigger::before{content:"›";display:inline-grid;place-items:center;width:1rem;height:1rem;color:#2257c7;font-size:1.15rem;line-height:1;transform:rotate(0deg)}
