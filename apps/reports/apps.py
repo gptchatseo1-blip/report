@@ -7,6 +7,8 @@ class ReportsConfig(AppConfig):
     verbose_name = "Отчёты"
 
     def ready(self):
-        from .runtime_fixes import apply
+        from .runtime_fixes import apply as apply_round1
+        from .runtime_fixes_round2 import apply as apply_round2
 
-        apply()
+        apply_round1()
+        apply_round2()
