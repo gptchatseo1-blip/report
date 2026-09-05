@@ -13,6 +13,7 @@ class ReportsConfig(AppConfig):
         from .runtime_fixes_round4 import apply as apply_round4
         from .runtime_fixes_round5 import apply as apply_round5
         from .runtime_fixes_round7 import apply as apply_round7
+        from .runtime_fixes_round8 import apply as apply_round8
 
         apply_round1()
         apply_round2()
@@ -20,3 +21,4 @@ class ReportsConfig(AppConfig):
         apply_round4()
         apply_round5()
         apply_round7()
+        apply_round8()
