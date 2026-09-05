@@ -1,11 +1,124 @@
-{% extends 'reports/base.html' %}{% block title %}Topvisor — {{ project.name }}{% endblock %}{% block content %}
-<div class="page-head"><div><h1>Topvisor — {{ project.name }}</h1><p>Выберите проект Topvisor и поисковые конфигурации.</p></div><div class="actions"><a class="button secondary" href="{% url 'reports:report-list' project.id %}">К отчётам</a><a class="button secondary" href="{% url 'reports:projects' %}">К проектам</a></div></div>
-{% if legacy_fallback %}<div class="card warning"><span class="badge warning-badge">Временный fallback</span><p>Используются общие реквизиты из окружения сервера.</p></div>{% endif %}
+{% extends 'reports/base.html' %}
+{% load static %}
+{% block title %}Topvisor — {{ project.name }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{% static 'topvisor/sync-status.css' %}">
+<div class="page-head">
+  <div>
+    <h1>Topvisor — {{ project.name }}</h1>
+    <p>Выберите проект Topvisor и поисковые конфигурации.</p>
+  </div>
+  <div class="actions">
+    <a class="button secondary" href="{% url 'reports:report-list' project.id %}">К отчётам</a>
+    <a class="button secondary" href="{% url 'reports:projects' %}">К проектам</a>
+  </div>
+</div>
+
+{% if legacy_fallback %}
+<div class="card warning">
+  <span class="badge warning-badge">Временный fallback</span>
+  <p>Используются общие реквизиты из окружения сервера.</p>
+</div>
+{% endif %}
+
 {% if not verified %}<div class="notice">Общие реквизиты Topvisor не настроены администратором.</div>{% endif %}
-{% if verified %}{% if safe_error %}<div class="card"><span class="badge danger">Нет доступа</span><p>{{ safe_error }}</p></div>{% else %}<div class="card"><span class="badge success">API доступен</span>{% if mapping %}<p>Подключено проектов Topvisor: <strong>{{ configured_projects|length }}</strong>. Выбрано конфигураций: {{ mapping.selected_configurations|length }}.</p>{% endif %}</div>
-{% if configured_projects %}<section class="card"><h2>Подключённые проекты Topvisor</h2><div class="connected-provider-projects">{% for item in configured_projects %}<article><div><strong>{{ item.name }}</strong><small>ID {{ item.id }} · конфигураций: {{ item.configuration_count }}</small></div><div class="actions"><a class="button secondary" href="?topvisor_project={{ item.id }}">Изменить</a><form method="post" onsubmit="return confirm('Удалить этот проект Topvisor из подключения?')">{% csrf_token %}<input type="hidden" name="action" value="remove_project"><input type="hidden" name="provider_project_id" value="{{ item.id }}"><button class="delete-button">Удалить</button></form></div></article>{% endfor %}</div></section>{% endif %}
-<section class="card"><h2>{% if mapping %}Добавить ещё один проект Topvisor{% else %}Проект и поиск{% endif %}</h2><form method="get" class="source-controls topvisor-project-picker"><div class="source-field"><label for="topvisor-project">Проект Topvisor</label><div class="select-shell"><select id="topvisor-project" name="topvisor_project">{% for value,label in form.topvisor_project.field.choices %}<option value="{{ value }}"{% if value == selected_project %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div></div><button>Показать конфигурации</button></form>
-{% if selected_project %}<form method="post" class="configuration-form">{% csrf_token %}<input type="hidden" name="action" value="mapping"><input type="hidden" name="topvisor_project" value="{{ selected_project }}">{{ form.configurations.errors }}<div class="configuration-list">{{ form.configurations }}</div><p>Отчёт разделяется по системе и региону; устройство не является измерением.</p><button>Сохранить подключение</button></form>{% endif %}</section>{% endif %}{% endif %}
-{% if mapping and verified %}<section class="card"><h2>Синхронизировать позиции</h2><form method="post" action="{% url 'topvisor:sync' project.id %}">{% csrf_token %}<p>Будет загружена только доступная история ранее снятых позиций. Новая проверка не запускается.</p><button>Синхронизировать позиции</button></form></section>
-<section><h2>Последние запуски</h2>{% for run in runs %}<article class="card"><strong>{{ run.get_status_display }}</strong> · {{ run.report_month|date:'F Y' }} · {{ run.loaded_keyword_count }} позиций · {{ run.completed_at|date:'d.m.Y H:i'|default:'—' }}{% if run.error_message %}<p>{{ run.error_message }}</p>{% endif %}<form method="post" action="{% url 'topvisor:delete-run' project.id run.id %}" onsubmit="return confirm('Удалить запись запуска?')">{% csrf_token %}<button class="secondary">Удалить</button></form>{% for segment in run.segments %}<div>{{ segment.search_engine }} — {{ segment.region }} — TOP-{{ segment.depth }}</div>{% endfor %}</article>{% empty %}<p>Синхронизаций ещё не было.</p>{% endfor %}{% if runs.has_previous %}<a href="?page={{ runs.previous_page_number }}">Назад</a>{% endif %} {% if runs.has_next %}<a href="?page={{ runs.next_page_number }}">Далее</a>{% endif %}<form method="post" action="{% url 'topvisor:delete-failed-runs' project.id %}" onsubmit="return confirm('Удалить все неудачные запуски?')">{% csrf_token %}<button class="secondary">Удалить неудачные запуски</button></form></section>{% endif %}
+
+{% if verified %}
+  {% if safe_error %}
+    <div class="card"><span class="badge danger">Нет доступа</span><p>{{ safe_error }}</p></div>
+  {% else %}
+    <div class="card">
+      <span class="badge success">API доступен</span>
+      {% if mapping %}<p>Подключено проектов Topvisor: <strong>{{ configured_projects|length }}</strong>. Выбрано конфигураций: {{ mapping.selected_configurations|length }}.</p>{% endif %}
+    </div>
+
+    {% if configured_projects %}
+    <section class="card">
+      <h2>Подключённые проекты Topvisor</h2>
+      <div class="connected-provider-projects">
+        {% for item in configured_projects %}
+        <article>
+          <div><strong>{{ item.name }}</strong><small>ID {{ item.id }} · конфигураций: {{ item.configuration_count }}</small></div>
+          <div class="actions">
+            <a class="button secondary" href="?topvisor_project={{ item.id }}">Изменить</a>
+            <form method="post" onsubmit="return confirm('Удалить этот проект Topvisor из подключения?')">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="remove_project">
+              <input type="hidden" name="provider_project_id" value="{{ item.id }}">
+              <button class="delete-button">Удалить</button>
+            </form>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>{% if mapping %}Добавить ещё один проект Topvisor{% else %}Проект и поиск{% endif %}</h2>
+      <form method="get" class="source-controls topvisor-project-picker">
+        <div class="source-field">
+          <label for="topvisor-project">Проект Topvisor</label>
+          <div class="select-shell">
+            <select id="topvisor-project" name="topvisor_project">
+              {% for value,label in form.topvisor_project.field.choices %}
+              <option value="{{ value }}"{% if value == selected_project %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <button>Показать конфигурации</button>
+      </form>
+
+      {% if selected_project %}
+      <form method="post" class="configuration-form">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="mapping">
+        <input type="hidden" name="topvisor_project" value="{{ selected_project }}">
+        {{ form.configurations.errors }}
+        <div class="configuration-list">{{ form.configurations }}</div>
+        <p>Отчёт разделяется по системе и региону; устройство не является измерением.</p>
+        <button>Сохранить подключение</button>
+      </form>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endif %}
+
+{% if mapping and verified %}
+<section class="card">
+  <h2>Синхронизировать позиции</h2>
+  <form method="post" action="{% url 'topvisor:sync' project.id %}" data-topvisor-sync-form>
+    {% csrf_token %}
+    <p>Будет загружена только доступная история ранее снятых позиций. Новая проверка не запускается.</p>
+    <button type="submit" data-topvisor-sync-button>Синхронизировать позиции</button>
+    <div class="topvisor-sync-status" data-topvisor-sync-status hidden role="status" aria-live="polite" aria-atomic="true">
+      <span class="topvisor-sync-spinner" data-topvisor-sync-spinner aria-hidden="true"></span>
+      <span data-topvisor-sync-message></span>
+    </div>
+  </form>
+</section>
+
+<section>
+  <h2>Последние запуски</h2>
+  {% for run in runs %}
+  <article class="card">
+    <strong>{{ run.get_status_display }}</strong> · {{ run.report_month|date:'F Y' }} · {{ run.loaded_keyword_count }} позиций · {{ run.completed_at|date:'d.m.Y H:i'|default:'—' }}
+    {% if run.error_message %}<p>{{ run.error_message }}</p>{% endif %}
+    <form method="post" action="{% url 'topvisor:delete-run' project.id run.id %}" onsubmit="return confirm('Удалить запись запуска?')">
+      {% csrf_token %}
+      <button class="secondary">Удалить</button>
+    </form>
+    {% for segment in run.segments %}<div>{{ segment.search_engine }} — {{ segment.region }} — TOP-{{ segment.depth }}</div>{% endfor %}
+  </article>
+  {% empty %}<p>Синхронизаций ещё не было.</p>{% endfor %}
+  {% if runs.has_previous %}<a href="?page={{ runs.previous_page_number }}">Назад</a>{% endif %}
+  {% if runs.has_next %}<a href="?page={{ runs.next_page_number }}">Далее</a>{% endif %}
+  <form method="post" action="{% url 'topvisor:delete-failed-runs' project.id %}" onsubmit="return confirm('Удалить все неудачные запуски?')">
+    {% csrf_token %}
+    <button class="secondary">Удалить неудачные запуски</button>
+  </form>
+</section>
+{% endif %}
+<script src="{% static 'topvisor/sync-status.js' %}" defer></script>
 {% endblock %}
