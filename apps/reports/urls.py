@@ -1,6 +1,7 @@
 from django.urls import path
 
 from . import views
+from .topvisor_editor_maintenance import topvisor_editor_clear, topvisor_editor_refresh
 
 app_name = "reports"
 
@@ -16,6 +17,16 @@ urlpatterns = [
         "projects/<uuid:project_id>/reports/settings/",
         views.report_settings_save,
         name="report-settings-save",
+    ),
+    path(
+        "projects/<uuid:project_id>/reports/topvisor-editor/refresh/",
+        topvisor_editor_refresh,
+        name="topvisor-editor-refresh",
+    ),
+    path(
+        "projects/<uuid:project_id>/reports/topvisor-editor/clear/",
+        topvisor_editor_clear,
+        name="topvisor-editor-clear",
     ),
     path(
         "projects/<uuid:project_id>/reports/source-history/clear/",
