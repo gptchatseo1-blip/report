@@ -70,6 +70,23 @@
   color:#b42318;
 }
 
+/* Keep the on-screen "Данные по количеству запросов в топ" summary as compact as the export. */
+.position-distribution{
+  max-width:470px;
+  gap:2px 6px;
+  padding:3px;
+  font-size:11px;
+}
+.position-distribution__item{
+  grid-template-columns:54px minmax(40px,1fr) minmax(40px,.8fr);
+  height:30px;
+  padding:2px 6px 2px 3px;
+}
+.position-distribution__range{
+  height:22px;
+  padding:0 5px;
+}
+
 @media(max-width:600px){
   .manual-dynamics-trigger-round2{font-size:.82rem}
   .report-modal .manual-row-actions-round2{gap:.35rem;min-width:82px}
