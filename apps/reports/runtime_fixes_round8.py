@@ -235,11 +235,7 @@ def _distribution_chart_with_visibility(exp, history, depth):
             handles.append(handle)
         ticks, tick_labels = exp._date_ticks(labels)
         axis.set_xticks(ticks, tick_labels)
-        values_for_top = [
-            float(bucket.get("share") or 0)
-            for row in bucket_rows
-            for bucket in row
-        ]
+        values_for_top = [float(bucket.get("share") or 0) for row in bucket_rows for bucket in row]
         if depth >= 50:
             values_for_top.extend(
                 float(row.get("visibility") or 0)
