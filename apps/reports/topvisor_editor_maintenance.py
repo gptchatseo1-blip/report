@@ -1,10 +1,12 @@
 """Maintenance actions for mutable Topvisor dynamics editor data."""
 
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from apps.projects.models import Project
@@ -27,12 +29,30 @@ def _normalized(value):
     return " ".join(str(value or "").split()).casefold()
 
 
+def _engine_key(value):
+    normalized = _normalized(value)
+    if "yandex" in normalized or "яндекс" in normalized:
+        return "yandex"
+    if "google" in normalized or "гугл" in normalized:
+        return "google"
+    return normalized
+
+
 def _row_key(row):
     return (
-        _normalized(row.get("engine")),
+        _engine_key(row.get("engine")),
         _normalized(row.get("region")),
         str(row.get("month") or "")[:7],
     )
+
+
+def _decimal(value):
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value).replace(",", ".").replace("%", "").strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _read_saved_rows(project):
@@ -82,6 +102,114 @@ def _save_rows(project, settings, values, rows):
         settings.save(update_fields=["values", "updated_at"])
 
 
+def _matching_snapshots(project, configuration_id_value, engine, region):
+    from apps.metrics.models import RankingSnapshot
+
+    exact = list(
+        RankingSnapshot.objects.filter(
+            project=project,
+            topvisor_configuration_id=configuration_id_value,
+        ).order_by("snapshot_date", "created_at", "id")
+    )
+    if exact:
+        return exact
+
+    engine_key = _engine_key(engine)
+    region_key = _normalized(region)
+    return [
+        snapshot
+        for snapshot in RankingSnapshot.objects.filter(project=project).order_by(
+            "snapshot_date", "created_at", "id"
+        )
+        if _engine_key(snapshot.search_engine) == engine_key
+        and _normalized(snapshot.region) == region_key
+    ]
+
+
+def refresh_provider_visibility(project, *, engine=None, region=None, client=None):
+    """Refresh stored Topvisor visibility from the provider summary chart."""
+    if project.position_provider != Project.PositionProvider.TOPVISOR:
+        return 0
+
+    from apps.topvisor.client import client_for_project
+    from apps.topvisor.models import TopvisorProjectMapping
+    from apps.topvisor.services import _summary_visibility, configuration_id, configuration_segment
+
+    mapping = TopvisorProjectMapping.objects.filter(project=project).first()
+    if mapping is None:
+        return 0
+
+    target = (_engine_key(engine), _normalized(region)) if engine else None
+    api = client or client_for_project(project)[0]
+    updated = 0
+    retrieved_at = timezone.now()
+
+    for configuration in mapping.selected_configurations:
+        try:
+            stable_id = configuration_id(configuration)
+        except ValueError:
+            continue
+        config_engine, config_region = configuration_segment(configuration)
+        region_label = str(
+            configuration.get("region_name") or configuration.get("region") or ""
+        ).strip()
+        segment = (_engine_key(config_engine), _normalized(region_label or config_region))
+        if target and segment != target:
+            continue
+
+        region_index = configuration.get("region_index")
+        if region_index in (None, ""):
+            continue
+        provider_project_id = str(
+            configuration.get("_topvisor_project_id") or mapping.topvisor_project_id
+        )
+        snapshots = _matching_snapshots(
+            project,
+            stable_id,
+            config_engine,
+            region_label or config_region,
+        )
+        if not snapshots:
+            continue
+
+        for start in range(0, len(snapshots), 31):
+            batch = snapshots[start : start + 31]
+            dates = [snapshot.snapshot_date.isoformat() for snapshot in batch]
+            payload = api.get_summary_chart(
+                provider_project_id,
+                region_index=region_index,
+                dates=dates,
+            )
+            values = _summary_visibility(payload, provider_project_id)
+            changed = []
+            for snapshot in batch:
+                day = snapshot.snapshot_date.isoformat()
+                exact = _decimal(values.get(day))
+                if exact is None:
+                    continue
+                raw = {
+                    "value": str(exact),
+                    "source": "topvisor_api_summary_chart",
+                    "retrieved_at": retrieved_at.isoformat(),
+                }
+                provenance = dict(snapshot.provenance or {})
+                provenance["visibility"] = raw
+                snapshot.visibility = exact
+                snapshot.visibility_raw = raw
+                snapshot.provenance = provenance
+                snapshot.retrieved_at = retrieved_at
+                changed.append(snapshot)
+            if changed:
+                from apps.metrics.models import RankingSnapshot
+
+                RankingSnapshot.objects.bulk_update(
+                    changed,
+                    ["visibility", "visibility_raw", "provenance", "retrieved_at"],
+                )
+                updated += len(changed)
+    return updated
+
+
 def refresh_editor_rows(project):
     """Refresh automatic values while preserving explicit manual corrections."""
     settings, values, saved_rows = _read_saved_rows(project)
@@ -114,12 +242,15 @@ def refresh_editor_rows(project):
 def clear_editor_segment(project, engine, region):
     """Reset one search-engine/region table to automatic data and remove manual-only rows."""
     settings, values, saved_rows = _read_saved_rows(project)
-    target = (_normalized(engine), _normalized(region))
+    target = (_engine_key(engine), _normalized(region))
     automatic_by_key = {_row_key(row): row for row in _automatic_rows(project)}
     cleared = []
 
     for existing in saved_rows:
-        segment = (_normalized(existing.get("engine")), _normalized(existing.get("region")))
+        segment = (
+            _engine_key(existing.get("engine")),
+            _normalized(existing.get("region")),
+        )
         if segment != target:
             cleared.append(existing)
             continue
@@ -138,8 +269,23 @@ def clear_editor_segment(project, engine, region):
 @require_POST
 def topvisor_editor_refresh(request, project_id):
     project = get_object_or_404(Project, pk=project_id)
+    try:
+        refreshed_count = refresh_provider_visibility(project)
+    except Exception:
+        return JsonResponse(
+            {
+                "ok": False,
+                "message": "Не удалось обновить видимость из Topvisor. Повторите попытку.",
+            },
+            status=502,
+        )
     rows = refresh_editor_rows(project)
-    return JsonResponse({"ok": True, "rows": rows, "message": "Данные обновлены."})
+    message = (
+        f"Данные Topvisor обновлены ({refreshed_count} снимков)."
+        if refreshed_count
+        else "Данные обновлены."
+    )
+    return JsonResponse({"ok": True, "rows": rows, "message": message})
 
 
 @login_required
@@ -160,5 +306,21 @@ def topvisor_editor_clear(request, project_id):
             {"ok": False, "message": "Не указана поисковая система."},
             status=400,
         )
+    try:
+        refresh_provider_visibility(project, engine=engine, region=region)
+    except Exception:
+        return JsonResponse(
+            {
+                "ok": False,
+                "message": "Не удалось получить актуальную видимость Topvisor. Очистка отменена.",
+            },
+            status=502,
+        )
     rows = clear_editor_segment(project, engine, region)
-    return JsonResponse({"ok": True, "rows": rows, "message": "Ручные данные очищены."})
+    return JsonResponse(
+        {
+            "ok": True,
+            "rows": rows,
+            "message": "Ручные данные очищены, видимость обновлена из Topvisor.",
+        }
+    )

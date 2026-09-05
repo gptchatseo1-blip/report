@@ -9,6 +9,18 @@
   margin:0;
 }
 
+.report-modal [data-topvisor-segment-maintenance]{
+  display:flex!important;
+  align-items:center!important;
+  justify-content:space-between!important;
+  min-height:42px;
+}
+.report-modal [data-topvisor-segment-maintenance] > [data-topvisor-clear-segment],
+.report-modal [data-topvisor-segment-maintenance] > .manual-add-row{
+  align-self:center!important;
+  margin:0!important;
+}
+
 .report-modal [data-topvisor-clear-segment],
 .report-modal .manual-add-row,
 .report-modal [data-topvisor-refresh-editor],
