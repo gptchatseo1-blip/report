@@ -10,7 +10,9 @@ class ReportsConfig(AppConfig):
         from .runtime_fixes import apply as apply_round1
         from .runtime_fixes_round2 import apply as apply_round2
         from .runtime_fixes_round3 import apply as apply_round3
+        from .runtime_fixes_round4 import apply as apply_round4
 
         apply_round1()
         apply_round2()
         apply_round3()
+        apply_round4()

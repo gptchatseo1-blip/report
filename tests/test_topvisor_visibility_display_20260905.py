@@ -24,14 +24,15 @@ def _snapshot(project, day, visibility):
     )
 
 
-def test_topvisor_display_visibility_does_not_round_up():
-    assert topvisor_display_visibility("15.65") == Decimal("15")
-    assert topvisor_display_visibility("15.99") == Decimal("15")
+def test_topvisor_display_visibility_uses_normal_whole_percent_rounding():
+    assert topvisor_display_visibility("15.65") == Decimal("16")
+    assert topvisor_display_visibility("15.99") == Decimal("16")
+    assert topvisor_display_visibility("15.49") == Decimal("15")
     assert topvisor_display_visibility("15.00") == Decimal("15")
-    assert topvisor_display_visibility("0.99") == Decimal("0")
+    assert topvisor_display_visibility("0.99") == Decimal("1")
 
 
-def test_position_facts_use_topvisor_integer_visibility():
+def test_position_facts_keep_exact_series_but_use_topvisor_integer_summary():
     project = Project.objects.create(
         name="Topvisor visibility",
         domain="visibility.example",
@@ -44,11 +45,11 @@ def test_position_facts_use_topvisor_integer_visibility():
     segment = facts["segments"][0]
 
     assert [point["visibility"] for point in segment["three_month_series"]] == [
-        Decimal("14"),
-        Decimal("15"),
+        Decimal("14.9000"),
+        Decimal("15.6500"),
     ]
-    assert segment["visibility_change"].previous == Decimal("14")
-    assert segment["visibility_change"].current == Decimal("15")
+    assert segment["visibility_change"].previous == Decimal("15")
+    assert segment["visibility_change"].current == Decimal("16")
     assert segment["visibility_change"].percentage_points == Decimal("1")
 
 
@@ -62,10 +63,10 @@ def test_topvisor_editor_shows_same_integer_as_provider():
 
     rows, _segments = views._topvisor_editor_data(project)
 
-    assert rows[0]["visibility"] == 15.0
+    assert rows[0]["visibility"] == 16.0
 
 
-def test_existing_topvisor_report_segment_is_normalized_at_export_time():
+def test_existing_topvisor_report_keeps_exact_visibility_for_chart_geometry():
     payload = {
         "project": {"position_provider": "topvisor"},
         "display_options": {"topvisor_manual_rows": []},
@@ -85,8 +86,8 @@ def test_existing_topvisor_report_segment_is_normalized_at_export_time():
 
     effective = exporting._manual_topvisor_segment(payload, segment)
 
-    assert effective["three_month_series"][0]["visibility"] == Decimal("15")
-    assert effective["chart_series"][0]["visibility"] == Decimal("15")
+    assert effective["three_month_series"][0]["visibility"] == Decimal("15.65")
+    assert effective["chart_series"][0]["visibility"] == Decimal("15.65")
 
 
 def test_manual_visibility_override_keeps_explicit_decimal_value():
