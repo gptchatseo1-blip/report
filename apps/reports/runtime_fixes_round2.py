@@ -298,7 +298,7 @@ def _visibility_chart(exp, points, title=None):
             counterclock=False,
             radius=0.98,
             colors=(green, "#DCE0E5"),
-            wedgeprops={"width": 0.44, "edgecolor": "none", "linewidth": 0},
+            wedgeprops={"width": 0.35, "edgecolor": "none", "linewidth": 0},
         )
         donut.text(
             0,
