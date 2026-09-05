@@ -119,7 +119,10 @@ def clear_editor_segment(project, engine, region):
     cleared = []
 
     for existing in saved_rows:
-        segment = (_normalized(existing.get("engine")), _normalized(existing.get("region")))
+        segment = (
+            _normalized(existing.get("engine")),
+            _normalized(existing.get("region")),
+        )
         if segment != target:
             cleared.append(existing)
             continue
