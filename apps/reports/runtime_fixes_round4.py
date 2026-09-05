@@ -47,6 +47,8 @@ def _render_distribution_cards_table(exp, doc, distribution, depth, *, engine="y
     table.autofit = False
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
     outer_width = 4.35 if columns == 2 else 4.5
+    for grid_column in table._tbl.tblGrid.gridCol_lst:
+        grid_column.w = exp.Cm(outer_width)
 
     for row in table.rows:
         exp._prevent_row_split(row)
