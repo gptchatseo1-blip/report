@@ -9,6 +9,8 @@ class ReportsConfig(AppConfig):
     def ready(self):
         from .runtime_fixes import apply as apply_round1
         from .runtime_fixes_round2 import apply as apply_round2
+        from .runtime_fixes_round3 import apply as apply_round3
 
         apply_round1()
         apply_round2()
+        apply_round3()
