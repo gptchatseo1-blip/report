@@ -1,0 +1,79 @@
+/* Final UI alignment and modal polish requested on 2026-09-06. */
+.report-modal [data-topvisor-segment-maintenance]{
+  display:flex!important;
+  align-items:center!important;
+  justify-content:space-between!important;
+  gap:.75rem!important;
+  min-height:42px!important;
+  margin:.75rem 0 0!important;
+  padding:0!important;
+}
+.report-modal [data-topvisor-segment-maintenance] > [data-topvisor-clear-segment],
+.report-modal [data-topvisor-segment-maintenance] > .manual-add-row{
+  position:static!important;
+  inset:auto!important;
+  transform:none!important;
+  align-self:center!important;
+  box-sizing:border-box!important;
+  height:42px!important;
+  min-height:42px!important;
+  margin:0!important;
+  padding:0 14px!important;
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  line-height:1!important;
+  vertical-align:middle!important;
+}
+.report-modal .manual-row-actions-round2{
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:.45rem!important;
+  min-height:40px!important;
+}
+.report-modal .manual-row-actions-round2 > input,
+.report-modal .manual-row-actions-round2 > button{
+  flex:0 0 auto!important;
+  align-self:center!important;
+  margin:0!important;
+  transform:none!important;
+}
+.report-modal .report-modal-close{
+  display:grid!important;
+  place-items:center!important;
+  width:36px!important;
+  height:36px!important;
+  min-width:36px!important;
+  min-height:36px!important;
+  padding:0!important;
+  border:0!important;
+  outline:0;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  color:#344054!important;
+  font-size:24px!important;
+  line-height:1!important;
+}
+.report-modal .report-modal-close:hover,
+.report-modal .report-modal-close:focus-visible{
+  border:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  color:#c72c40!important;
+}
+.project-action-secondary .settings-icon{
+  width:1.05rem!important;
+  height:1.05rem!important;
+  fill:none!important;
+  stroke:currentColor!important;
+  stroke-width:1.8!important;
+  stroke-linecap:round!important;
+  stroke-linejoin:round!important;
+  transform:none!important;
+}
+.form-notice[data-kind="progress"]{
+  background:#e7f0ff;
+  color:#174a91;
+}
