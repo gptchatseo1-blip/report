@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from apps.reports.runtime_fixes_round8 import _calendar_chart_segment
+
 
 def test_round8_export_forces_visibility_column_and_compact_distribution():
     root = Path(__file__).resolve().parents[1]
@@ -9,6 +11,31 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert 'outer_width = 4.15 if columns == 2 else 4.35' in source
     assert "size=11" in source
     assert 'exp.GENERATOR_VERSION = "mvp1.11-2026-09-06"' in source
+
+
+def test_graph_uses_only_dates_checked_in_calendar():
+    segment = {
+        "search_engine": "yandex",
+        "chart_series": [
+            {"month": "2026-06-12", "visibility": 14},
+            {"month": "2026-07-10", "visibility": 16},
+            {"month": "2026-08-25", "visibility": 15},
+        ],
+    }
+    payload = {
+        "source_selection": {
+            "topvisor": {
+                "yandex": {"selected_dates": ["2026-07-10", "2026-08-25"]},
+            }
+        }
+    }
+
+    rendered = _calendar_chart_segment(lambda _payload, item: item, payload, segment)
+
+    assert [point["month"] for point in rendered["chart_series"]] == [
+        "2026-07-10",
+        "2026-08-25",
+    ]
 
 
 def test_round8_ui_fixes_modal_actions_close_button_and_report_progress():
