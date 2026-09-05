@@ -12,8 +12,9 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir ".[dev]"
 COPY . .
 
-# Build the immutable WhiteNoise manifest into the image. The key is intentionally
-# build-only; no production secret is embedded in a layer or required for static collection.
+# Build the WhiteNoise manifest into the image and refresh it once more at container
+# start before Gunicorn. This prevents a stale manifest from producing production 500s
+# when a deployment introduces new static assets.
 RUN DJANGO_DEBUG=0 DJANGO_SECRET_KEY=collectstatic-build-only python manage.py collectstatic --noinput
 
 RUN mkdir -p /app/media \
@@ -22,4 +23,4 @@ RUN mkdir -p /app/media \
 USER app
 
 EXPOSE 8000
-CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --timeout ${GUNICORN_TIMEOUT_SECONDS:-300}"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --timeout ${GUNICORN_TIMEOUT_SECONDS:-300}"]
