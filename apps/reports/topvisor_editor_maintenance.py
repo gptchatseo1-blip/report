@@ -127,7 +127,7 @@ def _matching_snapshots(project, configuration_id_value, engine, region):
 
 
 def refresh_provider_visibility(project, *, engine=None, region=None, client=None):
-    """Refresh stored Topvisor visibility from the provider summary chart without rerunning ranks."""
+    """Refresh stored Topvisor visibility from the provider summary chart."""
     if project.position_provider != Project.PositionProvider.TOPVISOR:
         return 0
 
