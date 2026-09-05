@@ -6,6 +6,8 @@ from django.db.models import Q
 
 _APPLIED = False
 
+# fmt: off
+
 
 def _normalized(value):
     return " ".join(str(value or "").split()).casefold()
@@ -218,3 +220,6 @@ def apply():
         return _follow_monthly_table_toggle(original_clean(self))
 
     report_forms.ReportCreateForm.clean = patched_clean
+
+
+# fmt: on
