@@ -1,6 +1,6 @@
 """Final dynamics-editor UX and Topvisor visibility fixes for 2026-09-05."""
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 from django.db.models import Q
 
@@ -22,8 +22,47 @@ def _decimal(value):
         return None
 
 
+def _calculated_snapshot_visibility(snapshot):
+    """Rebuild Topvisor visibility from the snapshot positions and provider volumes."""
+    if snapshot is None:
+        return None
+    from apps.topvisor.services import calculate_visibility
+
+    prefetched = getattr(snapshot, "_prefetched_objects_cache", {}).get("positions")
+    positions = prefetched if prefetched is not None else snapshot.positions.all()
+    rows = [
+        {
+            "position": position.position_value,
+            "frequency": position.frequency,
+        }
+        for position in positions
+    ]
+    return calculate_visibility(rows)
+
+
+def _prefer_precise_visibility(snapshot, provider_value):
+    """Recover decimals when the API supplied only a whole-percent coordinate.
+
+    Topvisor's UI uses the same official visibility formula with the current keyword
+    volumes. Some stored/API coordinates can contain only the whole-percent value.
+    If the exact calculation from the same Topvisor snapshot falls inside that
+    whole-percent bucket, keep the fractional value so 15.65 is rendered as 16%.
+    """
+    if provider_value is None:
+        return None
+    if provider_value != provider_value.to_integral_value():
+        return provider_value
+
+    calculated = _calculated_snapshot_visibility(snapshot)
+    if calculated is None or calculated == provider_value:
+        return provider_value
+    if calculated.quantize(Decimal("1"), rounding=ROUND_DOWN) == provider_value:
+        return calculated
+    return provider_value
+
+
 def provider_visibility(snapshot):
-    """Prefer the exact provider value retained in raw Topvisor payloads."""
+    """Prefer exact Topvisor visibility and restore decimals lost in old snapshots."""
     raw = getattr(snapshot, "visibility_raw", None)
     candidates = []
     if isinstance(raw, dict):
@@ -43,12 +82,15 @@ def provider_visibility(snapshot):
     else:
         candidates.append(provenance_visibility)
 
-    candidates.append(getattr(snapshot, "visibility", None))
     for candidate in candidates:
         value = _decimal(candidate)
         if value is not None:
-            return value
-    return None
+            return _prefer_precise_visibility(snapshot, value)
+
+    stored = _decimal(getattr(snapshot, "visibility", None))
+    if stored is not None:
+        return _prefer_precise_visibility(snapshot, stored)
+    return _calculated_snapshot_visibility(snapshot)
 
 
 def _snapshot_maps(project, *, active_ids=None):
