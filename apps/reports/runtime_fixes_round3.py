@@ -1,20 +1,20 @@
 """Make automatic Topvisor visibility match the integer value shown by Topvisor."""
 
 from copy import deepcopy
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 _APPLIED = False
 
 
 def topvisor_display_visibility(value):
-    """Topvisor shows visibility as an integer without mathematical rounding."""
+    """Render provider visibility to the same whole percent shown in Topvisor UI."""
     if value is None:
         return None
     try:
         number = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return value
-    return number.quantize(Decimal("1"), rounding=ROUND_DOWN)
+    return number.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
 def _is_topvisor_payload(payload):
@@ -96,4 +96,4 @@ def apply():
 
     exp._manual_topvisor_segment = manual_topvisor_segment
     views._manual_topvisor_segment = manual_topvisor_segment
-    exp.GENERATOR_VERSION = "mvp1.11-2026-09-05"
+    exp.GENERATOR_VERSION = "mvp1.12-2026-09-05"
