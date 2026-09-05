@@ -2,6 +2,8 @@
 
 import math
 
+from matplotlib.lines import Line2D
+
 _APPLIED = False
 
 
@@ -167,6 +169,8 @@ def _compact_distribution_cards_table(exp, doc, distribution, depth, *, engine="
         for paragraph in outer.paragraphs:
             paragraph.paragraph_format.space_before = exp.Pt(0)
             paragraph.paragraph_format.space_after = exp.Pt(0)
+            if not paragraph.text:
+                paragraph.add_run("\u200b").font.size = exp.Pt(1)
 
     occupied = {(index % row_count, index // row_count) for index in range(len(buckets))}
     for row_index, row in enumerate(table.rows):
@@ -183,6 +187,20 @@ def _compact_distribution_cards_table(exp, doc, distribution, depth, *, engine="
     gap.paragraph_format.space_after = exp.Pt(1)
     gap.add_run("\u200b").font.size = exp.Pt(1)
     return table
+
+
+def _legend_dot(color, label):
+    return Line2D(
+        [0],
+        [0],
+        marker="o",
+        linestyle="None",
+        color=color,
+        markerfacecolor=color,
+        markeredgecolor=color,
+        markersize=5,
+        label=label,
+    )
 
 
 def _distribution_chart_with_visibility(exp, history, depth):
@@ -203,26 +221,21 @@ def _distribution_chart_with_visibility(exp, history, depth):
             visibility = [row.get("visibility") for row in useful_rows]
             if any(value is not None for value in visibility):
                 values = [float(value or 0) for value in visibility]
-                handle = exp._plot_smooth_line(
+                color = exp.TOPVISOR_COLORS["visibility"]
+                exp._plot_smooth_line(
                     axis,
                     x_values,
                     values,
-                    color=exp.TOPVISOR_COLORS["visibility"],
+                    color=color,
                     linewidth=1.9,
                     label="Видимость",
                 )
-                axis.scatter(
-                    x_values,
-                    values,
-                    color=exp.TOPVISOR_COLORS["visibility"],
-                    s=13,
-                    zorder=3,
-                )
-                handles.append(handle)
+                axis.scatter(x_values, values, color=color, s=13, zorder=3)
+                handles.append(_legend_dot(color, "Видимость"))
         for name in bucket_names:
             values = [float(row.get(name, {}).get("share") or 0) for row in rows_by_name]
             color = exp.TOPVISOR_COLORS[name]
-            handle = exp._plot_smooth_line(
+            exp._plot_smooth_line(
                 axis,
                 x_values,
                 values,
@@ -232,7 +245,7 @@ def _distribution_chart_with_visibility(exp, history, depth):
             )
             axis.scatter(x_values, values, color=color, s=12, zorder=3)
             axis.fill_between(x_values, values, color=color, alpha=0.055)
-            handles.append(handle)
+            handles.append(_legend_dot(color, name))
         ticks, tick_labels = exp._date_ticks(labels)
         axis.set_xticks(ticks, tick_labels)
         values_for_top = [float(bucket.get("share") or 0) for row in bucket_rows for bucket in row]
@@ -290,9 +303,15 @@ def apply():
 
     current_manual_segment = exp._manual_topvisor_segment
     current_buckets = exp._topvisor_buckets
+    current_monthly_renderer = exp._render_monthly_topvisor_table
 
     def manual_segment(payload, segment):
         return _calendar_chart_segment(current_manual_segment, current_buckets, payload, segment)
+
+    def render_monthly_table(doc, segment, *, show_visibility=True):
+        if not show_visibility:
+            return current_monthly_renderer(doc, segment, show_visibility=False)
+        return _render_monthly_table_with_visibility(exp, doc, segment)
 
     exp.GENERATOR_VERSION = "mvp1.11-2026-09-06"
     exp._topvisor_buckets = lambda distribution, depth: _manual_buckets_with_yandex_tail(
@@ -308,8 +327,4 @@ def apply():
             exp, doc, distribution, depth, engine=engine
         )
     )
-    exp._render_monthly_topvisor_table = (
-        lambda doc, segment, *, show_visibility=True: _render_monthly_table_with_visibility(
-            exp, doc, segment
-        )
-    )
+    exp._render_monthly_topvisor_table = render_monthly_table
