@@ -189,7 +189,9 @@ def _distribution_chart_with_visibility(exp, history, depth):
     useful_rows = [row for row in history if (row.get("distribution") or {}).get("total")]
     if not useful_rows:
         return None
-    bucket_rows = [exp._topvisor_buckets(row.get("distribution") or {}, depth) for row in useful_rows]
+    bucket_rows = [
+        exp._topvisor_buckets(row.get("distribution") or {}, depth) for row in useful_rows
+    ]
     labels = [exp._date_label(row.get("month")) for row in useful_rows]
     x_values = list(range(len(labels)))
     with exp.plt.rc_context({"font.family": exp.CHART_FONT, "font.size": 9}):
