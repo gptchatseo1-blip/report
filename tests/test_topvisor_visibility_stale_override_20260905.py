@@ -75,12 +75,14 @@ def _stale_row(*, explicit=True):
     return row
 
 
+def _sanitize(project, row):
+    payload = sanitize_stale_topvisor_visibility(project, json.dumps([row]))
+    return json.loads(payload)[0]
+
+
 def test_stale_floor_rounded_visibility_is_removed_even_after_round2_saved_it():
     project = _project_with_visibility_history()
-
-    cleaned = json.loads(
-        sanitize_stale_topvisor_visibility(project, json.dumps([_stale_row()]))
-    )[0]
+    cleaned = _sanitize(project, _stale_row())
 
     assert cleaned["visibility"] is None
     assert cleaned["automatic_visibility"] == 16.0
@@ -90,15 +92,10 @@ def test_stale_floor_rounded_visibility_is_removed_even_after_round2_saved_it():
 def test_legacy_stale_visibility_is_removed_but_real_manual_value_is_kept():
     project = _project_with_visibility_history()
     stale, manual = _stale_row(explicit=False), _stale_row(explicit=True)
-    stale["month"] = "2026-08-01"
     manual["visibility"] = 13.5
 
-    cleaned_stale = json.loads(
-        sanitize_stale_topvisor_visibility(project, json.dumps([stale]))
-    )[0]
-    cleaned_manual = json.loads(
-        sanitize_stale_topvisor_visibility(project, json.dumps([manual]))
-    )[0]
+    cleaned_stale = _sanitize(project, stale)
+    cleaned_manual = _sanitize(project, manual)
 
     assert cleaned_stale["visibility"] is None
     assert cleaned_manual["visibility"] == 13.5
@@ -124,7 +121,10 @@ def test_report_page_initial_state_no_longer_overlays_15_on_automatic_16():
 
 def test_report_creation_with_previous_stale_15_produces_current_visibility_16(client):
     project = _project_with_visibility_history()
-    user = get_user_model().objects.create_user("visibility-real-flow", password="password")
+    user = get_user_model().objects.create_user(
+        "visibility-real-flow",
+        password="test-password",
+    )
     client.force_login(user)
 
     response = client.post(
