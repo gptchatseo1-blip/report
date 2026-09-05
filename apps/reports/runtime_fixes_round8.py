@@ -87,6 +87,23 @@ def _compact_distribution_cards_table(exp, doc, distribution, depth, *, engine="
     return table
 
 
+def _calendar_chart_segment(base_manual_segment, payload, segment):
+    """Keep table/editor months independent, but graph only explicitly selected calendar dates."""
+    rendered = base_manual_segment(payload, segment)
+    engine = str(rendered.get("search_engine") or "").casefold()
+    selection = payload.get("source_selection", {}).get("topvisor", {}).get(engine, {})
+    selected_dates = selection.get("selected_dates") or []
+    if not selected_dates:
+        return rendered
+    allowed = {str(value)[:10] for value in selected_dates}
+    chart_series = [
+        point
+        for point in rendered.get("chart_series") or []
+        if str(point.get("month") or "")[:10] in allowed
+    ]
+    return {**rendered, "chart_series": chart_series}
+
+
 def apply():
     global _APPLIED
     if _APPLIED:
@@ -94,16 +111,23 @@ def apply():
     _APPLIED = True
 
     from . import exporting as exp
+    from . import views
 
     current_monthly_renderer = exp._render_monthly_topvisor_table
+    current_manual_segment = exp._manual_topvisor_segment
 
     def render_monthly_table(doc, segment, *, show_visibility=True):
         # The monthly dynamics table always includes visibility immediately after month.
         # Its active rows/manual values are already supplied through monthly_table_series.
         return current_monthly_renderer(doc, segment, show_visibility=True)
 
+    def manual_segment(payload, segment):
+        return _calendar_chart_segment(current_manual_segment, payload, segment)
+
     exp.GENERATOR_VERSION = "mvp1.11-2026-09-06"
     exp._render_monthly_topvisor_table = render_monthly_table
+    exp._manual_topvisor_segment = manual_segment
+    views._manual_topvisor_segment = manual_segment
     exp._render_distribution_cards_table = (
         lambda doc, distribution, depth, *, engine="yandex": _compact_distribution_cards_table(
             exp, doc, distribution, depth, engine=engine
