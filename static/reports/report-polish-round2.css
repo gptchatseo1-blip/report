@@ -29,6 +29,7 @@
   opacity:1;
 }
 
+/* The actions cell intentionally keeps the include checkbox and delete control separate. */
 .report-modal .manual-topvisor-table-round2 th:last-child{width:9%;min-width:94px}
 .report-modal .manual-row-actions-round2{
   display:flex;
