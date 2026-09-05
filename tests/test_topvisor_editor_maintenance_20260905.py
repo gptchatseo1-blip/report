@@ -173,7 +173,8 @@ def test_refresh_and_clear_endpoints_persist_changes(client):
     refresh = client.post(reverse("reports:topvisor-editor-refresh", args=[project.id]))
     assert refresh.status_code == 200
     assert refresh.json()["ok"] is True
-    refreshed = json.loads(ProjectReportSettings.objects.get(project=project).values["topvisor_manual_rows"])
+    settings = ProjectReportSettings.objects.get(project=project)
+    refreshed = json.loads(settings.values["topvisor_manual_rows"])
     assert refreshed[0]["visibility"] is None
     assert refreshed[0]["automatic_visibility"] == 16.0
 
@@ -184,6 +185,7 @@ def test_refresh_and_clear_endpoints_persist_changes(client):
     )
     assert clear.status_code == 200
     assert clear.json()["ok"] is True
-    cleared = json.loads(ProjectReportSettings.objects.get(project=project).values["topvisor_manual_rows"])
+    settings.refresh_from_db()
+    cleared = json.loads(settings.values["topvisor_manual_rows"])
     assert cleared[0]["manual_override"] is False
     assert cleared[0]["visibility"] is None
