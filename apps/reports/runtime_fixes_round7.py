@@ -130,13 +130,18 @@ def _repair_position_facts(project, facts, *, selected_dates=None):
             "configuration_id": segment.get("configuration_id"),
         }
 
-        for series_name, exact_date in (("three_month_series", bool(selected_dates)), ("chart_series", True)):
+        series_specs = (
+            ("three_month_series", bool(selected_dates)),
+            ("chart_series", True),
+        )
+        for series_name, exact_date in series_specs:
             repaired = []
             for point in segment.get(series_name) or []:
                 source = {**locator, "month": point.get("month")}
                 snapshot = _find_snapshot(maps, source, exact_date=exact_date)
                 exact = provider_visibility(snapshot) if snapshot is not None else None
-                repaired.append({**point, "visibility": exact if exact is not None else point.get("visibility")})
+                visibility = exact if exact is not None else point.get("visibility")
+                repaired.append({**point, "visibility": visibility})
             if repaired:
                 segment[series_name] = tuple(repaired)
 
