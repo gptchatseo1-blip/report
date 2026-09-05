@@ -119,10 +119,7 @@ def clear_editor_segment(project, engine, region):
     cleared = []
 
     for existing in saved_rows:
-        segment = (
-            _normalized(existing.get("engine")),
-            _normalized(existing.get("region")),
-        )
+        segment = (_normalized(existing.get("engine")), _normalized(existing.get("region")))
         if segment != target:
             cleared.append(existing)
             continue
@@ -153,13 +150,15 @@ def topvisor_editor_clear(request, project_id):
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
         return JsonResponse(
-            {"ok": False, "message": "Некорректные параметры очистки."}, status=400
+            {"ok": False, "message": "Некорректные параметры очистки."},
+            status=400,
         )
     engine = str(payload.get("engine") or "")[:32]
     region = str(payload.get("region") or "")[:200]
     if not engine:
         return JsonResponse(
-            {"ok": False, "message": "Не указана поисковая система."}, status=400
+            {"ok": False, "message": "Не указана поисковая система."},
+            status=400,
         )
     rows = clear_editor_segment(project, engine, region)
     return JsonResponse({"ok": True, "rows": rows, "message": "Ручные данные очищены."})
