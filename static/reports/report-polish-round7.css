@@ -1,0 +1,35 @@
+/* Dynamics editor usability fixes agreed on 2026-09-05. */
+.monthly-dynamics-edit-action{
+  margin:.15rem 0 .7rem 2rem;
+}
+.monthly-dynamics-edit-action[hidden]{
+  display:none!important;
+}
+.monthly-dynamics-edit-action .manual-dynamics-trigger-round2{
+  margin:0;
+}
+
+.report-modal [data-topvisor-clear-segment],
+.report-modal .manual-add-row,
+.report-modal [data-topvisor-refresh-editor],
+.report-modal [data-manual-modal-close-round2].secondary{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  box-sizing:border-box;
+  height:42px;
+  min-height:42px;
+  padding:0 14px;
+  line-height:1;
+}
+
+.report-modal [data-topvisor-clear-segment]{
+  min-width:102px;
+}
+.report-modal .manual-add-row{
+  min-width:134px;
+}
+.report-modal [data-topvisor-refresh-editor],
+.report-modal [data-manual-modal-close-round2].secondary{
+  min-width:92px;
+}
