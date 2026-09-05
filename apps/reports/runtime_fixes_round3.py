@@ -17,11 +17,6 @@ def topvisor_display_visibility(value):
     return number.quantize(Decimal("1"), rounding=ROUND_DOWN)
 
 
-def _is_topvisor_project(project):
-    provider = str(getattr(project, "position_provider", "") or "").casefold()
-    return provider in {"", "topvisor"}
-
-
 def _is_topvisor_payload(payload):
     provider = str((payload.get("project") or {}).get("position_provider") or "").casefold()
     return provider in {"", "topvisor"}
@@ -48,8 +43,7 @@ def apply():
     from apps.projects.models import Project
 
     from . import exporting as exp
-    from . import services
-    from . import views
+    from . import services, views
 
     original_build_position_facts = services.build_position_facts
 
@@ -95,7 +89,9 @@ def apply():
     original_manual_segment = exp._manual_topvisor_segment
 
     def manual_topvisor_segment(payload, segment):
-        source = _normalize_segment_visibility(segment) if _is_topvisor_payload(payload) else segment
+        source = (
+            _normalize_segment_visibility(segment) if _is_topvisor_payload(payload) else segment
+        )
         return original_manual_segment(payload, source)
 
     exp._manual_topvisor_segment = manual_topvisor_segment
