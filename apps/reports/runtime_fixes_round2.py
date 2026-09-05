@@ -214,9 +214,7 @@ def _manual_topvisor_segment(payload, segment):
         for point in segment.get("three_month_series") or []
         if point.get("month")
     }
-    explicit_selection = any(
-        row.get("include_explicit") or "include_in_report" in row for row in selected
-    )
+    explicit_selection = any(row.get("include_explicit") is True for row in selected)
     monthly_by_month = {}
 
     for row in sorted(selected, key=lambda item: item["month"]):
@@ -235,9 +233,7 @@ def _manual_topvisor_segment(payload, segment):
                 **(existing or {}),
                 "month": row["month"],
                 "visibility": (
-                    manual_visibility
-                    if manual_visibility is not None
-                    else fallback_visibility
+                    manual_visibility if manual_visibility is not None else fallback_visibility
                 ),
                 "distribution": _row_distribution(row, depth),
                 "ranking_depth": (existing or {}).get("ranking_depth", depth),
