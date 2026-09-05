@@ -61,7 +61,7 @@ def _automatic_saved_row(automatic, existing=None, *, reset=False):
         "engine": str(automatic.get("engine") or "").casefold(),
         "region": str(automatic.get("region") or "").strip(),
         "month": str(automatic.get("month") or ""),
-        "include_in_report": bool(existing.get("include_in_report", False)),
+        "include_in_report": bool(existing.get("include_in_report", True)),
         "deleted": False if reset else bool(existing.get("deleted", False)),
         "manual_override": False,
         "visibility": None,
@@ -99,7 +99,9 @@ def refresh_editor_rows(project):
             # Preserve deliberate edits, but move the automatic marker to the latest value.
             row = dict(existing)
             row["automatic_visibility"] = automatic.get("visibility")
-            row["configuration_id"] = str(automatic.get("configuration_id") or row.get("configuration_id") or "")
+            row["configuration_id"] = str(
+                automatic.get("configuration_id") or row.get("configuration_id") or ""
+            )
             refreshed.append(row)
             continue
 
@@ -147,10 +149,14 @@ def topvisor_editor_clear(request, project_id):
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return JsonResponse({"ok": False, "message": "Некорректные параметры очистки."}, status=400)
+        return JsonResponse(
+            {"ok": False, "message": "Некорректные параметры очистки."}, status=400
+        )
     engine = str(payload.get("engine") or "")[:32]
     region = str(payload.get("region") or "")[:200]
     if not engine:
-        return JsonResponse({"ok": False, "message": "Не указана поисковая система."}, status=400)
+        return JsonResponse(
+            {"ok": False, "message": "Не указана поисковая система."}, status=400
+        )
     rows = clear_editor_segment(project, engine, region)
     return JsonResponse({"ok": True, "rows": rows, "message": "Ручные данные очищены."})
