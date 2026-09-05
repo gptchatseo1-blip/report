@@ -11,7 +11,7 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     source = (root / "apps/reports/runtime_fixes_round8.py").read_text()
 
     assert '("Месяц", "Видимость", "в топ 3", "в топ 10"' in source
-    assert 'outer_width = 4.15 if columns == 2 else 4.35' in source
+    assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
     assert 'label="Видимость"' in source
     assert 'exp.GENERATOR_VERSION = "mvp1.11-2026-09-06"' in source
