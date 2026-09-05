@@ -138,9 +138,9 @@ def test_report_creation_with_previous_stale_15_produces_current_visibility_16(c
     assert response.status_code == 302
     snapshot = ReportDatasetSnapshot.objects.get()
     segment = snapshot.payload["calculated"]["positions"]["segments"][0]
-    assert segment["visibility_change"]["previous"] == 15
-    assert segment["visibility_change"]["current"] == 16
-    assert segment["visibility_change"]["percentage_points"] == 1
+    assert segment["visibility_change"]["previous"] == "15"
+    assert segment["visibility_change"]["current"] == "16"
+    assert segment["visibility_change"]["percentage_points"] == "1"
     frozen_row = snapshot.payload["display_options"]["topvisor_manual_rows"][0]
     assert frozen_row["visibility"] is None
     assert frozen_row["manual_override"] is False
