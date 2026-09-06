@@ -176,6 +176,7 @@
       const response = await fetch(form.dataset.settingsUrl, {
         method: 'POST',
         credentials: 'same-origin',
+        keepalive: true,
         headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
         body: JSON.stringify({topvisor_manual_rows: manualField.value || '[]'}),
       });
@@ -317,6 +318,7 @@
           row.month = candidate ? `${candidate}-01` : '';
           markDirty(700);
         });
+        monthInput.addEventListener('change', () => { void flushSave(); });
         monthCell.append(monthInput);
         tr.append(monthCell);
 
@@ -347,6 +349,7 @@
         visibilityInput.addEventListener('blur', () => {
           if (!visibilityInput.value.trim() && row._base) visibilityInput.value = formatVisibility(row._base.visibility);
           else if (visibilityInput.validity.valid) visibilityInput.value = formatVisibility(effectiveVisibility(row));
+          void flushSave();
         });
         visibilityCell.append(visibilityInput);
         tr.append(visibilityCell);
@@ -362,7 +365,10 @@
             if (!parseTopInput(input, row, name)) return;
             markDirty(700);
           });
-          input.addEventListener('blur', () => { input.value = topValue(row, name); });
+          input.addEventListener('blur', () => {
+            input.value = topValue(row, name);
+            void flushSave();
+          });
           td.append(input);
           tr.append(td);
         });
@@ -377,7 +383,8 @@
         include.title = 'Выводить месяц в таблице отчёта';
         include.addEventListener('change', () => {
           row._include = include.checked;
-          markDirty(120);
+          markDirty(0);
+          void flushSave();
         });
         actionCell.append(include);
 
