@@ -194,6 +194,55 @@ def test_distribution_uses_last_calendar_day_instead_of_latest_provider_snapshot
     assert rendered["distribution"] == selected_distribution
 
 
+def test_google_top_10_chart_keeps_positive_direction_from_selected_snapshots(monkeypatch):
+    captured = {}
+
+    def capture_line(_axis, x_values, values, **kwargs):
+        captured[kwargs["label"]] = (list(x_values), list(values))
+
+    monkeypatch.setattr(exporting, "_plot_smooth_line", capture_line)
+    monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
+    chart_series = [
+        {
+            "month": "2026-07-25",
+            "ranking_depth": 20,
+            "distribution": {
+                "total": 100,
+                "top_10": 30,
+                "ranges": {"1-3": 10, "4-10": 20, "11-20": 15},
+            },
+        },
+        {
+            "month": "2026-08-20",
+            "ranking_depth": 20,
+            "distribution": {
+                "total": 100,
+                "top_10": 36,
+                "ranges": {"1-3": 12, "4-10": 24, "11-20": 18},
+            },
+        },
+    ]
+    rendered = _calendar_chart_segment(
+        lambda _payload, item: item,
+        exporting._topvisor_buckets,
+        {
+            "source_selection": {
+                "topvisor": {"google": {"selected_dates": ["2026-07-25", "2026-08-20"]}}
+            }
+        },
+        {
+            "search_engine": "google",
+            "ranking_depth": 20,
+            "chart_series": chart_series,
+            "three_month_series": [],
+        },
+    )
+
+    _distribution_chart_top_ranges_only(exporting, rendered["chart_series"], 20)
+
+    assert captured["1-10"][1] == [30.0, 36.0]
+
+
 def test_manual_endpoint_keeps_all_automatic_tail_ranges():
     automatic = {"total": 100}
     segment = {
