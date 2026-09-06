@@ -126,17 +126,13 @@ def build_position_facts(*, project, report_month, selected_dates=None):
     )
     grouped = defaultdict(dict)
     grouped_daily = defaultdict(dict)
-    chart_snapshots = (
-        RankingSnapshot.objects.filter(
-            project=project,
-            snapshot_date__range=(periods.three_months.start, periods.report.end),
-        )
-        .prefetch_related("positions")
-        .order_by("snapshot_date", "search_engine", "region", "topvisor_configuration_id", "id")
-        if selected_dates
-        else snapshots
-    )
-    for snapshot in chart_snapshots:
+    # Explicit calendar dates are authoritative for chart points too. Reusing this
+    # queryset also avoids a second database query for the whole quarter.
+    for snapshot in snapshots:
+        if selected_by_engine and snapshot.snapshot_date not in selected_by_engine.get(
+            snapshot.search_engine, ()
+        ):
+            continue
         segment_key = (snapshot.search_engine, snapshot.region, snapshot.topvisor_configuration_id)
         daily_existing = grouped_daily[segment_key].get(snapshot.snapshot_date)
         daily_existing_key = (

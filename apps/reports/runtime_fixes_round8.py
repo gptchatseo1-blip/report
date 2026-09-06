@@ -70,7 +70,7 @@ def _merge_yandex_tail_buckets(base_buckets, source_segment, rendered):
 
 
 def _calendar_chart_segment(base_manual_segment, base_buckets, payload, source_segment):
-    """Graphs use only calendar-selected dates while manual values remain month-based."""
+    """Build graphs only from provider snapshots selected in the calendar."""
     rendered = base_manual_segment(payload, source_segment)
     rendered = _merge_yandex_tail_buckets(base_buckets, source_segment, rendered)
     engine = str(rendered.get("search_engine") or "").casefold()
@@ -84,24 +84,13 @@ def _calendar_chart_segment(base_manual_segment, base_buckets, payload, source_s
         for point in source_segment.get("chart_series") or []
         if point.get("month")
     }
-    manual_by_month = {
-        str(point.get("month"))[:7]: point
-        for point in rendered.get("three_month_series") or []
-        if point.get("month")
-    }
     chart_series = []
     for selected_date in selected_dates:
         source = source_by_day.get(selected_date)
-        manual = manual_by_month.get(selected_date[:7])
-        point = dict(source or manual or {})
-        if not point:
+        if source is None:
             continue
+        point = dict(source)
         point["month"] = selected_date
-        if manual and manual.get("manual_override"):
-            if manual.get("visibility") is not None:
-                point["visibility"] = manual.get("visibility")
-            if manual.get("distribution"):
-                point["distribution"] = manual.get("distribution")
         chart_series.append(point)
     return {**rendered, "chart_series": chart_series}
 
@@ -313,7 +302,7 @@ def apply():
             return current_monthly_renderer(doc, segment, show_visibility=False)
         return _render_monthly_table_with_visibility(exp, doc, segment)
 
-    exp.GENERATOR_VERSION = "mvp1.11-2026-09-06"
+    exp.GENERATOR_VERSION = "mvp1.12-2026-09-06"
     exp._topvisor_buckets = lambda distribution, depth: _manual_buckets_with_yandex_tail(
         current_buckets, distribution, depth
     )
