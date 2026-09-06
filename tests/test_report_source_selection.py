@@ -433,6 +433,37 @@ def test_report_page_ajax_sync_returns_periods_without_reload(client, monkeypatc
     assert not Report.objects.filter(project=project).exists()
 
 
+def test_connection_page_sync_returns_to_connection_without_creating_report(client, monkeypatch):
+    user = get_user_model().objects.create_user("source-connection-sync")
+    project = Project.objects.create(name="Connection Sync", domain="connection-sync.example")
+    connection = YandexConnection.objects.create(
+        user=user,
+        access_token_encrypted=b"token",
+        active=True,
+    )
+    YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    success = SimpleNamespace(
+        status="success",
+        Status=SimpleNamespace(SUCCESS="success"),
+        fetched_period_count=1,
+        reused_period_count=2,
+        unavailable_goal_ids=[],
+    )
+    monkeypatch.setattr("apps.yandex.views.sync_metrika", lambda **_kwargs: success)
+    client.force_login(user)
+
+    response = client.post(reverse("yandex:sync", args=[project.id]), {"month": "2026-07"})
+
+    assert response.url == reverse("yandex:connection", args=[project.id])
+    assert not Report.objects.filter(project=project).exists()
+
+
 def test_existing_report_gets_new_immutable_version_and_duplicate_post_is_blocked(client):
     user = get_user_model().objects.create_user("selection", password="password")
     project = Project.objects.create(name="Versions", domain="versions.example")

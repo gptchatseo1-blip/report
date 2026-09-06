@@ -127,8 +127,10 @@ def test_counter_selection_uses_server_response_and_site2(
             "counter_name": "Forged",
             "counter_domain": "evil.example",
         },
+        follow=True,
     )
-    assert response.status_code == 302
+    assert response.status_code == 200
+    assert "Счётчик Яндекс.Метрики сохранён." in response.content.decode()
     mapping = project.yandex_metrika_mapping
     assert (mapping.counter_name, mapping.counter_domain) == ("Canonical name", "site.example")
 

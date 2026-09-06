@@ -58,11 +58,12 @@
     <h3>Синхронизация Метрики</h3>
     <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих.</p>
     <p>Последняя успешная: {{ mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
-    <form method="post" action="{% url 'yandex:sync' project.id %}" class="sync-form">
+    <form method="post" action="{% url 'yandex:sync' project.id %}" class="sync-form" data-yandex-sync-form data-sync-label="Метрики">
       {% csrf_token %}
       <label>Отчётный месяц <input type="month" name="month" required></label>
       <label class="force-refresh"><input type="checkbox" name="force_refresh" value="1"> Обновить ранее загруженные периоды</label>
-      <button>Синхронизировать и открыть отчёт</button>
+      <button data-sync-submit>Синхронизировать Метрику</button>
+      <span class="sync-progress-notice" data-sync-progress hidden aria-live="polite"></span>
     </form>
   </div>
   {% endif %}
@@ -113,11 +114,12 @@
     <h3>Синхронизация Вебмастера</h3>
     <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих. Если отдельная история ещё не рассчитана Яндексом, остальные доступные показатели всё равно будут сохранены.</p>
     <p>Последняя успешная: {{ webmaster_mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
-    <form method="post" action="{% url 'yandex:sync-webmaster' project.id %}" class="sync-form">
+    <form method="post" action="{% url 'yandex:sync-webmaster' project.id %}" class="sync-form" data-yandex-sync-form data-sync-label="Вебмастера">
       {% csrf_token %}
       <label>Отчётный месяц <input type="month" name="month" required></label>
       <label class="force-refresh"><input type="checkbox" name="force_refresh" value="1"> Обновить ранее загруженные периоды</label>
-      <button>Синхронизировать Вебмастер и открыть отчёт</button>
+      <button data-sync-submit>Синхронизировать Вебмастер</button>
+      <span class="sync-progress-notice" data-sync-progress hidden aria-live="polite"></span>
     </form>
   </div>
   {% endif %}

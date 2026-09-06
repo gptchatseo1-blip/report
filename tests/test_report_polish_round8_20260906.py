@@ -19,7 +19,7 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
     assert 'label="Видимость"' not in source
-    assert 'exp.GENERATOR_VERSION = "mvp1.13-2026-09-06"' in source
+    assert 'exp.GENERATOR_VERSION = "mvp1.14-2026-09-06"' in source
 
 
 def test_distribution_chart_contains_only_position_ranges(monkeypatch):
@@ -154,6 +154,138 @@ def test_calendar_graph_keeps_provider_yandex_buckets_instead_of_manual_three_bu
     )
 
     assert rendered["chart_series"][0]["distribution"] == automatic_distribution
+
+
+def test_distribution_uses_last_calendar_day_instead_of_latest_provider_snapshot():
+    selected_distribution = {"total": 10, "top_10": 4, "ranges": {"1-3": 2, "4-10": 2}}
+    latest_provider_distribution = {
+        "total": 100,
+        "top_10": 90,
+        "ranges": {"1-3": 80, "4-10": 10},
+    }
+    segment = {
+        "search_engine": "yandex",
+        "region": "Москва",
+        "ranking_depth": 100,
+        "distribution": latest_provider_distribution,
+        "chart_series": [
+            {
+                "month": "2026-08-20",
+                "ranking_depth": 100,
+                "distribution": selected_distribution,
+            },
+            {
+                "month": "2026-08-31",
+                "ranking_depth": 100,
+                "distribution": latest_provider_distribution,
+            },
+        ],
+        "three_month_series": [],
+    }
+    payload = {"source_selection": {"topvisor": {"yandex": {"selected_dates": ["2026-08-20"]}}}}
+
+    rendered = _calendar_chart_segment(
+        lambda _payload, item: item,
+        lambda _distribution, _depth: [],
+        payload,
+        segment,
+    )
+
+    assert rendered["distribution"] == selected_distribution
+
+
+def test_google_top_10_chart_keeps_positive_direction_from_selected_snapshots(monkeypatch):
+    captured = {}
+
+    def capture_line(_axis, x_values, values, **kwargs):
+        captured[kwargs["label"]] = (list(x_values), list(values))
+
+    monkeypatch.setattr(exporting, "_plot_smooth_line", capture_line)
+    monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
+    chart_series = [
+        {
+            "month": "2026-07-25",
+            "ranking_depth": 20,
+            "distribution": {
+                "total": 100,
+                "top_10": 30,
+                "ranges": {"1-3": 10, "4-10": 20, "11-20": 15},
+            },
+        },
+        {
+            "month": "2026-08-20",
+            "ranking_depth": 20,
+            "distribution": {
+                "total": 100,
+                "top_10": 36,
+                "ranges": {"1-3": 12, "4-10": 24, "11-20": 18},
+            },
+        },
+    ]
+    rendered = _calendar_chart_segment(
+        lambda _payload, item: item,
+        exporting._topvisor_buckets,
+        {
+            "source_selection": {
+                "topvisor": {"google": {"selected_dates": ["2026-07-25", "2026-08-20"]}}
+            }
+        },
+        {
+            "search_engine": "google",
+            "ranking_depth": 20,
+            "chart_series": chart_series,
+            "three_month_series": [],
+        },
+    )
+
+    _distribution_chart_top_ranges_only(exporting, rendered["chart_series"], 20)
+
+    assert captured["1-10"][1] == [30.0, 36.0]
+
+
+def test_manual_endpoint_keeps_all_automatic_tail_ranges():
+    automatic = {"total": 100}
+    segment = {
+        "search_engine": "yandex",
+        "ranking_depth": 100,
+        "chart_series": [{"month": "2026-08-20", "ranking_depth": 100, "distribution": automatic}],
+        "three_month_series": [],
+    }
+    payload = {"source_selection": {"topvisor": {"yandex": {"selected_dates": ["2026-08-20"]}}}}
+    rendered = _calendar_chart_segment(
+        lambda _payload, item: {
+            **item,
+            "three_month_series": [
+                {
+                    "month": "2026-08-01",
+                    "manual_override": True,
+                    "distribution": {
+                        "manual_buckets": {
+                            "1-3": {"count": 10, "share": 10},
+                            "1-10": {"count": 30, "share": 30},
+                            "11-30": {"count": 25, "share": 25},
+                        }
+                    },
+                }
+            ],
+        },
+        lambda _distribution, _depth: [
+            {"label": "31-50", "count": 15, "share": 15},
+            {"label": "51-100", "count": 12, "share": 12},
+            {"label": "101+", "count": 8, "share": 8},
+        ],
+        payload,
+        segment,
+    )
+
+    assert list(rendered["distribution"]["manual_buckets"]) == [
+        "1-3",
+        "1-10",
+        "11-30",
+        "31-50",
+        "51-100",
+        "101+",
+    ]
 
 
 def test_yandex_manual_buckets_keep_long_tail_ranges():

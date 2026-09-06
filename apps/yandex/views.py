@@ -481,6 +481,7 @@ def select_counter(request, project_id):
             "selected_goals": [],
         },
     )
+    messages.success(request, "Счётчик Яндекс.Метрики сохранён.")
     return redirect("yandex:connection", project_id=project.id)
 
 
@@ -595,6 +596,7 @@ def select_host(request, project_id):
             "domain_mismatch_confirmed": mismatch,
         },
     )
+    messages.success(request, "Сайт Яндекс.Вебмастера сохранён.")
     return redirect("yandex:connection", project_id=project.id)
 
 
@@ -626,15 +628,15 @@ def sync(request, project_id):
     if _is_ajax(request):
         return _sync_json(mapping, SourceSnapshot.Source.METRIKA, run)
     if run.status == run.Status.SUCCESS:
-        from apps.reports.models import Report
-
-        report, _ = Report.objects.get_or_create(
-            project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
-        )
         messages.success(request, _sync_message(run))
         if request.POST.get("return_to_reports") == "1":
+            from apps.reports.models import Report
+
+            Report.objects.get_or_create(
+                project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
+            )
             return redirect("reports:report-list", project_id=mapping.project_id)
-        return redirect("reports:report-detail", report_id=report.id)
+        return redirect("yandex:connection", project_id=project_id)
     messages.error(request, run.error_message)
     if request.POST.get("return_to_reports") == "1":
         return redirect("reports:report-list", project_id=mapping.project_id)
@@ -669,15 +671,15 @@ def sync_webmaster_view(request, project_id):
     if _is_ajax(request):
         return _sync_json(mapping, SourceSnapshot.Source.WEBMASTER, run)
     if run.status == run.Status.SUCCESS:
-        from apps.reports.models import Report
-
-        report, _ = Report.objects.get_or_create(
-            project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
-        )
         messages.success(request, _sync_message(run))
         if request.POST.get("return_to_reports") == "1":
+            from apps.reports.models import Report
+
+            Report.objects.get_or_create(
+                project=mapping.project, report_month=form.cleaned_data["month"].replace(day=1)
+            )
             return redirect("reports:report-list", project_id=mapping.project_id)
-        return redirect("reports:report-detail", report_id=report.id)
+        return redirect("yandex:connection", project_id=project_id)
     messages.error(request, run.error_message)
     if request.POST.get("return_to_reports") == "1":
         return redirect("reports:report-list", project_id=mapping.project_id)

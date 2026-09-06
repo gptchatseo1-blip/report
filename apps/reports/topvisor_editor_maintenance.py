@@ -211,7 +211,7 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
 
 
 def refresh_editor_rows(project):
-    """Refresh automatic values while preserving explicit manual corrections."""
+    """Refresh only unchecked rows; checked rows are frozen for the report."""
     settings, values, saved_rows = _read_saved_rows(project)
     automatic_by_key = {_row_key(row): row for row in _automatic_rows(project)}
     refreshed = []
@@ -223,14 +223,10 @@ def refresh_editor_rows(project):
             refreshed.append(existing)
             continue
 
-        if existing.get("manual_override") is True:
-            # Preserve deliberate edits, but move the automatic marker to the latest value.
-            row = dict(existing)
-            row["automatic_visibility"] = automatic.get("visibility")
-            row["configuration_id"] = str(
-                automatic.get("configuration_id") or row.get("configuration_id") or ""
-            )
-            refreshed.append(row)
+        if existing.get("include_in_report") is True:
+            # The checkbox is an explicit freeze: neither provider refresh nor report
+            # navigation may replace values selected for the report.
+            refreshed.append(dict(existing))
             continue
 
         refreshed.append(_automatic_saved_row(automatic, existing))

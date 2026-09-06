@@ -132,6 +132,7 @@
       const parent = document.getElementById(container.dataset.dependentOn);
       const disabled = !parent?.checked;
       container.classList.toggle('disabled-setting', disabled);
+      if (container.hasAttribute('data-hide-when-disabled')) container.hidden = disabled;
       container.querySelectorAll('input, select, textarea, button').forEach(field => { field.disabled = disabled; });
     });
   }
