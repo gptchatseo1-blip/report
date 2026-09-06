@@ -444,10 +444,15 @@ def test_default_search_segment_uses_last_significant_attribution(identity, yand
     assert run.status == "success"
     assert all(call.get("attribution") == "cross_device_last_significant" for call in api.calls)
     assert any(
-        call.get("dimensions") == "ym:s:crossDeviceLastSignTrafficSource" for call in api.calls
+        call.get("dimensions") == "ym:s:<attribution>TrafficSource" for call in api.calls
     )
     assert any(
-        call.get("dimensions") == "ym:s:crossDeviceLastSignSearchEngineRoot" for call in api.calls
+        call.get("dimensions") == "ym:s:<attribution>SearchEngineRoot" for call in api.calls
+    )
+    assert any(
+        call.get("dimensions")
+        == "ym:s:<attribution>SearchEngineRoot,ym:s:startURL"
+        for call in api.calls
     )
 
 
