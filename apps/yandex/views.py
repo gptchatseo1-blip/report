@@ -528,6 +528,9 @@ def select_goals(request, project_id):
             "name": goal.get("name", ""),
             "label": previous.get(goal_id, {}).get("label", goal.get("name", "")),
         }
+        goal_type = goal.get("type")
+        if goal_type:
+            selected_goal["type"] = goal_type
         identifier = goal.get("identifier") or condition
         if identifier:
             selected_goal["identifier"] = identifier

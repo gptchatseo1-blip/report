@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import textwrap
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
 from pathlib import Path
@@ -387,6 +387,111 @@ def _period_pills_image(items):
                 fontweight="bold" if marker == "swap" else "normal",
             )
             x += width + 0.18
+        figure.subplots_adjust(0, 0, 1, 1)
+        return _save_figure(figure)
+
+
+def _webmaster_period_image(period, *, detail=None):
+    """Render the date controls used by Yandex Webmaster report pages."""
+    date_width = max(3.7, len(period) * 0.088)
+    detail_width = 2.55 if detail else 0
+    gap = 0.18 if detail else 0
+    total = date_width + detail_width + gap
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
+        figure, axis = plt.subplots(figsize=(total, 0.56), dpi=300, facecolor="white")
+        axis.set_xlim(0, total)
+        axis.set_ylim(0, 1)
+        axis.axis("off")
+
+        def field(x, width):
+            axis.add_patch(
+                FancyBboxPatch(
+                    (x, 0.12),
+                    width,
+                    0.76,
+                    boxstyle="round,pad=0.015,rounding_size=0.24",
+                    facecolor="#FFFFFF",
+                    edgecolor="#DDE2E8",
+                    linewidth=0.9,
+                )
+            )
+
+        field(0, date_width)
+        axis.text(0.18, 0.5, period, ha="left", va="center", fontsize=8.6, color="#252B33")
+        # Calendar icon from the same control family, reduced to its essential strokes.
+        icon_x = date_width - 0.28
+        axis.add_patch(
+            FancyBboxPatch(
+                (icon_x - 0.095, 0.34),
+                0.16,
+                0.27,
+                boxstyle="round,pad=0.008,rounding_size=0.025",
+                fill=False,
+                edgecolor="#7A838D",
+                linewidth=0.8,
+            )
+        )
+        axis.plot((icon_x - 0.09, icon_x + 0.06), (0.52, 0.52), color="#7A838D", lw=0.7)
+        axis.plot((icon_x - 0.05, icon_x - 0.05), (0.59, 0.65), color="#7A838D", lw=0.8)
+        axis.plot((icon_x + 0.02, icon_x + 0.02), (0.59, 0.65), color="#7A838D", lw=0.8)
+        if detail:
+            x = date_width + gap
+            field(x, detail_width)
+            axis.text(
+                x + 0.18,
+                0.5,
+                f"Детализация: {detail}",
+                ha="left",
+                va="center",
+                fontsize=8.6,
+                color="#252B33",
+            )
+            axis.plot(
+                (x + detail_width - 0.32, x + detail_width - 0.24, x + detail_width - 0.16),
+                (0.55, 0.43, 0.55),
+                color="#7A838D",
+                lw=0.8,
+            )
+        figure.subplots_adjust(0, 0, 1, 1)
+        return _save_figure(figure)
+
+
+def _metrika_period_image(period, *, detail):
+    """Render compact shade buttons used by Yandex Metrika."""
+    date_width = max(2.45, len(period) * 0.076)
+    detail_label = f"По {detail}"
+    detail_width = max(1.55, len(detail_label) * 0.075)
+    gap = 0.12
+    total = date_width + gap + detail_width
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
+        figure, axis = plt.subplots(figsize=(total, 0.48), dpi=300, facecolor="white")
+        axis.set_xlim(0, total)
+        axis.set_ylim(0, 1)
+        axis.axis("off")
+        for x, width in ((0, date_width), (date_width + gap, detail_width)):
+            axis.add_patch(
+                FancyBboxPatch(
+                    (x, 0.14),
+                    width,
+                    0.72,
+                    boxstyle="round,pad=0.015,rounding_size=0.18",
+                    facecolor="#F1F3F5",
+                    edgecolor="#F1F3F5",
+                    linewidth=0.8,
+                )
+            )
+        axis.text(0.17, 0.5, period, ha="left", va="center", fontsize=8.2, color="#252B33")
+        axis.text(
+            date_width + gap + 0.17,
+            0.5,
+            detail_label,
+            ha="left",
+            va="center",
+            fontsize=8.2,
+            color="#252B33",
+        )
+        for x in (date_width - 0.2, total - 0.2):
+            axis.plot((x - 0.05, x, x + 0.05), (0.54, 0.44, 0.54), color="#66717D", lw=0.75)
         figure.subplots_adjust(0, 0, 1, 1)
         return _save_figure(figure)
 
@@ -1217,21 +1322,27 @@ def _date_label(value):
     return f"{parsed.day} {MONTHS_GENITIVE[parsed.month - 1]}"
 
 
-def _period_caption(doc, rows, *, detail="по дням"):
+def _period_caption(doc, rows, *, detail="дням", provider="metrika", show_detail=True):
     dates = [row.get("date") for row in rows if row.get("date")]
     if not dates:
         return
     start, end = min(dates), max(dates)
     start_date, end_date = date.fromisoformat(start), date.fromisoformat(end)
-    period = (
-        f"{start_date:%d} {MONTHS_GENITIVE[start_date.month - 1]} {start_date.year} - "
-        f"{end_date:%d} {MONTHS_GENITIVE[end_date.month - 1]} {end_date.year}"
-    )
-    _add_report_picture(
-        doc,
-        _period_pills_image([(period, ""), (f"{detail.capitalize()} ⌄", "")]),
-        width=11.2,
-    )
+    if provider == "webmaster":
+        period = (
+            f"{start_date:%d} {MONTHS[start_date.month - 1]} {start_date.year} — "
+            f"{end_date:%d} {MONTHS[end_date.month - 1]} {end_date.year}"
+        )
+        image = _webmaster_period_image(period, detail=detail if show_detail else None)
+        width = 11.5 if show_detail else 7.0
+    else:
+        period = (
+            f"{start_date.day} {MONTHS_GENITIVE[start_date.month - 1]} — "
+            f"{end_date.day} {MONTHS_GENITIVE[end_date.month - 1]}"
+        )
+        image = _metrika_period_image(period, detail=detail)
+        width = 7.1
+    _add_report_picture(doc, image, width=width)
 
 
 def _nice_step(values, *, minimum=10):
@@ -1362,7 +1473,7 @@ def _webmaster_search_chart(payload):
         return None
     labels = [_date_label(row["date"]) for row in rows]
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(7.2, 3.55), dpi=150, facecolor="white")
+        figure, axis = plt.subplots(figsize=(7.6, 4.05), dpi=150, facecolor="white")
         for index, row in enumerate(rows):
             if date.fromisoformat(row["date"]).weekday() >= 5:
                 axis.axvspan(index - 0.5, index + 0.5, color="#F1F1F1", zorder=0)
@@ -1394,6 +1505,8 @@ def _webmaster_search_chart(payload):
         )
         _style_axis(axis)
         axis.set_yticks([])
+        axis.set_xlim(-0.8, len(labels) - 0.2)
+        axis.set_ylim(-0.09, 1.09)
         axis.xaxis.set_major_locator(MaxNLocator(8))
         axis.legend(
             loc="upper center",
@@ -1402,7 +1515,7 @@ def _webmaster_search_chart(payload):
             frameon=False,
             fontsize=8,
         )
-        figure.subplots_adjust(left=0.04, right=0.98, top=0.87, bottom=0.23)
+        figure.subplots_adjust(left=0.055, right=0.965, top=0.87, bottom=0.21)
         return _save_figure(figure)
 
 
@@ -1469,6 +1582,15 @@ def _provider_value(code, value):
     return _number(value, decimal_places=0)
 
 
+def _webmaster_value(code, value):
+    if value is None:
+        value = 0
+    if code in {"ctr", "average_position"}:
+        number = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        return f"{number:.2f}".replace(".", ",").rstrip("0").rstrip(",")
+    return _number(value, decimal_places=0)
+
+
 def _change_color(current, previous, *, lower_is_better=False):
     current = _decimal_or_none(current)
     previous = _decimal_or_none(previous)
@@ -1518,8 +1640,9 @@ def _paired_metric_cell(
     lower_is_better=False,
     show_change=True,
     color_previous=False,
+    difference_only=False,
 ):
-    cell.text = _provider_value(code, current)
+    cell.text = _webmaster_value(code, current)
     current_paragraph = cell.paragraphs[0]
     current_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     current_paragraph.paragraph_format.space_after = Pt(1)
@@ -1527,7 +1650,13 @@ def _paired_metric_cell(
     if previous is None:
         return
 
-    previous_paragraph = cell.add_paragraph(_provider_value(code, previous))
+    current_number = _decimal_or_none(current)
+    previous_number = _decimal_or_none(previous)
+    delta = abs((current_number or 0) - (previous_number or 0))
+    previous_text = (
+        _webmaster_value(code, delta) if difference_only else _webmaster_value(code, previous)
+    )
+    previous_paragraph = cell.add_paragraph(previous_text)
     previous_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     previous_paragraph.paragraph_format.space_after = Pt(0)
     previous_color = (
@@ -1540,9 +1669,6 @@ def _paired_metric_cell(
     if not show_change:
         return
 
-    current_number = _decimal_or_none(current)
-    previous_number = _decimal_or_none(previous)
-    delta = abs((current_number or 0) - (previous_number or 0))
     if code in {"shows", "clicks"}:
         relative = (
             delta / abs(previous_number) * Decimal(100)
@@ -1585,6 +1711,7 @@ def _webmaster_query_summary_table(doc, current, previous):
             lower_is_better=code == "average_position",
             show_change=False,
             color_previous=True,
+            difference_only=True,
         )
     _style_provider_table(table)
     for cell, color in zip(
@@ -1684,6 +1811,7 @@ def _webmaster_popular_table(doc, current_rows, previous_rows):
                 lower_is_better=code == "average_position",
                 show_change=False,
                 color_previous=True,
+                difference_only=True,
             )
     _style_provider_table(table)
     for cell, color in zip(
@@ -1844,7 +1972,12 @@ def _render_webmaster(doc, payload, blocks):
                 )
                 + f"составляет {_number(current)} единиц."
             )
-            _period_caption(doc, iks_rows)
+            _period_caption(
+                doc,
+                iks_rows,
+                provider="webmaster",
+                show_detail=False,
+            )
             _add_report_picture(
                 doc,
                 _single_service_chart(
@@ -1900,7 +2033,7 @@ def _render_webmaster(doc, payload, blocks):
             "Данные по показам, кликам и CTR по всем запросам:", style="Table Heading"
         )
         query_rows = _daily_rows(details, "queries")
-        _period_caption(doc, query_rows)
+        _period_caption(doc, query_rows, provider="webmaster", detail="по дням")
         _add_report_picture(doc, _webmaster_search_chart(payload))
         current_summary = latest.get("query_summary") or {}
         previous_summary = latest.get("comparison_query_summary") or {}
@@ -1908,8 +2041,6 @@ def _render_webmaster(doc, payload, blocks):
             current_summary, previous_summary = _webmaster_query_summary_from_changes(payload)
         if current_summary:
             _webmaster_query_summary_table(doc, current_summary, previous_summary)
-        if current_summary and previous_summary:
-            doc.add_paragraph(_webmaster_query_text(current_summary, previous_summary))
         doc.add_paragraph(
             "Красным шрифтом представлены цифры, показывающие спад показателя по сравнению "
             "с предыдущим периодом, зелёным — рост. Запросы, по которым начинает показываться "
@@ -1917,9 +2048,10 @@ def _render_webmaster(doc, payload, blocks):
             "показываются небрендовые (они менее кликабельные), которые появляются на более "
             "низких позициях. Поэтому показатели CTR и позиции могут снижаться."
         )
+        if current_summary and previous_summary:
+            doc.add_paragraph(_webmaster_query_text(current_summary, previous_summary))
     if section_enabled(payload, "webmaster_popular_queries"):
         doc.add_paragraph("Самые кликабельные запросы:", style="Table Heading")
-        _period_caption(doc, _daily_rows(details, "queries"))
         current_queries = latest.get("popular_queries") or []
         previous_queries = latest.get("comparison_popular_queries") or []
         comment = blocks.get("webmaster_popular_queries") or payload.get("display_options", {}).get(
@@ -2989,23 +3121,43 @@ def _group_overview_text(periods, groups, *, commercial=False):
 
 
 def _metrika_goal_icon(goal):
+    goal_type = re.sub(r"[^a-z]", "", str(goal.get("type") or "").casefold())
+    exact_types = {
+        "conditionalcall": "call",
+        "call": "call",
+        "step": "step",
+        "url": "url",
+        "multi": "multi",
+        "email": "email",
+        "phone": "phone",
+        "action": "action",
+        "visitduration": "visit_duration",
+    }
+    if goal_type in exact_types:
+        return exact_types[goal_type]
     text = " ".join(
         str(goal.get(key) or "") for key in ("label", "name", "identifier", "condition")
     ).casefold()
     if any(token in text for token in ("телефон", "phone", "звон")):
-        return "phone"
+        return "call"
     if any(token in text for token in ("форма", "заяв", "заказ", "обратн", "отзыв")):
-        return "target"
+        return "action"
     if any(token in text for token in ("переход", "url", "http", "страниц")):
-        return "page"
+        return "url"
     if any(token in text for token in ("общая", "общий", "составная")):
-        return "sliders"
-    return "target"
+        return "multi"
+    return "action"
 
 
 def _draw_metrika_goal_icon(figure, goal, *, x=0.042, y=0.878, color="#7A45E5"):
-    """Draw compact vector goal icons matching Metrika without font glyphs."""
+    """Draw the exact goal-type icons embedded in the supplied Metrika page."""
     kind = _metrika_goal_icon(goal)
+    asset = Path(__file__).resolve().parent / "assets" / "metrika_goal_icons" / f"{kind}.png"
+    if asset.exists():
+        icon_axis = figure.add_axes((x - 0.011, y - 0.016, 0.024, 0.032))
+        icon_axis.imshow(plt.imread(asset))
+        icon_axis.axis("off")
+        return
     transform = figure.transFigure
     linewidth = 1.15
     if kind == "target":
@@ -3442,15 +3594,6 @@ def _render_metrika(doc, payload, blocks):
         "Трафик представлен за квартал по всем источникам в распределении по месяцам."
     )
     period_details = _period_details(payload, "yandex_metrika")
-    if period_details:
-        _period_caption(
-            doc,
-            [
-                {"date": str(period_details[0]["period_start"])[:10]},
-                {"date": str(period_details[-1]["period_end"])[:10]},
-            ],
-            detail="по месяцам",
-        )
     if sources_enabled:
         doc.add_paragraph("Источники, сводка", style="Table Heading")
         if period_details:
@@ -3460,7 +3603,7 @@ def _render_metrika(doc, payload, blocks):
                     {"date": str(period_details[0]["period_start"])[:10]},
                     {"date": str(period_details[-1]["period_end"])[:10]},
                 ],
-                detail="по месяцам",
+                detail="месяцам",
             )
         facts = _metric_source(payload, "yandex_metrika").get("traffic_source_dynamics", {})
         _add_report_picture(doc, _metrika_sources_chart(facts))
@@ -3561,7 +3704,7 @@ def _render_metrika(doc, payload, blocks):
                     {"date": str(search_periods[0]["period_start"])[:10]},
                     {"date": str(search_periods[-1]["period_end"])[:10]},
                 ],
-                detail="по месяцам",
+                detail="месяцам",
             )
             _add_report_picture(doc, _metrika_search_quarter_chart(search_periods))
             directions = []
@@ -3899,7 +4042,7 @@ def _render_metrika(doc, payload, blocks):
                         {"date": str(landing_periods[0]["period_start"])[:10]},
                         {"date": str(landing_periods[-1]["period_end"])[:10]},
                     ],
-                    detail="по месяцам",
+                    detail="месяцам",
                 )
                 _add_report_picture(doc, _metrika_groups_chart(landing_periods, groups))
                 doc.add_paragraph(
@@ -3927,7 +4070,7 @@ def _render_metrika(doc, payload, blocks):
                         {"date": str(landing_periods[0]["period_start"])[:10]},
                         {"date": str(landing_periods[-1]["period_end"])[:10]},
                     ],
-                    detail="по месяцам",
+                    detail="месяцам",
                 )
                 _add_report_picture(
                     doc,
@@ -3987,7 +4130,7 @@ def _render_metrika(doc, payload, blocks):
                     {"date": str(period_details[0]["period_start"])[:10]},
                     {"date": str(period_details[-1]["period_end"])[:10]},
                 ],
-                detail="по месяцам",
+                detail="месяцам",
             )
             doc.add_paragraph(
                 f"Сегмент: {segment_label}. Роботность: {robotness_label}.", style="Compact"

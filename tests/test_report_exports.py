@@ -5,6 +5,7 @@ import shutil
 import zipfile
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -27,12 +28,14 @@ from apps.reports.exporting import (
     _landing_pages_table,
     _manual_topvisor_segment,
     _metrika_detail_table,
+    _metrika_goal_icon,
     _monthly_topvisor_rows,
     _position_fill,
     _render_monthly_topvisor_table,
     _render_topvisor_comparison,
     _webmaster_popular_table,
     _webmaster_query_summary_from_changes,
+    _webmaster_query_summary_table,
     generate_artifact,
 )
 from apps.reports.models import Report, ReportDatasetSnapshot
@@ -169,7 +172,7 @@ def _artifact_bytes(artifact):
         return stream.read()
 
 
-def test_clickable_queries_show_colored_previous_value_without_percent_line():
+def test_clickable_queries_show_colored_absolute_difference():
     document = Document()
     _configure_document(document, "example.test", date(2026, 7, 1))
     table = _webmaster_popular_table(
@@ -180,8 +183,63 @@ def test_clickable_queries_show_colored_previous_value_without_percent_line():
 
     for cell in table.rows[1].cells[1:]:
         assert len(cell.paragraphs) == 2
-        assert "%" not in cell.paragraphs[1].text
         assert str(cell.paragraphs[1].runs[0].font.color.rgb) == "26A95B"
+    assert [cell.paragraphs[1].text for cell in table.rows[1].cells[1:]] == [
+        "20",
+        "2",
+        "1",
+        "1",
+    ]
+
+
+def test_webmaster_summary_matches_service_truncation_and_absolute_differences():
+    document = Document()
+    _configure_document(document, "example.test", date(2026, 8, 1))
+    table = _webmaster_query_summary_table(
+        document,
+        {
+            "shows": 732834,
+            "clicks": 18012,
+            "ctr": "2.457859",
+            "average_position": "9.009",
+        },
+        {
+            "shows": 692963,
+            "clicks": 19356,
+            "ctr": "2.787859",
+            "average_position": "10.059",
+        },
+    )
+
+    assert [cell.paragraphs[0].text for cell in table.rows[1].cells[1:]] == [
+        "732834",
+        "18012",
+        "2,45",
+        "9",
+    ]
+    assert [cell.paragraphs[1].text for cell in table.rows[1].cells[1:]] == [
+        "39871",
+        "1344",
+        "0,33",
+        "1,05",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("goal_type", "asset_name"),
+    [
+        ("Call", "call"),
+        ("ConditionalCall", "call"),
+        ("Action", "action"),
+        ("Url", "url"),
+        ("Step", "step"),
+        ("Multi", "multi"),
+    ],
+)
+def test_metrika_goal_types_use_supplied_exact_icon_assets(goal_type, asset_name):
+    assert _metrika_goal_icon({"type": goal_type}) == asset_name
+    asset = Path("apps/reports") / "assets" / "metrika_goal_icons" / f"{asset_name}.png"
+    assert asset.exists() and asset.stat().st_size > 0
 
 
 def test_landing_hierarchy_sorts_sections_and_children_by_current_visits():

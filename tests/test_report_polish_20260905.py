@@ -400,6 +400,7 @@ def test_visibility_sentence_agrees_with_feminine_noun():
     assert "Общая видимость сайта" in visibility_line
     assert "увеличилась" in visibility_line
     assert "увеличилось" not in visibility_line
+    assert "увеличилась на 9%" in visibility_line
 
 
 def test_distribution_summary_uses_equal_centered_label_cells():
