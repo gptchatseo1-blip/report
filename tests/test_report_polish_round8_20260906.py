@@ -1,7 +1,12 @@
 from pathlib import Path
 
+from docx import Document
+
+from apps.reports import exporting
 from apps.reports.runtime_fixes_round8 import (
     _calendar_chart_segment,
+    _compact_distribution_cards_table,
+    _distribution_chart_top_ranges_only,
     _manual_buckets_with_yandex_tail,
 )
 
@@ -13,8 +18,61 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert '("Месяц", "Видимость", "в топ 3", "в топ 10"' in source
     assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
-    assert 'label="Видимость"' in source
-    assert 'exp.GENERATOR_VERSION = "mvp1.12-2026-09-06"' in source
+    assert 'label="Видимость"' not in source
+    assert 'exp.GENERATOR_VERSION = "mvp1.13-2026-09-06"' in source
+
+
+def test_distribution_chart_contains_only_position_ranges(monkeypatch):
+    monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
+    distribution = {
+        "total": 100,
+        "ranges": {
+            "1-3": 10,
+            "4-10": 20,
+            "11-20": 20,
+            "21-30": 15,
+            "31-50": 10,
+            "51-100": 15,
+        },
+    }
+    figure = _distribution_chart_top_ranges_only(
+        exporting,
+        [
+            {"month": "2026-07-01", "visibility": 90, "distribution": distribution},
+            {"month": "2026-08-01", "visibility": 95, "distribution": distribution},
+        ],
+        100,
+    )
+
+    legend_labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+    assert "Видимость" not in legend_labels
+    assert legend_labels == ["1-3", "1-10", "11-30", "31-50", "51-100", "101+"]
+
+
+def test_distribution_cards_have_no_empty_paragraph_before_rows():
+    document = Document()
+    table = _compact_distribution_cards_table(
+        exporting,
+        document,
+        {
+            "total": 100,
+            "ranges": {
+                "1-3": 10,
+                "4-10": 20,
+                "11-20": 20,
+                "21-30": 15,
+                "31-50": 10,
+                "51-100": 15,
+            },
+        },
+        100,
+    )
+
+    for row in table.rows:
+        for cell in row.cells:
+            assert len(cell.tables) == 1
+            assert len(cell.paragraphs) == 1
+            assert cell.paragraphs[0].paragraph_format.line_spacing.pt == 1
 
 
 def test_graph_uses_only_dates_checked_in_calendar():
