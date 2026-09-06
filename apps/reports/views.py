@@ -576,6 +576,14 @@ def report_list(request, project_id):
         "position_provider_label": project.get_position_provider_display(),
         "topvisor_editor_rows": topvisor_editor_rows,
         "topvisor_editor_segments": topvisor_editor_segments,
+        "goal_sync_month": next(
+            (
+                source["sync_month"]
+                for source in source_period_fields
+                if source["name"] == "metrika_snapshots"
+            ),
+            form.report_month.strftime("%Y-%m"),
+        ),
     }
     context.update(_metrika_goal_context(project, request.user))
     return render(

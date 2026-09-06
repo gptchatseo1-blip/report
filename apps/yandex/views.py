@@ -536,9 +536,30 @@ def select_goals(request, project_id):
             selected_goal["identifier"] = identifier
         mapping.selected_goals.append(selected_goal)
     mapping.save(update_fields=["selected_goals", "updated_at"])
-    messages.success(
-        request, "Цели Метрики сохранены. Новая настройка применится при синхронизации."
-    )
+    if request.POST.get("return_to_reports") == "1":
+        sync_form = SyncForm(
+            {"month": request.POST.get("month"), "force_refresh": "on"}
+        )
+        if sync_form.is_valid():
+            run = sync_metrika(
+                mapping=mapping,
+                report_month=sync_form.cleaned_data["month"],
+                user=request.user,
+                force_refresh=True,
+            )
+            if run.status == run.Status.SUCCESS:
+                messages.success(request, "Цели Метрики сохранены и импортированы в отчёт.")
+            else:
+                messages.error(request, run.error_message)
+        else:
+            messages.warning(
+                request,
+                "Цели Метрики сохранены. Синхронизируйте Метрику для отчётного месяца.",
+            )
+    else:
+        messages.success(
+            request, "Цели Метрики сохранены. Новая настройка применится при синхронизации."
+        )
     return redirect(
         "reports:report-list"
         if request.POST.get("return_to_reports") == "1"

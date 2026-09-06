@@ -34,6 +34,8 @@ def test_current_manual_editor_is_not_overwritten_by_legacy_scripts():
     assert "form.dataset.manualEditorVersion === '2'" in legacy
     assert "keepalive: true" in current
     assert "void flushSave();" in current
+    assert "(!oldTrigger && !legacyEditor)" in current
+    assert "else legacyEditor.replaceWith(trigger)" in current
 
 
 def test_distribution_chart_contains_only_position_ranges(monkeypatch):

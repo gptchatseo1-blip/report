@@ -4,9 +4,10 @@
   form.dataset.reportPolishRound2Ready = '1';
 
   const manualField = form.querySelector('[name=topvisor_manual_rows]');
+  const legacyEditor = form.querySelector('[data-topvisor-manual-editor]');
   const oldTrigger = form.querySelector('[data-manual-dynamics-open]');
   const oldBackdrop = form.querySelector('[data-manual-dynamics-modal]');
-  if (!manualField || !oldTrigger) return;
+  if (!manualField || (!oldTrigger && !legacyEditor)) return;
 
   const readJson = (id, fallback = []) => {
     try {
@@ -233,7 +234,8 @@
   const closeButton = backdrop.querySelector('.report-modal-close');
   footer.prepend(status);
 
-  oldTrigger.replaceWith(trigger);
+  if (oldTrigger) oldTrigger.replaceWith(trigger);
+  else legacyEditor.replaceWith(trigger);
   oldBackdrop?.remove();
   form.append(backdrop);
 

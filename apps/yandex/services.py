@@ -63,8 +63,8 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-06-v6"
-WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-06-v2"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-06-v7"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-06-v3"
 GOALS_PER_REQUEST = 6
 
 
@@ -545,13 +545,22 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
         ("all", "all", None),
     )
     goal_variant_values = {}
-    unavailable_goal_ids = set()
+    unavailable_by_variant = []
     for segment, robotness, filter_value in variants:
         values, unavailable = _fetch_goal_variant(
             client, common, mapping.selected_goals, filter_value
         )
         goal_variant_values[(segment, robotness)] = values
-        unavailable_goal_ids.update(unavailable)
+        unavailable_by_variant.append(unavailable)
+
+    # A goal can be unavailable for one segment (for example, an empty search
+    # segment) and valid for another.  Previously the union removed that goal
+    # from every report variant.  Only discard goals rejected by all requests.
+    unavailable_goal_ids = (
+        set.intersection(*(set(items) for items in unavailable_by_variant))
+        if unavailable_by_variant
+        else set()
+    )
 
     for goal in mapping.selected_goals:
         goal_id = str(goal["id"])
@@ -1000,6 +1009,115 @@ def _popular_queries(response):
     return rows
 
 
+def _query_analytics_data(response, start, end):
+    """Convert Query Analytics rows to the legacy history/popular shapes.
+
+    The current Webmaster interface uses ``ALL_LOCATIONS_ORGANIC``.  The
+    older search-query history endpoint has no placement parameter and only
+    represents ``WEB_LOCATION``, so its totals can be slightly lower.
+    """
+    source_rows = response.get("text_indicator_to_statistics")
+    if not isinstance(source_rows, list) or not source_rows:
+        return None
+
+    totals_by_date = {}
+    popular = []
+    has_statistics = False
+    for item in source_rows:
+        if not isinstance(item, dict):
+            continue
+        text_indicator = item.get("text_indicator") or {}
+        query = str(text_indicator.get("value") or "").strip()
+        query_days = {}
+        for statistic in item.get("statistics") or []:
+            if not isinstance(statistic, dict):
+                continue
+            try:
+                statistic_date = date.fromisoformat(str(statistic.get("date") or "")[:10])
+            except ValueError:
+                continue
+            if statistic_date < start or statistic_date > end:
+                continue
+            field = str(statistic.get("field") or "").upper()
+            value = _number(statistic.get("value"))
+            if field not in {"IMPRESSIONS", "CLICKS", "POSITION"} or value is None:
+                continue
+            has_statistics = True
+            query_days.setdefault(statistic_date, {})[field] = value
+
+        shows = sum(
+            (values.get("IMPRESSIONS", Decimal(0)) for values in query_days.values()),
+            Decimal(0),
+        )
+        clicks = sum(
+            (values.get("CLICKS", Decimal(0)) for values in query_days.values()), Decimal(0)
+        )
+        weighted_positions = [
+            (values["IMPRESSIONS"], values["POSITION"])
+            for values in query_days.values()
+            if values.get("IMPRESSIONS") is not None and values.get("POSITION") is not None
+        ]
+        position_base = sum((weight for weight, _ in weighted_positions), Decimal(0))
+        position = (
+            sum((weight * value for weight, value in weighted_positions), Decimal(0))
+            / position_base
+            if position_base
+            else None
+        )
+        if query and query_days:
+            popular.append(
+                {
+                    "query_id": query,
+                    "query": query,
+                    "shows": str(shows),
+                    "clicks": str(clicks),
+                    "ctr": str(clicks * Decimal(100) / shows) if shows else "0",
+                    "average_position": str(position) if position is not None else None,
+                    "average_click_position": None,
+                }
+            )
+
+        for statistic_date, values in query_days.items():
+            day = totals_by_date.setdefault(
+                statistic_date,
+                {
+                    "shows": Decimal(0),
+                    "clicks": Decimal(0),
+                    "position_sum": Decimal(0),
+                    "position_base": Decimal(0),
+                },
+            )
+            day["shows"] += values.get("IMPRESSIONS", Decimal(0))
+            day["clicks"] += values.get("CLICKS", Decimal(0))
+            if values.get("IMPRESSIONS") is not None and values.get("POSITION") is not None:
+                day["position_sum"] += values["IMPRESSIONS"] * values["POSITION"]
+                day["position_base"] += values["IMPRESSIONS"]
+
+    if not has_statistics:
+        return None
+    indicators = {"TOTAL_SHOWS": [], "TOTAL_CLICKS": [], "AVG_SHOW_POSITION": []}
+    for statistic_date in sorted(totals_by_date):
+        values = totals_by_date[statistic_date]
+        indicators["TOTAL_SHOWS"].append(
+            {"date": statistic_date.isoformat(), "value": str(values["shows"])}
+        )
+        indicators["TOTAL_CLICKS"].append(
+            {"date": statistic_date.isoformat(), "value": str(values["clicks"])}
+        )
+        if values["position_base"]:
+            indicators["AVG_SHOW_POSITION"].append(
+                {
+                    "date": statistic_date.isoformat(),
+                    "value": str(values["position_sum"] / values["position_base"]),
+                }
+            )
+    popular.sort(
+        key=lambda row: (_number(row.get("clicks")) or Decimal(0), row.get("query") or ""),
+        reverse=True,
+    )
+    return {"indicators": indicators}, popular[:50]
+
+
 def _path_distribution(response):
     paths = Counter()
     for item in response.get("samples", []):
@@ -1076,7 +1194,51 @@ def _webmaster_month(
             ),
         )
         previous_query_summary = _query_summary(previous_queries, comparison_start, comparison_end)
-        if hasattr(client, "popular_search_queries"):
+        analytics_current = None
+        analytics_previous = None
+        if hasattr(client, "query_analytics"):
+            try:
+                analytics_current = _query_analytics_data(
+                    client.query_analytics(
+                        user_id,
+                        mapping.host_id,
+                        date_from=start.isoformat(),
+                        date_to=end.isoformat(),
+                        search_location="ALL_LOCATIONS_ORGANIC",
+                    ),
+                    start,
+                    end,
+                )
+                analytics_previous = _query_analytics_data(
+                    client.query_analytics(
+                        user_id,
+                        mapping.host_id,
+                        date_from=comparison_start.isoformat(),
+                        date_to=comparison_end.isoformat(),
+                        search_location="ALL_LOCATIONS_ORGANIC",
+                    ),
+                    comparison_start,
+                    comparison_end,
+                )
+            except YandexAPIError as exc:
+                # Older accounts can lack Query Analytics access.  Keep the
+                # documented history endpoint as a safe compatibility fallback.
+                logger.info(
+                    "Webmaster Query Analytics unavailable: project=%s status=%s code=%s",
+                    mapping.project_id,
+                    exc.http_status,
+                    exc.error_code or "unknown",
+                )
+        if analytics_current is not None:
+            queries, popular = analytics_current
+            query_summary = _query_summary(queries, start, end)
+        if analytics_previous is not None:
+            previous_queries, previous_popular = analytics_previous
+            previous_query_summary = _query_summary(
+                previous_queries, comparison_start, comparison_end
+            )
+
+        if hasattr(client, "popular_search_queries") and not popular:
             query_indicators = [
                 "TOTAL_SHOWS",
                 "TOTAL_CLICKS",
@@ -1099,22 +1261,23 @@ def _webmaster_month(
                     ),
                 )
             )
-            previous_popular = _popular_queries(
-                _optional_webmaster_resource(
-                    mapping,
-                    "popular_search_queries_comparison",
-                    lambda: client.popular_search_queries(
-                        user_id,
-                        mapping.host_id,
-                        **comparison_params,
-                        order_by="TOTAL_CLICKS",
-                        query_indicator=query_indicators,
-                        device_type_indicator="ALL",
-                        offset=0,
-                        limit=50,
-                    ),
+            if not previous_popular:
+                previous_popular = _popular_queries(
+                    _optional_webmaster_resource(
+                        mapping,
+                        "popular_search_queries_comparison",
+                        lambda: client.popular_search_queries(
+                            user_id,
+                            mapping.host_id,
+                            **comparison_params,
+                            order_by="TOTAL_CLICKS",
+                            query_indicator=query_indicators,
+                            device_type_indicator="ALL",
+                            offset=0,
+                            limit=50,
+                        ),
+                    )
                 )
-            )
         if hasattr(client, "search_urls_samples"):
             path_distribution = _path_distribution(
                 _optional_webmaster_resource(

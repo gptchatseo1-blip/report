@@ -184,14 +184,21 @@ class MetrikaClient:
 class WebmasterClient(MetrikaClient):
     """Read-only client for the Yandex Webmaster API v4.1."""
 
-    def _request(self, path, params=None, *, refreshed=False):
+    def _request(self, path, params=None, *, refreshed=False, json_body=None):
         query = urllib.parse.urlencode(params or {}, doseq=True)
         url = f"{settings.YANDEX_WEBMASTER_API_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"OAuth {decrypt_token(self.connection.access_token_encrypted)}"
+        }
+        data = None
+        if json_body is not None:
+            headers["Content-Type"] = "application/json; charset=UTF-8"
+            data = json.dumps(json_body, ensure_ascii=False).encode()
         request = urllib.request.Request(
             f"{url}?{query}" if query else url,
-            headers={
-                "Authorization": f"OAuth {decrypt_token(self.connection.access_token_encrypted)}"
-            },
+            data=data,
+            headers=headers,
+            method="POST" if json_body is not None else "GET",
         )
         for attempt in range(settings.YANDEX_MAX_RETRIES + 1):
             try:
@@ -202,7 +209,7 @@ class WebmasterClient(MetrikaClient):
             except urllib.error.HTTPError as exc:
                 if exc.code == 401 and not refreshed:
                     self._refresh()
-                    return self._request(path, params, refreshed=True)
+                    return self._request(path, params, refreshed=True, json_body=json_body)
                 if (
                     exc.code == 429 or 500 <= exc.code < 600
                 ) and attempt < settings.YANDEX_MAX_RETRIES:
@@ -305,3 +312,60 @@ class WebmasterClient(MetrikaClient):
 
     def popular_search_queries(self, user_id, host_id, **params):
         return self._request(self._host_path(user_id, host_id, "/search-queries/popular"), params)
+
+    def query_analytics(
+        self,
+        user_id,
+        host_id,
+        *,
+        date_from,
+        date_to,
+        search_location="ALL_LOCATIONS_ORGANIC",
+        page_size=500,
+    ):
+        """Return all query rows for the same placement filter as Webmaster UI."""
+        offset = 0
+        rows = []
+        available = None
+        path = self._host_path(user_id, host_id, "/query-analytics/list")
+        while available is None or offset < available:
+            body = {
+                "offset": offset,
+                "limit": page_size,
+                "device_type_indicator": "ALL",
+                "search_location": search_location,
+                "text_indicator": "QUERY",
+                "filters": {
+                    "statistic_filters": [
+                        {
+                            "statistic_field": "IMPRESSIONS",
+                            "operation": "GREATER_EQUAL",
+                            "value": "0",
+                            "from": str(date_from),
+                            "to": str(date_to),
+                        }
+                    ]
+                },
+                "sort_by_date": {
+                    "date": str(date_to),
+                    "statistic_field": "CLICKS",
+                    "by": "DESC",
+                },
+            }
+            response = self._request(path, json_body=body)
+            batch = response.get("text_indicator_to_statistics") or []
+            rows.extend(batch)
+            try:
+                available = int(response.get("count", len(rows)))
+            except (TypeError, ValueError):
+                available = len(rows)
+            if not batch or len(batch) < page_size:
+                break
+            offset += len(batch)
+        return {
+            "count": available if available is not None else len(rows),
+            "text_indicator_to_statistics": rows,
+            "search_location": search_location,
+            "date_from": str(date_from),
+            "date_to": str(date_to),
+        }
