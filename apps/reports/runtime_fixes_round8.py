@@ -155,11 +155,19 @@ def _compact_distribution_cards_table(exp, doc, distribution, depth, *, engine="
             for run in paragraph.runs:
                 exp._style_run(run, size=11, color="3D4655")
         exp._set_table_borders(nested, "F0F2F5", size="0")
-        for paragraph in outer.paragraphs:
+        for paragraph in list(outer.paragraphs):
+            children = list(outer._tc)
+            paragraph_index = children.index(paragraph._p)
+            if any(child.tag == exp.qn("w:tbl") for child in children[paragraph_index + 1 :]):
+                outer._tc.remove(paragraph._p)
+                continue
             paragraph.paragraph_format.space_before = exp.Pt(0)
             paragraph.paragraph_format.space_after = exp.Pt(0)
+            paragraph.paragraph_format.line_spacing = exp.Pt(1)
             if not paragraph.text:
                 paragraph.add_run("\u200b").font.size = exp.Pt(1)
+            for run in paragraph.runs:
+                run.font.size = exp.Pt(1)
 
     occupied = {(index % row_count, index // row_count) for index in range(len(buckets))}
     for row_index, row in enumerate(table.rows):
@@ -171,10 +179,6 @@ def _compact_distribution_cards_table(exp, doc, distribution, depth, *, engine="
 
     exp._set_table_borders(table, "FFFFFF", size="4")
     exp._keep_small_table_together(table)
-    gap = doc.add_paragraph()
-    gap.paragraph_format.space_before = exp.Pt(0)
-    gap.paragraph_format.space_after = exp.Pt(1)
-    gap.add_run("\u200b").font.size = exp.Pt(1)
     return table
 
 
@@ -192,7 +196,7 @@ def _legend_dot(color, label):
     )
 
 
-def _distribution_chart_with_visibility(exp, history, depth):
+def _distribution_chart_top_ranges_only(exp, history, depth):
     useful_rows = [row for row in history if (row.get("distribution") or {}).get("total")]
     if not useful_rows:
         return None
@@ -206,21 +210,6 @@ def _distribution_chart_with_visibility(exp, history, depth):
         bucket_names = [bucket["label"] for bucket in bucket_rows[0]]
         rows_by_name = [{bucket["label"]: bucket for bucket in buckets} for buckets in bucket_rows]
         handles = []
-        if depth >= 50:
-            visibility = [row.get("visibility") for row in useful_rows]
-            if any(value is not None for value in visibility):
-                values = [float(value or 0) for value in visibility]
-                color = exp.TOPVISOR_COLORS["visibility"]
-                exp._plot_smooth_line(
-                    axis,
-                    x_values,
-                    values,
-                    color=color,
-                    linewidth=1.9,
-                    label="Видимость",
-                )
-                axis.scatter(x_values, values, color=color, s=13, zorder=3)
-                handles.append(_legend_dot(color, "Видимость"))
         for name in bucket_names:
             values = [float(row.get(name, {}).get("share") or 0) for row in rows_by_name]
             color = exp.TOPVISOR_COLORS[name]
@@ -238,12 +227,6 @@ def _distribution_chart_with_visibility(exp, history, depth):
         ticks, tick_labels = exp._date_ticks(labels)
         axis.set_xticks(ticks, tick_labels)
         values_for_top = [float(bucket.get("share") or 0) for row in bucket_rows for bucket in row]
-        if depth >= 50:
-            values_for_top.extend(
-                float(row.get("visibility") or 0)
-                for row in useful_rows
-                if row.get("visibility") is not None
-            )
         top = max(values_for_top or [0])
         axis.set_ylim(0, max(10, math.ceil(top / 10) * 10 + 2))
         axis.yaxis.set_major_formatter(exp.FuncFormatter(lambda value, _pos: f"{value:.0f}%"))
@@ -302,13 +285,13 @@ def apply():
             return current_monthly_renderer(doc, segment, show_visibility=False)
         return _render_monthly_table_with_visibility(exp, doc, segment)
 
-    exp.GENERATOR_VERSION = "mvp1.12-2026-09-06"
+    exp.GENERATOR_VERSION = "mvp1.13-2026-09-06"
     exp._topvisor_buckets = lambda distribution, depth: _manual_buckets_with_yandex_tail(
         current_buckets, distribution, depth
     )
     exp._manual_topvisor_segment = manual_segment
     views._manual_topvisor_segment = manual_segment
-    exp._distribution_chart = lambda history, depth: _distribution_chart_with_visibility(
+    exp._distribution_chart = lambda history, depth: _distribution_chart_top_ranges_only(
         exp, history, depth
     )
     exp._render_distribution_cards_table = (
