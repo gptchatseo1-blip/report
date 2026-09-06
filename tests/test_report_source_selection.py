@@ -317,7 +317,8 @@ def test_report_page_keeps_source_period_controls_inside_each_source_card(client
     assert 'action="' + reverse("yandex:sync", args=[project.id]) + '"' in html
     assert 'action="' + reverse("yandex:sync-webmaster", args=[project.id]) + '"' in html
     assert html.count('name="return_to_reports" value="1"') == 3
-    assert html.count('value="2026-07" data-sync-month-for=') == 2
+    assert html.count('value="2026-07" data-sync-month-for=') == 3
+    assert 'data-sync-month-for="metrika-goals"' in html
     assert "Не определено</label>" in html
     assert "Область не определена</label>" in html
     assert list(response.context["form"]["metrika_bar_search_engines"].value()) == [

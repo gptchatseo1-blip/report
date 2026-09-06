@@ -125,6 +125,40 @@ class FakeWebmaster:
         }
 
 
+class FakeWebmasterQueryAnalytics(FakeWebmaster):
+    def __init__(self):
+        super().__init__()
+        self.analytics_calls = []
+
+    def query_analytics(self, *args, **kwargs):
+        self.analytics_calls.append(kwargs)
+        start = kwargs["date_from"]
+        return {
+            "count": 2,
+            "text_indicator_to_statistics": [
+                {
+                    "text_indicator": {"type": "QUERY", "value": "clinic"},
+                    "statistics": [
+                        {"date": start, "field": "IMPRESSIONS", "value": 100},
+                        {"date": start, "field": "CLICKS", "value": 10},
+                        {"date": start, "field": "POSITION", "value": 4},
+                    ],
+                },
+                {
+                    "text_indicator": {"type": "QUERY", "value": "doctor"},
+                    "statistics": [
+                        {"date": start, "field": "IMPRESSIONS", "value": 20},
+                        {"date": start, "field": "CLICKS", "value": 2},
+                        {"date": start, "field": "POSITION", "value": 9},
+                    ],
+                },
+            ],
+        }
+
+    def popular_search_queries(self, *args, **kwargs):
+        raise AssertionError("Query Analytics already supplied the popular rows")
+
+
 def webmaster_http_error(code, error_code):
     return urllib.error.HTTPError(
         "https://api.webmaster.yandex.net/v4/safe",
@@ -224,6 +258,28 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
     assert refreshed.status == refreshed.Status.SUCCESS
     assert refreshed_api.user_calls == 1
     assert (refreshed.fetched_period_count, refreshed.reused_period_count) == (3, 0)
+
+
+def test_current_webmaster_totals_use_same_search_location_as_service(context):
+    item = mapping(context)
+    api = FakeWebmasterQueryAnalytics()
+
+    run = sync_webmaster(
+        mapping=item, report_month=date(2026, 3, 1), user=context[0], client=api
+    )
+
+    assert run.status == run.Status.SUCCESS
+    assert len(api.analytics_calls) == 2
+    assert all(
+        call["search_location"] == "ALL_LOCATIONS_ORGANIC" for call in api.analytics_calls
+    )
+    march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
+    points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
+    assert points["search_impressions"] == 120
+    assert points["search_clicks"] == 12
+    assert float(points["average_position"]) == pytest.approx(4.8333, abs=0.0001)
+    assert march.payload["query_summary"]["shows"] == "120"
+    assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
 
 
 def test_zero_impressions_does_not_invent_ctr(context):
@@ -377,6 +433,45 @@ def test_hosts_make_one_request_without_query_parameters(context):
     api = WebmasterClient(connection, opener=opener, sleep=lambda _: None)
     assert [row["host_id"] for row in api.hosts(7)] == ["first", "second"]
     assert calls == ["https://api.webmaster.yandex.net/v4/user/7/hosts"]
+
+
+def test_query_analytics_posts_ui_location_and_period(context):
+    connection = context[2]
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"count": 1, "text_indicator_to_statistics": [{"statistics": []}]}
+            ).encode()
+
+    def opener(request, timeout):
+        requests.append(request)
+        return Response()
+
+    api = WebmasterClient(connection, opener=opener, sleep=lambda _: None)
+    result = api.query_analytics(
+        7,
+        "https:site.example:443",
+        date_from="2026-08-01",
+        date_to="2026-08-31",
+    )
+
+    assert result["count"] == 1
+    assert len(requests) == 1
+    request = requests[0]
+    body = json.loads(request.data)
+    assert request.method == "POST"
+    assert request.headers["Content-type"] == "application/json; charset=UTF-8"
+    assert body["search_location"] == "ALL_LOCATIONS_ORGANIC"
+    assert body["filters"]["statistic_filters"][0]["from"] == "2026-08-01"
+    assert body["filters"]["statistic_filters"][0]["to"] == "2026-08-31"
 
 
 def test_mutating_routes_reject_get(client, context):

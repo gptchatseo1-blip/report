@@ -207,6 +207,55 @@ def test_goal_selection_uses_available_goals(client, identity, yandex_settings, 
     ]
 
 
+def test_report_goal_selection_imports_goals_immediately(
+    client, identity, yandex_settings, monkeypatch
+):
+    user, project = identity
+    mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=make_connection(user),
+        counter_id="42",
+        counter_name="C",
+        counter_domain=project.domain,
+    )
+    client.force_login(user)
+    monkeypatch.setattr(
+        MetrikaClient,
+        "goals",
+        lambda *_: [{"id": 7, "name": "Order", "type": "Action"}],
+    )
+    calls = []
+
+    class SuccessfulRun:
+        class Status:
+            SUCCESS = "success"
+
+        status = "success"
+
+    def fake_sync(**kwargs):
+        calls.append(kwargs)
+        return SuccessfulRun()
+
+    monkeypatch.setattr("apps.yandex.views.sync_metrika", fake_sync)
+
+    response = client.post(
+        reverse("yandex:select-goals", args=[project.id]),
+        {
+            "goals": ["7"],
+            "return_to_reports": "1",
+            "month": "2026-08",
+        },
+        follow=True,
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["mapping"] == mapping
+    assert calls[0]["report_month"] == date(2026, 8, 1)
+    assert calls[0]["force_refresh"] is True
+    assert "сохранены и импортированы" in response.content.decode()
+
+
 def test_goals_use_compact_picker_with_selected_count(
     client, identity, yandex_settings, monkeypatch
 ):
@@ -239,6 +288,7 @@ def test_goals_use_compact_picker_with_selected_count(
     assert "Выбрать цели · выбрано <span data-goal-count>1</span>" in html
     assert 'value="7" form="report-metrika-goals-form" checked' in html
     assert 'value="8"' in html
+    assert 'data-sync-month-for="metrika-goals"' in html
 
 
 def test_metrika_run_can_only_be_deleted_by_post_and_keeps_snapshots(
@@ -449,6 +499,12 @@ def test_default_search_segment_uses_last_significant_attribution(identity, yand
         call.get("dimensions") == "ym:s:<attribution>SearchEngineRoot,ym:s:startURL"
         for call in api.calls
     )
+    assert any(
+        call.get("dimensions") == "ym:s:<attribution>SearchEngineRoot,ym:s:startURL"
+        and call.get("filters")
+        == "ym:s:<attribution>TrafficSource=='organic' AND ym:s:isRobot=='No'"
+        for call in api.calls
+    )
 
 
 def test_late_failure_preserves_existing_snapshots(identity, yandex_settings):
@@ -507,6 +563,17 @@ class FakeMetrikaWithDeletedGoal(FakeMetrika):
         return super().stat(**params)
 
 
+class FakeMetrikaWithSegmentLimitedGoal(FakeMetrika):
+    def stat(self, **params):
+        if (
+            "goal13" in params["metrics"]
+            and "isRobot=='No'" in str(params.get("filters") or "")
+            and "TrafficSource" in str(params.get("filters") or "")
+        ):
+            raise YandexAPIError("safe", http_status=400, error_code="invalid_parameter")
+        return super().stat(**params)
+
+
 def test_deleted_goal_is_skipped_without_losing_other_goals(identity, yandex_settings):
     mapping = mapping_with_goal(identity, yandex_settings)
     mapping.selected_goals.append({"id": "13", "name": "Deleted", "label": "Deleted"})
@@ -523,6 +590,23 @@ def test_deleted_goal_is_skipped_without_losing_other_goals(identity, yandex_set
     assert run.unavailable_goal_ids == ["13"]
     assert "goal_7_visits" in codes
     assert not any("goal_13" in code for code in codes)
+
+
+def test_goal_unavailable_in_one_segment_is_still_imported(identity, yandex_settings):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    mapping.selected_goals.append({"id": "13", "name": "Call", "label": "Call"})
+    mapping.save(update_fields=["selected_goals", "updated_at"])
+
+    run = sync_metrika(
+        mapping=mapping,
+        report_month=date(2026, 3, 1),
+        client=FakeMetrikaWithSegmentLimitedGoal(),
+    )
+
+    codes = set(SourceSnapshot.objects.first().metrics.values_list("metric_code", flat=True))
+    assert run.status == run.Status.SUCCESS
+    assert run.unavailable_goal_ids == []
+    assert "segment_all_humans_goal_13_visits" in codes
 
 
 def test_report_snapshot_contains_safe_source_metadata(identity, yandex_settings):
