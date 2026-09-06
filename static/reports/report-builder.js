@@ -7,7 +7,10 @@
   let saveTimer;
 
   const manualField = form.querySelector('[name=topvisor_manual_rows]');
-  const manualContainer = form.querySelector('[data-topvisor-manual-segments]');
+  const useCurrentManualEditor = form.dataset.manualEditorVersion === '2';
+  const manualContainer = useCurrentManualEditor
+    ? null
+    : form.querySelector('[data-topvisor-manual-segments]');
   const manualStatus = form.querySelector('[data-topvisor-manual-status]');
   const reportMonth = form.querySelector('[name=month]');
   reportMonth?.addEventListener('change', () => {
