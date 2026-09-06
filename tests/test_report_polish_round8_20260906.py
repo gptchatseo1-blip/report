@@ -71,11 +71,7 @@ def test_calendar_graph_keeps_provider_yandex_buckets_instead_of_manual_three_bu
         ],
         "three_month_series": [],
     }
-    payload = {
-        "source_selection": {
-            "topvisor": {"yandex": {"selected_dates": ["2026-08-25"]}}
-        }
-    }
+    payload = {"source_selection": {"topvisor": {"yandex": {"selected_dates": ["2026-08-25"]}}}}
 
     rendered = _calendar_chart_segment(
         lambda _payload, item: {
