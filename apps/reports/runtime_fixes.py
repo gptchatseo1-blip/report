@@ -440,9 +440,10 @@ def _visibility_comparison_phrase(exp, current, previous):
     previous_number = Decimal(str(previous))
     if current_number == previous_number:
         return "не изменилась"
-    if previous_number == 0:
-        return "изменение не рассчитывается из-за нулевой базы"
-    delta = (current_number - previous_number) / abs(previous_number) * Decimal(100)
+    # Visibility itself is already a percentage. Yandex/Topvisor comparisons in
+    # this sentence are expressed in percentage points, not as a relative growth
+    # rate from the previous percentage value.
+    delta = current_number - previous_number
     direction = "увеличилась" if delta > 0 else "уменьшилась"
     rendered = exp._number(abs(delta), "%", decimal_places=0)
     return f"{direction} на {rendered}"

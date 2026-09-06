@@ -194,11 +194,17 @@ def test_goal_selection_uses_available_goals(client, identity, yandex_settings, 
         counter_domain=project.domain,
     )
     client.force_login(user)
-    monkeypatch.setattr(MetrikaClient, "goals", lambda *_: iter([{"id": 7, "name": "Order"}]))
+    monkeypatch.setattr(
+        MetrikaClient,
+        "goals",
+        lambda *_: iter([{"id": 7, "name": "Order", "type": "Action"}]),
+    )
     response = client.post(reverse("yandex:select-goals", args=[project.id]), {"goals": ["7"]})
     assert response.status_code == 302
     mapping.refresh_from_db()
-    assert mapping.selected_goals == [{"id": "7", "name": "Order", "label": "Order"}]
+    assert mapping.selected_goals == [
+        {"id": "7", "name": "Order", "label": "Order", "type": "Action"}
+    ]
 
 
 def test_goals_use_compact_picker_with_selected_count(
@@ -423,8 +429,8 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert snapshots[2].payload["traffic_source_quarter_details"][0]["visits"] == "60"
     cached_api = FakeMetrika()
     cached = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=cached_api)
-    assert cached_api.calls == []
-    assert (cached.fetched_period_count, cached.reused_period_count) == (0, 3)
+    assert cached_api.calls
+    assert (cached.fetched_period_count, cached.reused_period_count) == (1, 2)
     assert SourceSnapshot.objects.filter(project=mapping.project).count() == 3
     assert MetricPoint.objects.filter(snapshot__project=mapping.project).count() == len(points) * 3
 
@@ -436,9 +442,14 @@ def test_default_search_segment_uses_last_significant_attribution(identity, yand
     run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
 
     assert run.status == "success"
-    assert all(call.get("attribution") == "lastsign" for call in api.calls)
-    assert any(call.get("dimensions") == "ym:s:lastsignTrafficSource" for call in api.calls)
-    assert any(call.get("dimensions") == "ym:s:lastsignSearchEngineRoot" for call in api.calls)
+    assert all(call.get("attribution") == "cross_device_last_significant" for call in api.calls)
+    assert any(
+        call.get("dimensions") == "ym:s:crossDeviceLastSignTrafficSource" for call in api.calls
+    )
+    assert any(
+        call.get("dimensions") == "ym:s:crossDeviceLastSignSearchEngineRoot"
+        for call in api.calls
+    )
 
 
 def test_late_failure_preserves_existing_snapshots(identity, yandex_settings):

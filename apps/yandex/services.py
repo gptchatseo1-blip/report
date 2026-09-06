@@ -63,8 +63,8 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-04-v4"
-WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-02-v1"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-06-v5"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-06-v2"
 GOALS_PER_REQUEST = 6
 
 
@@ -89,6 +89,7 @@ def _configuration_fingerprint(mapping, collector_version):
                 "name": str(goal.get("name", "")),
                 "label": str(goal.get("label", "")),
                 "identifier": str(goal.get("identifier", "")),
+                "type": str(goal.get("type", "")),
             }
             for goal in mapping.selected_goals
         ]
@@ -207,7 +208,7 @@ def _attribution_settings(value):
     api_value, prefix = {
         "automatic": ("cross_device_last_significant", "crossDeviceLastSign"),
         "last": ("last", "last"),
-        "lastsign": ("lastsign", "lastsign"),
+        "lastsign": ("cross_device_last_significant", "crossDeviceLastSign"),
     }[code]
     traffic_source = f"ym:s:{prefix}TrafficSource"
     return {
@@ -558,6 +559,7 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
             "name": goal.get("name", ""),
             "label": goal.get("label", goal.get("name", "")),
             "identifier": goal.get("identifier", ""),
+            "type": goal.get("type", ""),
         }
         goal_values = {"search": {}, "all": {}}
         for segment, robotness, _filter_value in variants:
@@ -645,6 +647,9 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
             fingerprint,
             force_refresh=force_refresh,
         )
+        # A manual sync must refresh the report month: Metrika can revise recent
+        # attribution data after the first collection. Older months remain reusable.
+        reusable.pop(month, None)
         fetched = [
             _fetch_month(client, mapping, period, attribution=attribution)
             for period in months
@@ -1227,6 +1232,9 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None, force_refre
             fingerprint,
             force_refresh=force_refresh,
         )
+        # Search-query totals and popular queries can settle after month end.
+        # Refresh the selected month while retaining the two historical snapshots.
+        reusable.pop(month, None)
         if month in reusable and not reusable[month].payload.get("includes_current_details"):
             reusable.pop(month)
         missing = [period for period in months if period not in reusable]

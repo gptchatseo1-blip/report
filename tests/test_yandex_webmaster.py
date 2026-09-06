@@ -203,8 +203,8 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
     ids = list(snapshots.values_list("id", flat=True))
     cached_api = FakeWebmaster()
     cached = sync_webmaster(mapping=item, report_month=date(2026, 3, 1), client=cached_api)
-    assert cached_api.user_calls == 0
-    assert (cached.fetched_period_count, cached.reused_period_count) == (0, 3)
+    assert cached_api.user_calls == 1
+    assert (cached.fetched_period_count, cached.reused_period_count) == (1, 2)
     assert (
         list(
             SourceSnapshot.objects.filter(source=SourceSnapshot.Source.WEBMASTER)
