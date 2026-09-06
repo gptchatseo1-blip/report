@@ -310,6 +310,10 @@
           ));
           monthInput.setCustomValidity(duplicate ? 'Такой месяц уже есть в этой таблице.' : '');
           if (duplicate) return;
+          const deletedMatch = candidate && rows.find(other => (
+            other !== row && other._deleted && segmentKey(other) === segmentKey(row) && String(other.month || '').slice(0, 7) === candidate
+          ));
+          if (deletedMatch) rows.splice(rows.indexOf(deletedMatch), 1);
           row.month = candidate ? `${candidate}-01` : '';
           markDirty(700);
         });

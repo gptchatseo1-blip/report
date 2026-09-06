@@ -14,7 +14,7 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
     assert 'label="Видимость"' in source
-    assert 'exp.GENERATOR_VERSION = "mvp1.11-2026-09-06"' in source
+    assert 'exp.GENERATOR_VERSION = "mvp1.12-2026-09-06"' in source
 
 
 def test_graph_uses_only_dates_checked_in_calendar():
@@ -47,6 +47,59 @@ def test_graph_uses_only_dates_checked_in_calendar():
         "2026-07-10",
         "2026-08-25",
     ]
+
+
+def test_calendar_graph_keeps_provider_yandex_buckets_instead_of_manual_three_buckets():
+    automatic_distribution = {
+        "total": 100,
+        "top_10": 40,
+        "ranges": {
+            "1-3": 10,
+            "4-10": 30,
+            "11-20": 15,
+            "21-30": 10,
+            "31-50": 15,
+            "51-100": 12,
+        },
+    }
+    segment = {
+        "search_engine": "yandex",
+        "region": "Москва",
+        "ranking_depth": 100,
+        "chart_series": [
+            {"month": "2026-08-25", "visibility": 15, "distribution": automatic_distribution}
+        ],
+        "three_month_series": [],
+    }
+    payload = {
+        "source_selection": {
+            "topvisor": {"yandex": {"selected_dates": ["2026-08-25"]}}
+        }
+    }
+
+    rendered = _calendar_chart_segment(
+        lambda _payload, item: {
+            **item,
+            "three_month_series": [
+                {
+                    "month": "2026-08-01",
+                    "manual_override": True,
+                    "distribution": {
+                        "manual_buckets": {
+                            "1-3": {"count": 20, "share": 20},
+                            "1-10": {"count": 50, "share": 50},
+                            "11-30": {"count": 30, "share": 30},
+                        }
+                    },
+                }
+            ],
+        },
+        lambda _distribution, _depth: [],
+        payload,
+        segment,
+    )
+
+    assert rendered["chart_series"][0]["distribution"] == automatic_distribution
 
 
 def test_yandex_manual_buckets_keep_long_tail_ranges():

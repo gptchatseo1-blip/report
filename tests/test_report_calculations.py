@@ -249,7 +249,6 @@ def test_position_service_includes_all_three_months(tmp_path, settings):
     ]
     assert [item["month"] for item in selected["chart_series"]] == [
         date(2026, 5, 31),
-        date(2026, 6, 30),
         date(2026, 7, 31),
     ]
 

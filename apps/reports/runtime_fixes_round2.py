@@ -218,9 +218,10 @@ def _manual_topvisor_segment(payload, segment):
     monthly_by_month = {}
 
     for row in sorted(selected, key=lambda item: item["month"]):
-        if row.get("deleted"):
-            continue
         month_key = str(row["month"])[:7]
+        if row.get("deleted"):
+            history_by_month.pop(month_key, None)
+            continue
         existing = history_by_month.get(month_key)
         include = row.get("include_in_report", True)
         should_apply = not explicit_selection or include

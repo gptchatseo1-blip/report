@@ -143,6 +143,7 @@ def test_deleted_row_is_not_exposed_to_monthly_report_table():
         _segment(),
     )
     assert result["monthly_table_series"] == []
+    assert all(str(item["month"])[:7] != "2026-08" for item in result["three_month_series"])
 
 
 def test_legacy_manual_rows_do_not_drop_existing_months():
@@ -197,6 +198,8 @@ def test_round2_ui_contract_contains_dashed_trigger_and_row_actions():
     assert "include_in_report" in js
     assert "manual-row-include" in js
     assert "manual-row-delete-round2" in js
+    assert "other._deleted" in js
+    assert "rows.splice(rows.indexOf(deletedMatch), 1)" in js
     assert "border-bottom:1px dashed currentColor" in css
     assert "Скорректировать таблицы динамики" in js
 
