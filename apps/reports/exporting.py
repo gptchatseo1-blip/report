@@ -1654,9 +1654,7 @@ def _paired_metric_cell(
     previous_number = _decimal_or_none(previous)
     delta = abs((current_number or 0) - (previous_number or 0))
     previous_text = (
-        _webmaster_value(code, delta)
-        if difference_only
-        else _webmaster_value(code, previous)
+        _webmaster_value(code, delta) if difference_only else _webmaster_value(code, previous)
     )
     previous_paragraph = cell.add_paragraph(previous_text)
     previous_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER

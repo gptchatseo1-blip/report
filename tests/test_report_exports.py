@@ -238,12 +238,7 @@ def test_webmaster_summary_matches_service_truncation_and_absolute_differences()
 )
 def test_metrika_goal_types_use_supplied_exact_icon_assets(goal_type, asset_name):
     assert _metrika_goal_icon({"type": goal_type}) == asset_name
-    asset = (
-        Path("apps/reports")
-        / "assets"
-        / "metrika_goal_icons"
-        / f"{asset_name}.png"
-    )
+    asset = Path("apps/reports") / "assets" / "metrika_goal_icons" / f"{asset_name}.png"
     assert asset.exists() and asset.stat().st_size > 0
 
 
