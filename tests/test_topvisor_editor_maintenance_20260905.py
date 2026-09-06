@@ -108,6 +108,35 @@ def test_refresh_reloads_automatic_values_but_keeps_real_manual_corrections():
     assert by_month["2026-09"]["visibility"] == 9
 
 
+def test_refresh_preserves_every_checked_row_and_updates_unchecked_rows():
+    project = _project_with_snapshots()
+    checked = _row(
+        "2026-07-01",
+        visibility=12.5,
+        automatic_visibility=15,
+        manual_override=True,
+        include=True,
+    )
+    checked["top3"] = 777
+    unchecked = _row(
+        "2026-08-01",
+        visibility=8,
+        automatic_visibility=9,
+        manual_override=True,
+        include=False,
+    )
+    unchecked["top3"] = 888
+    _save(project, [checked, unchecked])
+
+    refreshed = refresh_editor_rows(project)
+    by_month = {row["month"][:7]: row for row in refreshed}
+
+    assert by_month["2026-07"]["top3"] == 777
+    assert by_month["2026-07"]["visibility"] == 12.5
+    assert by_month["2026-08"]["top3"] == 0
+    assert by_month["2026-08"]["manual_override"] is False
+
+
 def test_clear_segment_removes_manual_rows_and_restores_automatic_values():
     project = _project_with_snapshots()
     july_manual = _row(

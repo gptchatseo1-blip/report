@@ -92,7 +92,42 @@ def _calendar_chart_segment(base_manual_segment, base_buckets, payload, source_s
         point = dict(source)
         point["month"] = selected_date
         chart_series.append(point)
-    return {**rendered, "chart_series": chart_series}
+    if not chart_series:
+        return {**rendered, "chart_series": chart_series}
+
+    endpoint = chart_series[-1]
+    endpoint_month = str(endpoint.get("month") or "")[:7]
+    endpoint_distribution = endpoint.get("distribution") or {}
+    manual_endpoint = next(
+        (
+            point
+            for point in reversed(rendered.get("three_month_series") or [])
+            if str(point.get("month") or "")[:7] == endpoint_month and point.get("manual_override")
+        ),
+        None,
+    )
+    if manual_endpoint:
+        manual_distribution = dict(manual_endpoint.get("distribution") or {})
+        manual_buckets = dict(manual_distribution.get("manual_buckets") or {})
+        endpoint_depth = endpoint.get("ranking_depth") or rendered.get("ranking_depth") or 0
+        automatic_buckets = {
+            bucket["label"]: bucket
+            for bucket in base_buckets(endpoint_distribution, endpoint_depth)
+        }
+        for label in ("31-50", "51-100", "101+"):
+            if label in automatic_buckets:
+                manual_buckets[label] = {
+                    "count": automatic_buckets[label].get("count", 0),
+                    "share": automatic_buckets[label].get("share"),
+                }
+        manual_distribution["manual_buckets"] = manual_buckets
+        endpoint_distribution = manual_distribution
+    return {
+        **rendered,
+        "chart_series": chart_series,
+        "distribution": endpoint_distribution,
+        "ranking_depth": endpoint.get("ranking_depth") or rendered.get("ranking_depth"),
+    }
 
 
 def _compact_distribution_cards_table(exp, doc, distribution, depth, *, engine="yandex"):
@@ -285,7 +320,7 @@ def apply():
             return current_monthly_renderer(doc, segment, show_visibility=False)
         return _render_monthly_table_with_visibility(exp, doc, segment)
 
-    exp.GENERATOR_VERSION = "mvp1.13-2026-09-06"
+    exp.GENERATOR_VERSION = "mvp1.14-2026-09-06"
     exp._topvisor_buckets = lambda distribution, depth: _manual_buckets_with_yandex_tail(
         current_buckets, distribution, depth
     )

@@ -327,13 +327,16 @@ def test_host_selection_uses_server_list_and_requires_mismatch_confirmation(
     assert not YandexWebmasterProjectMapping.objects.exists()
     client.post(url, {"connection_id": connection.id, "host_id": "allowed"})
     assert not YandexWebmasterProjectMapping.objects.exists()
-    client.post(
-        url, {"connection_id": connection.id, "host_id": "allowed", "confirm_domain_mismatch": "on"}
+    response = client.post(
+        url,
+        {"connection_id": connection.id, "host_id": "allowed", "confirm_domain_mismatch": "on"},
+        follow=True,
     )
     saved = project.yandex_webmaster_mapping
     assert saved.host_id == "allowed" and saved.domain_mismatch_confirmed
     assert saved.verification_status == "VERIFIED"
     assert saved.main_mirror == "https://www.other.example"
+    assert "Сайт Яндекс.Вебмастера сохранён." in response.content.decode()
 
 
 def test_missing_scope_requires_reauthorization(client, context):
