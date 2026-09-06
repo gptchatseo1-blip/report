@@ -22,6 +22,20 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert 'exp.GENERATOR_VERSION = "mvp1.14-2026-09-06"' in source
 
 
+def test_current_manual_editor_is_not_overwritten_by_legacy_scripts():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "templates/reports/report_list.html").read_text()
+    builder = (root / "static/reports/report-builder.js").read_text()
+    legacy = (root / "static/reports/report-polish.js").read_text()
+    current = (root / "static/reports/report-polish-round2.js").read_text()
+
+    assert 'data-manual-editor-version="2"' in template
+    assert "form.dataset.manualEditorVersion === '2'" in builder
+    assert "form.dataset.manualEditorVersion === '2'" in legacy
+    assert "keepalive: true" in current
+    assert "void flushSave();" in current
+
+
 def test_distribution_chart_contains_only_position_ranges(monkeypatch):
     monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
     distribution = {

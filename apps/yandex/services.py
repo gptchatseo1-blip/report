@@ -63,7 +63,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-06-v5"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-06-v6"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-06-v2"
 GOALS_PER_REQUEST = 6
 
@@ -205,17 +205,20 @@ def _stat_with_filter(client, filter_value, **params):
 
 def _attribution_settings(value):
     code = value if value in {"automatic", "last", "lastsign"} else "lastsign"
-    api_value, prefix = {
-        "automatic": ("cross_device_last_significant", "crossDeviceLastSign"),
-        "last": ("last", "last"),
-        "lastsign": ("cross_device_last_significant", "crossDeviceLastSign"),
+    api_value = {
+        "automatic": "automatic",
+        "last": "last",
+        "lastsign": "cross_device_last_significant",
     }[code]
-    traffic_source = f"ym:s:{prefix}TrafficSource"
+    # Reporting API attribution is an expression parameter. Keep the documented
+    # placeholder in dimensions and pass its value through the request instead
+    # of using the private camelCase names emitted by the Metrika web UI.
+    traffic_source = "ym:s:<attribution>TrafficSource"
     return {
         "code": code,
         "api_value": api_value,
         "traffic_source": traffic_source,
-        "search_engine": f"ym:s:{prefix}SearchEngineRoot",
+        "search_engine": "ym:s:<attribution>SearchEngineRoot",
         "search_humans_filter": f"{traffic_source}=='organic' AND ym:s:isRobot=='No'",
         "search_all_filter": f"{traffic_source}=='organic'",
     }

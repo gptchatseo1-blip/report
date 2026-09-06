@@ -1,6 +1,7 @@
 (() => {
   const form = document.querySelector('[data-report-create-form]');
   if (!form || form.dataset.reportPolishReady === '1') return;
+  if (form.dataset.manualEditorVersion === '2') return;
   form.dataset.reportPolishReady = '1';
 
   const legacy = form.querySelector('[data-topvisor-manual-editor]');
