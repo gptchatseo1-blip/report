@@ -1483,10 +1483,16 @@ def _webmaster_search_chart(payload):
             if not finite:
                 continue
             low, high = min(finite), max(finite)
-            values = [
-                (value - low) / (high - low) if high > low and not math.isnan(value) else 0.5
-                for value in raw
-            ]
+            values = []
+            for value in raw:
+                if high <= low or math.isnan(value):
+                    values.append(0.5)
+                elif code == "average_position":
+                    # In search results a smaller position is better.  Yandex
+                    # Webmaster therefore draws smaller numeric values higher.
+                    values.append((high - value) / (high - low))
+                else:
+                    values.append((value - low) / (high - low))
             _plot_smooth_line(
                 axis,
                 list(range(len(labels))),
@@ -2645,7 +2651,12 @@ def _metrika_detail_table(
             )
             return values
 
-        current_total, previous_total = total_values or (total(0), total(1))
+        calculated_current, calculated_previous = total(0), total(1)
+        if total_values:
+            current_total = total_values[0] or calculated_current
+            previous_total = total_values[1] or calculated_previous
+        else:
+            current_total, previous_total = calculated_current, calculated_previous
         display_rows.insert(0, ("Итого и среднее", current_total, previous_total))
     table_rows = []
     for label, current, previous in display_rows:
@@ -3407,13 +3418,14 @@ def _style_metrika_url_column(table, payload):
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
 
 
-def _landing_pages_table(doc, payload, current, previous, *, limit=20):
+def _landing_pages_table(doc, payload, current, previous, *, limit=20, total_values=None):
     ordered = sorted(current.items(), key=lambda item: item[1]["visits"], reverse=True)[:limit]
     table = _metrika_detail_table(
         doc,
         [(url, values, previous.get(url, {})) for url, values in ordered],
         first_header="Страница входа",
         metrics=("visits", "users"),
+        total_values=total_values,
     )
     _style_metrika_url_column(table, payload)
     return table
@@ -3492,7 +3504,14 @@ def _landing_hierarchy_order(hierarchy, expanded_patterns=None):
 
 
 def _landing_hierarchy_table(
-    doc, payload, current, previous, *, metrics=("visits", "users"), expanded_groups=()
+    doc,
+    payload,
+    current,
+    previous,
+    *,
+    metrics=("visits", "users"),
+    expanded_groups=(),
+    total_values=None,
 ):
     current_hierarchy = _landing_hierarchy(current)
     previous_hierarchy = _landing_hierarchy(previous)
@@ -3500,14 +3519,29 @@ def _landing_hierarchy_table(
         pattern for group in expanded_groups for pattern in group.get("patterns") or []
     ]
     ordered = _landing_hierarchy_order(current_hierarchy, expanded_patterns)
-    current_total = next(
+    calculated_current_total = next(
         (values for url, values in current_hierarchy.items() if urlsplit(url).path in {"", "/"}),
         {},
     )
-    previous_total = next(
+    calculated_previous_total = next(
         (values for url, values in previous_hierarchy.items() if urlsplit(url).path in {"", "/"}),
         {},
     )
+    if total_values:
+        current_total = total_values[0] or calculated_current_total
+        previous_total = total_values[1] or calculated_previous_total
+    else:
+        current_total, previous_total = calculated_current_total, calculated_previous_total
+    # Public Metrika reports can suppress small URL rows when startURL and
+    # isRobot are combined.  Never reconstruct the root/total from that
+    # potentially incomplete list when the API returned an exact aggregate.
+    for hierarchy, provider_total in (
+        (current_hierarchy, current_total),
+        (previous_hierarchy, previous_total),
+    ):
+        for url in hierarchy:
+            if urlsplit(url).path in {"", "/"} and provider_total:
+                hierarchy[url] = {**hierarchy[url], **provider_total}
     table = _metrika_detail_table(
         doc,
         [(url, current_hierarchy[url], previous_hierarchy.get(url, {})) for url in ordered],
@@ -3520,7 +3554,14 @@ def _landing_hierarchy_table(
 
 
 def _landing_comparison_table(
-    doc, payload, current_rows, previous_rows, engine, *, expanded_groups=()
+    doc,
+    payload,
+    current_rows,
+    previous_rows,
+    engine,
+    *,
+    expanded_groups=(),
+    total_values=None,
 ):
     current = _aggregate_detail_rows(
         [row for row in current_rows if _search_engine_name(row) == engine], _landing_url
@@ -3529,7 +3570,12 @@ def _landing_comparison_table(
         [row for row in previous_rows if _search_engine_name(row) == engine], _landing_url
     )
     return _landing_hierarchy_table(
-        doc, payload, current, previous, expanded_groups=expanded_groups
+        doc,
+        payload,
+        current,
+        previous,
+        expanded_groups=expanded_groups,
+        total_values=total_values,
     )
 
 
@@ -3560,7 +3606,14 @@ def _conclusion_page_label(url, groups):
 
 
 def _configured_groups_table(
-    doc, payload, current_rows, previous_rows, _groups, *, expanded_groups=()
+    doc,
+    payload,
+    current_rows,
+    previous_rows,
+    _groups,
+    *,
+    expanded_groups=(),
+    total_values=None,
 ):
     current_pages = _aggregate_detail_rows(current_rows, _landing_url)
     previous_pages = _aggregate_detail_rows(previous_rows, _landing_url)
@@ -3570,6 +3623,7 @@ def _configured_groups_table(
         current_pages,
         previous_pages,
         expanded_groups=expanded_groups,
+        total_values=total_values,
     )
 
 
@@ -3773,8 +3827,14 @@ def _render_metrika(doc, payload, blocks):
                         f"Трафик из {label} {'увеличился' if delta >= 0 else 'снизился'} "
                         f"на {_number(abs(delta), '%', decimal_places=1)}"
                     )
-            total_current = sum((row["visits"] for row in current.values()), Decimal(0))
-            total_previous = sum((row["visits"] for row in previous.values()), Decimal(0))
+            total_current = _decimal_or_none(
+                (search_periods[-1].get("total") or {}).get("visits")
+            ) or sum((row["visits"] for row in current.values()), Decimal(0))
+            total_previous = (
+                _decimal_or_none((search_periods[-2].get("total") or {}).get("visits"))
+                if len(search_periods) >= 2
+                else None
+            ) or sum((row["visits"] for row in previous.values()), Decimal(0))
             total_delta = _relative_delta(total_current, total_previous)
             if total_delta is not None:
                 movement.append(
@@ -3894,8 +3954,24 @@ def _render_metrika(doc, payload, blocks):
                     else "по всему трафику по страницам."
                 )
             )
-            _landing_pages_table(doc, payload, current_pages, previous_pages)
-            total = sum((row["visits"] for row in current_pages.values()), Decimal(0))
+            landing_totals = (
+                (
+                    landing_periods[-1].get("total") or {},
+                    landing_periods[-2].get("total") or {},
+                )
+                if len(landing_periods) >= 2
+                else None
+            )
+            _landing_pages_table(
+                doc,
+                payload,
+                current_pages,
+                previous_pages,
+                total_values=landing_totals,
+            )
+            total = _decimal_or_none((landing_periods[-1].get("total") or {}).get("visits")) or sum(
+                (row["visits"] for row in current_pages.values()), Decimal(0)
+            )
             root = next(
                 (
                     (url, values)
@@ -3944,6 +4020,17 @@ def _render_metrika(doc, payload, blocks):
             comparison_previous = (
                 comparison_periods[-2]["rows"] if len(comparison_periods) >= 2 else []
             )
+            engine_total_periods = _metrika_period_rows(payload, "search_engines")
+            current_engine_totals = (
+                _aggregate_detail_rows(engine_total_periods[-1]["rows"], _search_engine_name)
+                if engine_total_periods
+                else {}
+            )
+            previous_engine_totals = (
+                _aggregate_detail_rows(engine_total_periods[-2]["rows"], _search_engine_name)
+                if len(engine_total_periods) >= 2
+                else {}
+            )
             commercial_groups = _configured_url_groups(payload, "commercial")
             named_conclusion_groups = [
                 group
@@ -3968,6 +4055,10 @@ def _render_metrika(doc, payload, blocks):
                     comparison_previous,
                     engine,
                     expanded_groups=comparison_expanded_groups,
+                    total_values=(
+                        current_engine_totals.get(engine, {}),
+                        previous_engine_totals.get(engine, {}),
+                    ),
                 )
                 if named_conclusion_groups:
                     engine_periods = [
@@ -4004,6 +4095,12 @@ def _render_metrika(doc, payload, blocks):
                 previous_rows,
                 [*information_groups, *commercial_groups],
                 expanded_groups=(),
+                total_values=(
+                    landing_periods[-1].get("total") or {},
+                    landing_periods[-2].get("total") or {},
+                )
+                if len(landing_periods) >= 2
+                else None,
             )
             if information_groups:
                 doc.add_paragraph(_group_overview_text(landing_periods, information_groups))
