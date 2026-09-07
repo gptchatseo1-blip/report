@@ -537,9 +537,7 @@ def select_goals(request, project_id):
         mapping.selected_goals.append(selected_goal)
     mapping.save(update_fields=["selected_goals", "updated_at"])
     if request.POST.get("return_to_reports") == "1":
-        sync_form = SyncForm(
-            {"month": request.POST.get("month"), "force_refresh": "on"}
-        )
+        sync_form = SyncForm({"month": request.POST.get("month"), "force_refresh": "on"})
         if sync_form.is_valid():
             run = sync_metrika(
                 mapping=mapping,
