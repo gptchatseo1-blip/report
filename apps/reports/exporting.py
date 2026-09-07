@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
@@ -43,7 +43,7 @@ from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, Va
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.8-2026-09-04"
+GENERATOR_VERSION = "mvp1.9-2026-09-07"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -1301,7 +1301,32 @@ def _webmaster_chart_details(payload):
     details = _period_details(payload, "yandex_webmaster")
     if not details:
         return []
-    if payload.get("display_options", {}).get("webmaster_chart_period") == "selected":
+    options = payload.get("display_options", {})
+    raw_start = options.get("webmaster_date_from")
+    raw_end = options.get("webmaster_date_to")
+    try:
+        selected_start = date.fromisoformat(str(raw_start)[:10]) if raw_start else None
+        selected_end = date.fromisoformat(str(raw_end)[:10]) if raw_end else None
+    except ValueError:
+        selected_start = selected_end = None
+    if selected_start and selected_end:
+        filtered = []
+        for detail in details:
+            source = _detail_payload(detail)
+            daily = {
+                key: [
+                    row
+                    for row in rows or []
+                    if row.get("date")
+                    and selected_start <= date.fromisoformat(str(row["date"])[:10]) <= selected_end
+                ]
+                for key, rows in (source.get("daily") or {}).items()
+            }
+            if any(daily.values()):
+                filtered.append({**detail, "payload": {**source, "daily": daily}})
+        return filtered
+    # Compatibility for report versions created before the date-range fields.
+    if options.get("webmaster_chart_period") == "selected":
         return details
     return details[-1:]
 
@@ -1315,6 +1340,69 @@ def _daily_rows(details, key):
     for detail in details:
         rows.extend((_detail_payload(detail).get("daily") or {}).get(key, []))
     return sorted(rows, key=lambda item: item.get("date") or "")
+
+
+def _webmaster_summary_from_daily(rows):
+    if not rows:
+        return {}
+    shows = sum((_decimal_or_none(row.get("shows")) or 0 for row in rows), Decimal(0))
+    clicks = sum((_decimal_or_none(row.get("clicks")) or 0 for row in rows), Decimal(0))
+    weighted_positions = [
+        (_decimal_or_none(row.get("shows")), _decimal_or_none(row.get("average_position")))
+        for row in rows
+    ]
+    weighted_positions = [
+        (weight, position)
+        for weight, position in weighted_positions
+        if weight is not None and position is not None
+    ]
+    position_base = sum((weight for weight, _position in weighted_positions), Decimal(0))
+    return {
+        "shows": str(shows),
+        "clicks": str(clicks),
+        "ctr": str(clicks * Decimal(100) / shows) if shows else None,
+        "average_position": (
+            str(
+                sum((weight * position for weight, position in weighted_positions), Decimal(0))
+                / position_base
+            )
+            if position_base
+            else None
+        ),
+    }
+
+
+def _webmaster_query_summaries(payload, latest, current_rows):
+    options = payload.get("display_options", {})
+    raw_start = options.get("webmaster_date_from")
+    raw_end = options.get("webmaster_date_to")
+    try:
+        selected_start = date.fromisoformat(str(raw_start)[:10]) if raw_start else None
+        selected_end = date.fromisoformat(str(raw_end)[:10]) if raw_end else None
+    except ValueError:
+        selected_start = selected_end = None
+    latest_start = latest.get("period_start")
+    latest_end = latest.get("period_end")
+    if (
+        not selected_start
+        or not selected_end
+        or (latest_start == selected_start.isoformat() and latest_end == selected_end.isoformat())
+    ):
+        return (
+            latest.get("query_summary") or {},
+            latest.get("comparison_query_summary") or {},
+        )
+    current = _webmaster_summary_from_daily(current_rows)
+    day_count = (selected_end - selected_start).days + 1
+    previous_end = selected_start - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=day_count - 1)
+    previous_rows = [
+        row
+        for row in _daily_rows(_period_details(payload, "yandex_webmaster"), "queries")
+        if row.get("date")
+        and previous_start <= date.fromisoformat(str(row["date"])[:10]) <= previous_end
+    ]
+    return current, _webmaster_summary_from_daily(previous_rows)
 
 
 def _date_label(value):
@@ -1798,7 +1886,10 @@ def _webmaster_query_text(current, previous):
 
 
 def _webmaster_popular_table(doc, current_rows, previous_rows):
-    previous = {row.get("query", "").casefold(): row for row in previous_rows}
+    def query_key(row):
+        return " ".join(str(row.get("query") or "").casefold().split())
+
+    previous = {query_key(row): row for row in previous_rows if query_key(row)}
     table = _table(
         doc,
         ("Запрос", "Показы", "Клики", "CTR, %", "Ср. позиция"),
@@ -1807,7 +1898,7 @@ def _webmaster_popular_table(doc, current_rows, previous_rows):
         header_fill="F7F7F7",
     )
     for row_index, current in enumerate(current_rows[:20], start=1):
-        before = previous.get(current.get("query", "").casefold(), {})
+        before = previous.get(query_key(current), {})
         for column, code in enumerate(("shows", "clicks", "ctr", "average_position"), start=1):
             _paired_metric_cell(
                 table.rows[row_index].cells[column],
@@ -2041,8 +2132,7 @@ def _render_webmaster(doc, payload, blocks):
         query_rows = _daily_rows(details, "queries")
         _period_caption(doc, query_rows, provider="webmaster", detail="по дням")
         _add_report_picture(doc, _webmaster_search_chart(payload))
-        current_summary = latest.get("query_summary") or {}
-        previous_summary = latest.get("comparison_query_summary") or {}
+        current_summary, previous_summary = _webmaster_query_summaries(payload, latest, query_rows)
         if not current_summary:
             current_summary, previous_summary = _webmaster_query_summary_from_changes(payload)
         if current_summary:
@@ -2272,8 +2362,15 @@ def _metrika_sources_chart(facts):
 def _metrika_period_rows(payload, key):
     options = payload.get("display_options", {})
     robotness = options.get("metrika_robotness", "humans")
-    force_search = key in {"search_engines", "search_landing_pages"}
-    detail_key = "landing_pages" if key == "search_landing_pages" else key
+    force_search = key in {
+        "search_engines",
+        "search_landing_pages",
+        "search_landing_hierarchy",
+    }
+    detail_key = {
+        "search_landing_pages": "landing_pages",
+        "search_landing_hierarchy": "landing_hierarchy",
+    }.get(key, key)
     segment = "search" if force_search or options.get("metrika_search_segment", True) else "all"
     periods = []
     for detail in _period_details(payload, "yandex_metrika"):
@@ -3160,12 +3257,12 @@ def _metrika_goal_icon(goal):
     return "action"
 
 
-def _draw_metrika_goal_icon(figure, goal, *, x=0.042, y=0.878, color="#7A45E5"):
+def _draw_metrika_goal_icon(figure, goal, *, x=0.046, y=0.878, color="#7A45E5"):
     """Draw the exact goal-type icons embedded in the supplied Metrika page."""
     kind = _metrika_goal_icon(goal)
     asset = Path(__file__).resolve().parent / "assets" / "metrika_goal_icons" / f"{kind}.png"
     if asset.exists():
-        icon_axis = figure.add_axes((x - 0.011, y - 0.016, 0.024, 0.032))
+        icon_axis = figure.add_axes((x - 0.017, y - 0.023, 0.036, 0.048))
         icon_axis.imshow(plt.imread(asset))
         icon_axis.axis("off")
         return
@@ -3297,7 +3394,7 @@ def _metrika_goal_image(goal, periods):
         title_lines = textwrap.wrap(title, width=30)[:2] or ["Цель"]
         _draw_metrika_goal_icon(figure, goal)
         figure.text(
-            0.055, 0.9, "\n".join(title_lines), ha="left", va="top", fontsize=9, weight="bold"
+            0.072, 0.9, "\n".join(title_lines), ha="left", va="top", fontsize=9, weight="bold"
         )
         figure.text(
             0.42,
@@ -3512,9 +3609,10 @@ def _landing_hierarchy_table(
     metrics=("visits", "users"),
     expanded_groups=(),
     total_values=None,
+    provider_hierarchy=False,
 ):
-    current_hierarchy = _landing_hierarchy(current)
-    previous_hierarchy = _landing_hierarchy(previous)
+    current_hierarchy = current if provider_hierarchy else _landing_hierarchy(current)
+    previous_hierarchy = previous if provider_hierarchy else _landing_hierarchy(previous)
     expanded_patterns = [
         pattern for group in expanded_groups for pattern in group.get("patterns") or []
     ]
@@ -3562,6 +3660,7 @@ def _landing_comparison_table(
     *,
     expanded_groups=(),
     total_values=None,
+    provider_hierarchy=False,
 ):
     current = _aggregate_detail_rows(
         [row for row in current_rows if _search_engine_name(row) == engine], _landing_url
@@ -3576,6 +3675,7 @@ def _landing_comparison_table(
         previous,
         expanded_groups=expanded_groups,
         total_values=total_values,
+        provider_hierarchy=provider_hierarchy,
     )
 
 
@@ -4020,6 +4120,24 @@ def _render_metrika(doc, payload, blocks):
             comparison_previous = (
                 comparison_periods[-2]["rows"] if len(comparison_periods) >= 2 else []
             )
+            hierarchy_periods = [
+                {
+                    **period,
+                    "rows": [
+                        row for row in period.get("rows") or [] if _belongs_to_project(payload, row)
+                    ],
+                }
+                for period in _metrika_period_rows(payload, "search_landing_hierarchy")
+            ]
+            has_provider_hierarchy = any(period["rows"] for period in hierarchy_periods)
+            hierarchy_current = (
+                hierarchy_periods[-1]["rows"] if has_provider_hierarchy else comparison_current
+            )
+            hierarchy_previous = (
+                hierarchy_periods[-2]["rows"]
+                if has_provider_hierarchy and len(hierarchy_periods) >= 2
+                else comparison_previous
+            )
             engine_total_periods = _metrika_period_rows(payload, "search_engines")
             current_engine_totals = (
                 _aggregate_detail_rows(engine_total_periods[-1]["rows"], _search_engine_name)
@@ -4051,14 +4169,15 @@ def _render_metrika(doc, payload, blocks):
                 _landing_comparison_table(
                     doc,
                     payload,
-                    comparison_current,
-                    comparison_previous,
+                    hierarchy_current,
+                    hierarchy_previous,
                     engine,
                     expanded_groups=comparison_expanded_groups,
                     total_values=(
                         current_engine_totals.get(engine, {}),
                         previous_engine_totals.get(engine, {}),
                     ),
+                    provider_hierarchy=has_provider_hierarchy,
                 )
                 if named_conclusion_groups:
                     engine_periods = [

@@ -1,4 +1,5 @@
 import json
+from calendar import monthrange
 from collections import defaultdict
 from datetime import date, timedelta
 from urllib.parse import urlsplit
@@ -26,7 +27,8 @@ PERSISTED_REPORT_FIELDS = (
     "include_top_30",
     "include_topvisor_report_link",
     "include_webmaster",
-    "webmaster_chart_period",
+    "webmaster_date_from",
+    "webmaster_date_to",
     "include_webmaster_popular_queries",
     "webmaster_queries_comment",
     "include_metrika",
@@ -224,14 +226,17 @@ class ReportCreateForm(forms.Form):
     include_webmaster = forms.BooleanField(
         label="Данные Яндекс.Вебмастера", required=False, initial=True
     )
-    webmaster_chart_period = forms.ChoiceField(
-        label="Период графиков Вебмастера",
+    webmaster_date_from = forms.DateField(
+        label="Дата начала",
         required=False,
-        initial="report_month",
-        choices=(
-            ("report_month", "Только отчётный месяц"),
-            ("selected", "Весь выбранный диапазон"),
-        ),
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
+    )
+    webmaster_date_to = forms.DateField(
+        label="Дата окончания",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
     )
     include_webmaster_popular_queries = forms.BooleanField(
         label="Самые кликабельные запросы", required=False, initial=True
@@ -548,6 +553,11 @@ class ReportCreateForm(forms.Form):
         self.report_month = report_month
         if not self.is_bound:
             self.initial.setdefault("month", report_month)
+            self.initial.setdefault("webmaster_date_from", report_month)
+            self.initial.setdefault(
+                "webmaster_date_to",
+                report_month.replace(day=monthrange(report_month.year, report_month.month)[1]),
+            )
         month_indexes = {
             report_month.year * 12 + report_month.month - 1 - offset for offset in range(3)
         }
@@ -600,6 +610,10 @@ class ReportCreateForm(forms.Form):
 
     def clean(self):
         cleaned = super().clean()
+        webmaster_date_from = cleaned.get("webmaster_date_from")
+        webmaster_date_to = cleaned.get("webmaster_date_to")
+        if webmaster_date_from and webmaster_date_to and webmaster_date_from > webmaster_date_to:
+            self.add_error("webmaster_date_to", "Дата окончания должна быть не раньше даты начала.")
         for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
             if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:
                 self.add_error(f"{engine}_dates", f"{label}: выберите минимум две доступные даты.")

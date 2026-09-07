@@ -113,6 +113,29 @@ def test_report_defaults_select_only_top_10_and_search_segment(project):
     assert form["include_metrika_sources_table"].value() is False
     assert form["metrika_goals_quarter"].value() is True
     assert form["metrika_categories_combined"].value() is False
+    assert form["webmaster_date_from"].value() == form.report_month
+    assert form["webmaster_date_to"].value().month == form.report_month.month
+    assert (form["webmaster_date_to"].value() + timedelta(days=1)).day == 1
+
+
+def test_webmaster_date_range_is_persisted_and_validated(client, user, project):
+    client.force_login(user)
+    response = client.post(
+        reverse("reports:report-settings-save", args=[project.id]),
+        data=json.dumps({"webmaster_date_from": "2026-08-04", "webmaster_date_to": "2026-08-29"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    restored = ReportCreateForm(project=project)
+    assert restored["webmaster_date_from"].value() == "2026-08-04"
+    assert restored["webmaster_date_to"].value() == "2026-08-29"
+
+    invalid = ReportCreateForm(
+        {"webmaster_date_from": "2026-08-31", "webmaster_date_to": "2026-08-01"},
+        project=project,
+    )
+    assert not invalid.is_valid()
+    assert "webmaster_date_to" in invalid.errors
 
 
 def test_project_report_settings_autosave_and_restore_are_isolated(client, user, project):

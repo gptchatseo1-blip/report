@@ -29,7 +29,7 @@
 </section>
 <section class="option-card"><h4>Яндекс.Вебмастер</h4><label class="url-option">{{ form.include_webmaster }} <span><strong>Выводить блок Вебмастера</strong><small>ИКС, страницы в поиске и статистика запросов.</small></span></label>
 <details class="option-details"><summary>Настроить блоки и период</summary>
-<label for="{{ form.webmaster_chart_period.id_for_label }}">{{ form.webmaster_chart_period.label }}{{ form.webmaster_chart_period }}</label>
+<div class="webmaster-date-range"><strong>Период данных Вебмастера</strong><div><label for="{{ form.webmaster_date_from.id_for_label }}"><span>{{ form.webmaster_date_from.label }}</span>{{ form.webmaster_date_from }}</label><span aria-hidden="true">—</span><label for="{{ form.webmaster_date_to.id_for_label }}"><span>{{ form.webmaster_date_to.label }}</span>{{ form.webmaster_date_to }}</label></div><small>Диапазон применяется только к графикам и значениям Яндекс.Вебмастера.</small>{{ form.webmaster_date_from.errors }}{{ form.webmaster_date_to.errors }}</div>
 <label class="url-option">{{ form.include_webmaster_popular_queries }} <span><strong>Самые кликабельные запросы</strong></span></label>
 <label for="{{ form.webmaster_queries_screenshot.id_for_label }}">{{ form.webmaster_queries_screenshot.label }}{{ form.webmaster_queries_screenshot }}<small>{{ form.webmaster_queries_screenshot.help_text }}</small></label>{{ form.webmaster_queries_screenshot.errors }}
 <label for="{{ form.webmaster_queries_comment.id_for_label }}">{{ form.webmaster_queries_comment.label }}{{ form.webmaster_queries_comment }}</label>

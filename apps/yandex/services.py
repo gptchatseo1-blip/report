@@ -56,6 +56,7 @@ GEOGRAPHY_CODES = (
     "area_undefined",
 )
 START_URL = "ym:s:startURL"
+START_URL_LEVELS = tuple(f"ym:s:startURLPathLevel{level}" for level in range(1, 4))
 HUMANS_FILTER = "ym:s:isRobot=='No'"
 SEARCH_DETAIL_METRICS = "ym:s:visits,ym:s:users,ym:s:bounceRate"
 TRAFFIC_SOURCE_DETAIL_METRICS = (
@@ -63,8 +64,8 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-06-v7"
-WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-06-v3"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-07-v8"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-07-v4"
 GOALS_PER_REQUEST = 6
 
 
@@ -195,6 +196,40 @@ def _detail_total(response, *, extended=False):
     if extended:
         names.extend(("page_depth", "avg_visit_duration_seconds"))
     return {name: str(_value({"metrics": totals}, index)) for index, name in enumerate(names)}
+
+
+def _landing_hierarchy_rows(
+    client,
+    filter_value,
+    common,
+    *,
+    search_engine_dimension=None,
+):
+    """Fetch Metrika's own URL-level aggregates instead of summing leaf URLs."""
+    rows = []
+    for level, url_dimension in enumerate(START_URL_LEVELS, start=1):
+        dimensions = (
+            f"{search_engine_dimension},{url_dimension}"
+            if search_engine_dimension
+            else url_dimension
+        )
+        response = _stat_with_filter(
+            client,
+            filter_value,
+            **common,
+            metrics=SEARCH_DETAIL_METRICS,
+            dimensions=dimensions,
+            limit=10000,
+            sort="-ym:s:visits",
+            lang="ru",
+        )
+        level_rows = _detail_rows(response, 2 if search_engine_dimension else 1)
+        for row in level_rows:
+            if not search_engine_dimension:
+                row["dimensions"].insert(0, {"id": "all", "name": "Все источники"})
+            row["hierarchy_level"] = level
+        rows.extend(level_rows)
+    return rows
 
 
 def _stat_with_filter(client, filter_value, **params):
@@ -496,6 +531,12 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
                 lang="ru",
             )
             landing_pages = _detail_rows(landing_pages_response, 2)
+            landing_hierarchy = _landing_hierarchy_rows(
+                client,
+                filter_value,
+                common,
+                search_engine_dimension=attribution_settings["search_engine"],
+            )
         else:
             search_engine_response = {}
             search_engines = []
@@ -512,13 +553,22 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
             landing_pages = _detail_rows(landing_pages_response, 1)
             for landing in landing_pages:
                 landing["dimensions"].insert(0, {"id": "all", "name": "Все источники"})
+            landing_hierarchy = _landing_hierarchy_rows(client, filter_value, common)
+        landing_pages_total = _detail_total(landing_pages_response)
+        # Dimensioned reports may omit protected/low-volume URL rows.  Metrika's
+        # ungrouped segment total is authoritative for the "Итого" row.
+        segment_total = traffic_by_segment[segment][robotness]
+        for code in ("visits", "users", "bounce_rate"):
+            if segment_total.get(code) is not None:
+                landing_pages_total[code] = segment_total[code]
         detail_variants[segment][robotness] = {
             "search_engines": search_engines,
             "search_engines_total": _detail_total(search_engine_response),
             "search_geography": geography_details,
             "search_geography_total": _detail_total(geography_response),
             "landing_pages": landing_pages,
-            "landing_pages_total": _detail_total(landing_pages_response),
+            "landing_pages_total": landing_pages_total,
+            "landing_hierarchy": landing_hierarchy,
         }
         for code, value in _geography_totals(geography_details).items():
             points.append(
@@ -1012,9 +1062,10 @@ def _popular_queries(response):
 def _query_analytics_data(response, start, end):
     """Convert Query Analytics rows to the legacy history/popular shapes.
 
-    The current Webmaster interface uses ``ALL_LOCATIONS_ORGANIC``.  The
-    older search-query history endpoint has no placement parameter and only
-    represents ``WEB_LOCATION``, so its totals can be slightly lower.
+    The reference Webmaster report uses ``ALL_LOCATIONS_ORGANIC`` (the UI
+    option "Все вместе без дополнительных кликов").  The older history
+    endpoint has no placement parameter and remains only a compatibility
+    fallback.
     """
     source_rows = response.get("text_indicator_to_statistics")
     if not isinstance(source_rows, list) or not source_rows:
@@ -1116,6 +1167,22 @@ def _query_analytics_data(response, start, end):
         reverse=True,
     )
     return {"indicators": indicators}, popular[:50]
+
+
+def _query_key(row):
+    return " ".join(str(row.get("query") or "").casefold().split())
+
+
+def _merge_popular_rows(primary, fallback):
+    """Keep the UI-compatible primary rows and fill only missing query dynamics."""
+    merged = list(primary or [])
+    known = {_query_key(row) for row in merged if _query_key(row)}
+    for row in fallback or []:
+        key = _query_key(row)
+        if key and key not in known:
+            merged.append(row)
+            known.add(key)
+    return merged
 
 
 def _path_distribution(response):
@@ -1238,31 +1305,35 @@ def _webmaster_month(
                 previous_queries, comparison_start, comparison_end
             )
 
-        if hasattr(client, "popular_search_queries") and not popular:
+        if hasattr(client, "popular_search_queries"):
             query_indicators = [
                 "TOTAL_SHOWS",
                 "TOTAL_CLICKS",
                 "AVG_SHOW_POSITION",
                 "AVG_CLICK_POSITION",
             ]
-            popular = _popular_queries(
-                _optional_webmaster_resource(
-                    mapping,
-                    "popular_search_queries",
-                    lambda: client.popular_search_queries(
-                        user_id,
-                        mapping.host_id,
-                        **params,
-                        order_by="TOTAL_CLICKS",
-                        query_indicator=query_indicators,
-                        device_type_indicator="ALL",
-                        offset=0,
-                        limit=50,
-                    ),
+            if not popular:
+                popular = _popular_queries(
+                    _optional_webmaster_resource(
+                        mapping,
+                        "popular_search_queries",
+                        lambda: client.popular_search_queries(
+                            user_id,
+                            mapping.host_id,
+                            **params,
+                            order_by="TOTAL_CLICKS",
+                            query_indicator=query_indicators,
+                            device_type_indicator="ALL",
+                            offset=0,
+                            limit=500,
+                        ),
+                    )
                 )
-            )
-            if not previous_popular:
-                previous_popular = _popular_queries(
+            previous_keys = {_query_key(row) for row in previous_popular}
+            if not previous_popular or any(
+                _query_key(row) not in previous_keys for row in popular if _query_key(row)
+            ):
+                fallback_previous = _popular_queries(
                     _optional_webmaster_resource(
                         mapping,
                         "popular_search_queries_comparison",
@@ -1274,10 +1345,11 @@ def _webmaster_month(
                             query_indicator=query_indicators,
                             device_type_indicator="ALL",
                             offset=0,
-                            limit=50,
+                            limit=500,
                         ),
                     )
                 )
+                previous_popular = _merge_popular_rows(previous_popular, fallback_previous)
         if hasattr(client, "search_urls_samples"):
             path_distribution = _path_distribution(
                 _optional_webmaster_resource(
@@ -1286,35 +1358,19 @@ def _webmaster_month(
                     lambda: client.search_urls_samples(user_id, mapping.host_id),
                 )
             )
-    impressions_values = [
-        value for _, value in _valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end)
-    ]
-    click_values = [
-        value for _, value in _valid_dated_values(_series(queries, "TOTAL_CLICKS"), start, end)
-    ]
-    impressions = sum(impressions_values, Decimal(0)) if impressions_values else None
-    clicks = sum(click_values, Decimal(0)) if click_values else None
+    impressions = _number(query_summary.get("shows"))
+    clicks = _number(query_summary.get("clicks"))
     metrics = {}
     if impressions is not None:
         metrics["search_impressions"] = (impressions, "count")
     if clicks is not None:
         metrics["search_clicks"] = (clicks, "count")
-    if impressions not in (None, 0) and clicks is not None:
-        metrics["search_ctr"] = (clicks * Decimal(100) / impressions, "percent")
-    shows_by_date = dict(_valid_dated_values(_series(queries, "TOTAL_SHOWS"), start, end))
-    positions_by_date = dict(_valid_dated_values(_series(queries, "AVG_SHOW_POSITION"), start, end))
-    weighted_days = [
-        (shows, positions_by_date[day])
-        for day, shows in shows_by_date.items()
-        if day in positions_by_date
-    ]
-    position_impressions = sum((shows for shows, _ in weighted_days), Decimal(0))
-    if position_impressions:
-        metrics["average_position"] = (
-            sum((shows * position for shows, position in weighted_days), Decimal(0))
-            / position_impressions,
-            "number",
-        )
+    ctr = _number(query_summary.get("ctr"))
+    if ctr is not None:
+        metrics["search_ctr"] = (ctr, "percent")
+    average_position = _number(query_summary.get("average_position"))
+    if average_position is not None:
+        metrics["average_position"] = (average_position, "number")
     aliases = {
         "added_pages": (indexing, ("APPEARED_IN_SEARCH", "added", "appeared")),
         "excluded_pages": (indexing, ("REMOVED_FROM_SEARCH", "excluded", "removed")),

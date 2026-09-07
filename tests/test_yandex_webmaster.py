@@ -278,6 +278,44 @@ def test_current_webmaster_totals_use_same_search_location_as_service(context):
     assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
 
 
+def test_missing_query_dynamics_are_filled_from_popular_history(context):
+    class PartialPrevious(FakeWebmasterQueryAnalytics):
+        def query_analytics(self, *args, **kwargs):
+            response = super().query_analytics(*args, **kwargs)
+            if kwargs["date_to"].endswith("02-28"):
+                response["text_indicator_to_statistics"] = response["text_indicator_to_statistics"][
+                    :1
+                ]
+            return response
+
+        def popular_search_queries(self, *args, **kwargs):
+            return {
+                "queries": [
+                    {
+                        "query_id": "doctor",
+                        "query_text": "doctor",
+                        "indicators": {
+                            "TOTAL_SHOWS": 30,
+                            "TOTAL_CLICKS": 3,
+                            "AVG_SHOW_POSITION": 8,
+                        },
+                    }
+                ]
+            }
+
+    run = sync_webmaster(
+        mapping=mapping(context),
+        report_month=date(2026, 3, 1),
+        user=context[0],
+        client=PartialPrevious(),
+    )
+
+    assert run.status == run.Status.SUCCESS
+    march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
+    previous = {row["query"]: row for row in march.payload["comparison_popular_queries"]}
+    assert previous["doctor"]["clicks"] == "3"
+
+
 def test_zero_impressions_does_not_invent_ctr(context):
     fake = FakeWebmaster()
     fake.search_query_history = lambda *a, **k: {
@@ -468,6 +506,49 @@ def test_query_analytics_posts_ui_location_and_period(context):
     assert body["search_location"] == "ALL_LOCATIONS_ORGANIC"
     assert body["filters"]["statistic_filters"][0]["from"] == "2026-08-01"
     assert body["filters"]["statistic_filters"][0]["to"] == "2026-08-31"
+
+
+def test_query_analytics_follows_count_after_provider_short_page(context):
+    connection = context[2]
+    offsets = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def opener(request, timeout):
+        body = json.loads(request.data)
+        offsets.append(body["offset"])
+        size = 2 if body["offset"] == 0 else 1
+        return Response(
+            {
+                "count": 3,
+                "text_indicator_to_statistics": [
+                    {"text_indicator": {"value": f"q-{body['offset'] + index}"}}
+                    for index in range(size)
+                ],
+            }
+        )
+
+    result = WebmasterClient(connection, opener=opener, sleep=lambda _: None).query_analytics(
+        7,
+        "https:site.example:443",
+        date_from="2026-08-01",
+        date_to="2026-08-31",
+        page_size=500,
+    )
+
+    assert offsets == [0, 2]
+    assert len(result["text_indicator_to_statistics"]) == 3
 
 
 def test_mutating_routes_reject_get(client, context):

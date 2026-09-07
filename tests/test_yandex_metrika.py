@@ -499,6 +499,12 @@ def test_default_search_segment_uses_last_significant_attribution(identity, yand
         call.get("dimensions") == "ym:s:<attribution>SearchEngineRoot,ym:s:startURL"
         for call in api.calls
     )
+    for level in range(1, 4):
+        assert any(
+            call.get("dimensions")
+            == f"ym:s:<attribution>SearchEngineRoot,ym:s:startURLPathLevel{level}"
+            for call in api.calls
+        )
     assert any(
         call.get("dimensions") == "ym:s:<attribution>SearchEngineRoot,ym:s:startURL"
         and call.get("filters")
@@ -539,7 +545,7 @@ def test_goal_requests_are_batched_and_rate_limit_is_reported(identity, yandex_s
     run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
 
     assert run.status == run.Status.SUCCESS
-    assert len(api.calls) == 109
+    assert len(api.calls) == 145
     limited = sync_metrika(
         mapping=mapping,
         report_month=date(2026, 3, 1),
