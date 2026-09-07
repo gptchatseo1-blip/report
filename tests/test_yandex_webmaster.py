@@ -264,15 +264,11 @@ def test_current_webmaster_totals_use_same_search_location_as_service(context):
     item = mapping(context)
     api = FakeWebmasterQueryAnalytics()
 
-    run = sync_webmaster(
-        mapping=item, report_month=date(2026, 3, 1), user=context[0], client=api
-    )
+    run = sync_webmaster(mapping=item, report_month=date(2026, 3, 1), user=context[0], client=api)
 
     assert run.status == run.Status.SUCCESS
     assert len(api.analytics_calls) == 2
-    assert all(
-        call["search_location"] == "ALL_LOCATIONS_ORGANIC" for call in api.analytics_calls
-    )
+    assert all(call["search_location"] == "ALL_LOCATIONS_ORGANIC" for call in api.analytics_calls)
     march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
     points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
     assert points["search_impressions"] == 120
