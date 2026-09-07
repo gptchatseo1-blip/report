@@ -5,7 +5,7 @@
 <section class="card"><h2>Настроить отчёт</h2><form method="post" enctype="multipart/form-data" action="{% url 'reports:report-create' project.id %}" data-report-create-form data-settings-url="{% url 'reports:report-settings-save' project.id %}" data-manual-editor-version="2">{% csrf_token %}{{ form.submission_token }}{{ form.topvisor_manual_rows }}{{ form.non_field_errors }}<div class="report-month-field"><label for="{{ form.month.id_for_label }}"><strong>{{ form.month.label }}</strong>{{ form.month }}</label>{{ form.month.errors }}</div>
 <div class="form-notice" data-report-form-notice hidden role="alert"></div>
 <h3>Выберите даты для вывода видимости</h3>
-<div class="calendar-pair">{% for engine,label,field,months,period in calendar_fields %}{% include "reports/_date_calendar.html" with engine=engine label=label field=field months=months period=period %}{% endfor %}</div>
+<div class="calendar-pair{% if calendar_fields|length == 3 %} calendar-triple{% endif %}">{% for item in calendar_fields %}{% include "reports/_date_calendar.html" with engine=item.engine label=item.label region=item.region field=item.field months=item.months period=item.period month_count=item.month_count %}{% endfor %}</div>
 {% if not form.yandex_dates.field.choices and not form.google_dates.field.choices %}<p>Нет синхронизированных данных. <a href="{% if project.position_provider == 'serphunt' %}{% url 'serphunt:connection' project.id %}{% else %}{% url 'topvisor:connection' project.id %}{% endif %}">Перейти к синхронизации</a></p>{% endif %}
 <fieldset class="report-options report-builder"><legend>Параметры отчёта</legend>
 <div class="report-config-grid">

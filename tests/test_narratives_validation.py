@@ -363,6 +363,8 @@ def test_small_metrika_source_total_difference_is_not_fatal():
     )
     issues = validate_report_version(version)
     assert not any(issue.code == "traffic_shares_arithmetic" for issue in issues)
+    warning = next(issue for issue in issues if issue.code == "traffic_source_total_difference")
+    assert warning.severity == "warning"
 
 
 def test_disabled_metrika_and_webmaster_do_not_block_validation():

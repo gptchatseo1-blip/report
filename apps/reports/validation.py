@@ -339,6 +339,15 @@ def _validate_sources(payload, issues):
             section="traffic_sources",
             details=traffic,
         )
+    elif traffic.get("warning") == "source_total_mismatch":
+        _issue(
+            issues,
+            "traffic_source_total_difference",
+            "warning",
+            "Метрика вернула расхождение между итогом и строками источников.",
+            section="traffic_sources",
+            details={**traffic, "shares_sum": str(shares_sum) if shares_sum is not None else None},
+        )
     elif (
         traffic.get("warning") == "nonzero_sources_with_zero_total"
         or invalid_sum
@@ -349,15 +358,6 @@ def _validate_sources(payload, issues):
             "traffic_shares_arithmetic",
             "error",
             "Доли источников трафика арифметически некорректны.",
-            section="traffic_sources",
-            details={**traffic, "shares_sum": str(shares_sum) if shares_sum is not None else None},
-        )
-    elif traffic.get("warning") == "source_total_mismatch":
-        _issue(
-            issues,
-            "traffic_source_total_difference",
-            "warning",
-            "Метрика вернула небольшое расхождение между итогом и строками источников.",
             section="traffic_sources",
             details={**traffic, "shares_sum": str(shares_sum) if shares_sum is not None else None},
         )

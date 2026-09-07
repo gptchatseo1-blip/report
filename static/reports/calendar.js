@@ -25,7 +25,7 @@
     }
 
     function render() {
-      const count = mobile() ? 1 : 3;
+      const count = mobile() ? 1 : Number(root.dataset.monthCount || 3);
       const start = endMonth - count + 1;
       monthsRoot.replaceChildren();
       for (let index = start; index <= endMonth; index += 1) {
@@ -64,8 +64,9 @@
           ? `${monthNames[first.getMonth()]} — ${monthNames[last.getMonth()]} ${last.getFullYear()}`
           : `${monthNames[first.getMonth()]} ${first.getFullYear()} — ${monthNames[last.getMonth()]} ${last.getFullYear()}`;
     }
-    root.querySelector('[data-prev]').addEventListener('click', () => { endMonth -= mobile() ? 1 : 3; render(); });
-    root.querySelector('[data-next]').addEventListener('click', () => { endMonth += mobile() ? 1 : 3; render(); });
+    const step = () => mobile() ? 1 : Number(root.dataset.monthCount || 3);
+    root.querySelector('[data-prev]').addEventListener('click', () => { endMonth -= step(); render(); });
+    root.querySelector('[data-next]').addEventListener('click', () => { endMonth += step(); render(); });
     let wasMobile = mobile();
     addEventListener('resize', () => { if (mobile() !== wasMobile) { wasMobile = mobile(); render(); } });
     render();
