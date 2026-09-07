@@ -538,7 +538,11 @@ class ReportCreateForm(forms.Form):
         self.configuration_date_fields.sort(
             key=lambda item: (engine_order[item["engine"]], item["region"].casefold())
         )
-        self.use_configuration_calendars = len(self.configuration_date_fields) == 3
+        # Use this special layout only when the project itself has exactly
+        # three valid configurations.
+        self.use_configuration_calendars = (
+            len(configurations) == 3 and len(self.configuration_date_fields) == 3
+        )
         if self.use_configuration_calendars:
             for index, item in enumerate(self.configuration_date_fields):
                 field_name = f"configuration_dates_{index}"

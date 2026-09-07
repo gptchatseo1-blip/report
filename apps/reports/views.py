@@ -121,11 +121,15 @@ logger = logging.getLogger(__name__)
 
 
 def _persisted_report_values(form):
-    values = {
-        name: form.cleaned_data.get(name)
-        for name in PERSISTED_REPORT_FIELDS
-        if name in form.cleaned_data
-    }
+    values = {}
+    for name in PERSISTED_REPORT_FIELDS:
+        if name not in form.cleaned_data:
+            continue
+        value = form.cleaned_data.get(name)
+        # ProjectReportSettings.values is a JSONField. Date inputs are cleaned
+        # to ``date`` objects by Django and therefore must be frozen as ISO
+        # strings before the settings row is saved.
+        values[name] = value.isoformat() if isinstance(value, date) else value
     values["topvisor_report_urls"] = form.cleaned_topvisor_report_urls()
     return values
 
