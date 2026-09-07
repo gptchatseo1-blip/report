@@ -14,7 +14,7 @@ from docx import Document
 from openpyxl import load_workbook
 from PIL import Image
 
-from apps.metrics.models import KeywordPosition, RankingSnapshot
+from apps.metrics.models import KeywordPosition, MetricPoint, RankingSnapshot, SourceSnapshot
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
 from apps.reports.forms import ReportCreateForm, parse_named_url_groups
@@ -99,6 +99,89 @@ def test_engines_have_independent_complete_date_sets(project):
         "2026-07-02",
         "2026-07-01",
     ]
+
+
+def test_three_configurations_use_three_ordered_two_month_calendars_and_create_report(
+    client, user, project
+):
+    mapping(
+        project,
+        [
+            {"id": "go", "search_engine": "google", "region_name": "Россия"},
+            {"id": "ya-spb", "search_engine": "yandex", "region_name": "СПб"},
+            {"id": "ya-msk", "search_engine": "yandex", "region_name": "Москва"},
+        ],
+    )
+    configured_dates = {
+        "ya-msk": (date(2026, 7, 3), date(2026, 8, 17)),
+        "ya-spb": (date(2026, 7, 4), date(2026, 8, 18)),
+        "go": (date(2026, 7, 14), date(2026, 8, 30)),
+    }
+    for configuration, days in configured_dates.items():
+        engine = "google" if configuration == "go" else "yandex"
+        region = (
+            "Россия" if configuration == "go" else "СПб" if configuration == "ya-spb" else "Москва"
+        )
+        for day in days:
+            ranking(project, day, engine, configuration, region=region)
+    metrika = SourceSnapshot.objects.create(
+        project=project,
+        source=SourceSnapshot.Source.METRIKA,
+        period_start=date(2026, 8, 1),
+        period_end=date(2026, 8, 31),
+        checksum="three-configurations-metrika",
+        payload={"traffic_source_total": {"visits": "38403"}},
+    )
+    for code, value in (
+        ("source_direct_visits", "3033.84"),
+        ("source_search_visits", "19520.04"),
+        ("source_social_visits", "57.60"),
+        ("source_internal_visits", "1067.60"),
+        ("source_referral_visits", "495.40"),
+        ("source_messenger_visits", "15.36"),
+        ("source_recommend_visits", "241.94"),
+        ("source_advertising_visits", "13725.02"),
+    ):
+        MetricPoint.objects.create(
+            snapshot=metrika,
+            metric_code=code,
+            numeric_value=value,
+            unit=MetricPoint.Unit.COUNT,
+        )
+
+    client.force_login(user)
+    list_url = reverse("reports:report-list", args=[project.id])
+    response = client.get(list_url)
+    html = response.content.decode()
+    calendars = html[html.index("calendar-triple") : html.index("Параметры отчёта")]
+    assert calendars.count("data-calendar data-label=") == 3
+    assert calendars.count('data-month-count="2"') == 3
+    assert calendars.index("Яндекс · Москва") < calendars.index("Яндекс · СПб")
+    assert calendars.index("Яндекс · СПб") < calendars.index("Google · Россия")
+
+    token = response.context["form"].initial["submission_token"]
+    created = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "submission_token": token,
+            "configuration_dates_0": [day.isoformat() for day in configured_dates["ya-msk"]],
+            "configuration_dates_1": [day.isoformat() for day in configured_dates["ya-spb"]],
+            "configuration_dates_2": [day.isoformat() for day in configured_dates["go"]],
+            "include_metrika": "on",
+            "metrika_snapshots": [str(metrika.id)],
+        },
+    )
+    assert created.status_code == 302
+    payload = ReportDatasetSnapshot.objects.get().payload
+    selections = payload["source_selection"]["topvisor"]["configurations"]
+    assert selections["ya-msk"]["selected_dates"] == ["2026-07-03", "2026-08-17"]
+    assert selections["ya-spb"]["selected_dates"] == ["2026-07-04", "2026-08-18"]
+    assert selections["go"]["selected_dates"] == ["2026-07-14", "2026-08-30"]
+    segments = payload["calculated"]["positions"]["segments"]
+    assert [segment["configuration_id"] for segment in segments] == ["ya-msk", "ya-spb", "go"]
+    version = Report.objects.get().versions.get()
+    assert not version.validation_issues.filter(code="traffic_shares_arithmetic").exists()
+    assert version.validation_issues.filter(code="traffic_source_total_difference").exists()
 
 
 def test_report_defaults_select_only_top_10_and_search_segment(project):

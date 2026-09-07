@@ -312,14 +312,52 @@ def _calendar_period(months):
 
 
 def _calendar_fields(form):
+    if form.use_configuration_calendars:
+        fields = []
+        for item in form.configuration_date_fields:
+            field = form[item["field_name"]]
+            months = _calendar_months(field, count=2)
+            fields.append(
+                {
+                    "engine": item["engine"],
+                    "label": item["engine_label"],
+                    "region": item["region"],
+                    "field": field,
+                    "months": months,
+                    "period": _calendar_period(months),
+                    "month_count": 2,
+                }
+            )
+        return fields
     fields = []
     for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
         if engine not in form.connected_engines:
             continue
         field = form[f"{engine}_dates"]
         months = _calendar_months(field)
-        fields.append((engine, label, field, months, _calendar_period(months)))
+        fields.append(
+            {
+                "engine": engine,
+                "label": label,
+                "region": "",
+                "field": field,
+                "months": months,
+                "period": _calendar_period(months),
+                "month_count": 3,
+            }
+        )
     return fields
+
+
+def _can_create_report(form):
+    if form.use_configuration_calendars:
+        return all(
+            len(form.fields[item["field_name"]].choices) >= 2
+            for item in form.configuration_date_fields
+        )
+    return all(
+        len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
+    )
 
 
 def _source_period_fields(form):
@@ -561,9 +599,7 @@ def report_list(request, project_id):
     source_period_fields = _source_period_fields(form)
     topvisor_report_link_fields = _topvisor_report_link_fields(form)
     topvisor_editor_rows, topvisor_editor_segments = _topvisor_editor_data(project)
-    can_create = all(
-        len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
-    )
+    can_create = _can_create_report(form)
     context = {
         "project": project,
         "reports": reports,
@@ -605,9 +641,18 @@ def report_create(request, project_id):
         if submitted_token and submitted_token != request.session.pop(token_key, None):
             messages.warning(request, "Запрос уже обработан. Новая версия не создана.")
             return redirect("reports:report-list", project_id=project.id)
-        selected_by_engine = {
-            engine: form.cleaned_data[f"{engine}_dates"] for engine in ("yandex", "google")
-        }
+        selected_by_configuration = form.cleaned_configuration_dates()
+        if selected_by_configuration:
+            selected_by_engine = {"yandex": [], "google": []}
+            for item in selected_by_configuration.values():
+                selected_by_engine[item["engine"]].extend(item["dates"])
+            selected_by_engine = {
+                engine: sorted(set(dates)) for engine, dates in selected_by_engine.items()
+            }
+        else:
+            selected_by_engine = {
+                engine: form.cleaned_data[f"{engine}_dates"] for engine in ("yandex", "google")
+            }
         selected_dates = sorted({day for dates in selected_by_engine.values() for day in dates})
         selected_metrika_ids = (
             form.cleaned_data["metrika_snapshots"]
@@ -650,6 +695,7 @@ def report_create(request, project_id):
             created_by=request.user,
             selection={
                 "topvisor": selected_by_engine,
+                "topvisor_configurations": selected_by_configuration,
                 "display_options": {
                     "configuration_version": 3,
                     **{
@@ -727,9 +773,7 @@ def report_create(request, project_id):
     source_period_fields = _source_period_fields(form)
     topvisor_report_link_fields = _topvisor_report_link_fields(form)
     topvisor_editor_rows, topvisor_editor_segments = _topvisor_editor_data(project)
-    can_create = all(
-        len(form.fields[f"{engine}_dates"].choices) >= 2 for engine in form.connected_engines
-    )
+    can_create = _can_create_report(form)
     context = {
         "project": project,
         "reports": reports,

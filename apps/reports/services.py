@@ -109,12 +109,18 @@ def _delete_artifact_file(storage, name):
         logger.exception("Failed to remove artifact file after report version deletion")
 
 
-def build_position_facts(*, project, report_month, selected_dates=None):
+def build_position_facts(
+    *, project, report_month, selected_dates=None, selected_configurations=None
+):
     """Build facts independently for every search-engine/region pair; device is absent by design."""
     periods = calculate_periods(report_month)
     snapshot_filter = {"project": project}
     selected_by_engine = selected_dates if isinstance(selected_dates, dict) else None
-    flat_dates = {day for dates in (selected_by_engine or {}).values() for day in dates}
+    flat_dates = (
+        {day for item in selected_configurations.values() for day in item.get("dates", ())}
+        if selected_configurations
+        else {day for dates in (selected_by_engine or {}).values() for day in dates}
+    )
     if selected_dates:
         snapshot_filter["snapshot_date__in"] = flat_dates if selected_by_engine else selected_dates
     else:
@@ -129,6 +135,14 @@ def build_position_facts(*, project, report_month, selected_dates=None):
     # Explicit calendar dates are authoritative for chart points too. Reusing this
     # queryset also avoids a second database query for the whole quarter.
     for snapshot in snapshots:
+        configuration_selection = (selected_configurations or {}).get(
+            str(snapshot.topvisor_configuration_id)
+        )
+        if selected_configurations and (
+            not configuration_selection
+            or snapshot.snapshot_date not in configuration_selection.get("dates", ())
+        ):
+            continue
         if selected_by_engine and snapshot.snapshot_date not in selected_by_engine.get(
             snapshot.search_engine, ()
         ):
@@ -144,6 +158,14 @@ def build_position_facts(*, project, report_month, selected_dates=None):
         ):
             grouped_daily[segment_key][snapshot.snapshot_date] = snapshot
     for snapshot in snapshots:
+        configuration_selection = (selected_configurations or {}).get(
+            str(snapshot.topvisor_configuration_id)
+        )
+        if selected_configurations and (
+            not configuration_selection
+            or snapshot.snapshot_date not in configuration_selection.get("dates", ())
+        ):
+            continue
         if selected_by_engine and snapshot.snapshot_date not in selected_by_engine.get(
             snapshot.search_engine, ()
         ):
@@ -163,8 +185,11 @@ def build_position_facts(*, project, report_month, selected_dates=None):
     for (engine, region, configuration_id), values in sorted(
         grouped.items(), key=lambda item: (engine_order.get(item[0][0], 99), item[0][1], item[0][2])
     ):
+        configuration_selection = (selected_configurations or {}).get(str(configuration_id))
         months = (
-            tuple(selected_by_engine.get(engine, ()))
+            tuple(configuration_selection.get("dates", ()))
+            if configuration_selection
+            else tuple(selected_by_engine.get(engine, ()))
             if selected_by_engine
             else (
                 tuple(selected_dates)
@@ -473,10 +498,14 @@ def snapshot_checksum(payload):
     return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
 
 
-def _ranking_source_data(project, periods, selected_dates=None):
+def _ranking_source_data(project, periods, selected_dates=None, selected_configurations=None):
     filters = {"project": project}
     selected_by_engine = selected_dates if isinstance(selected_dates, dict) else None
-    if selected_dates:
+    if selected_configurations:
+        filters["snapshot_date__in"] = {
+            day for item in selected_configurations.values() for day in item.get("dates", ())
+        }
+    elif selected_dates:
         filters["snapshot_date__in"] = (
             {d for dates in selected_by_engine.values() for d in dates}
             if selected_by_engine
@@ -491,6 +520,14 @@ def _ranking_source_data(project, periods, selected_dates=None):
     )
     result = []
     for item in snapshots:
+        configuration_selection = (selected_configurations or {}).get(
+            str(item.topvisor_configuration_id)
+        )
+        if selected_configurations and (
+            not configuration_selection
+            or item.snapshot_date not in configuration_selection.get("dates", ())
+        ):
+            continue
         if selected_by_engine and item.snapshot_date not in selected_by_engine.get(
             item.search_engine, ()
         ):
@@ -581,6 +618,14 @@ def build_report_snapshot(*, report, selection=None):
     explicit_selection = selection is not None
     selection = selection or {}
     raw_topvisor = selection.get("topvisor")
+    raw_configurations = selection.get("topvisor_configurations") or {}
+    selected_configurations = {
+        str(configuration): {
+            "engine": str(item.get("engine") or ""),
+            "dates": tuple(date.fromisoformat(value) for value in item.get("dates", ())),
+        }
+        for configuration, item in raw_configurations.items()
+    }
     if raw_topvisor is None:
         legacy = selection.get("topvisor_dates", ())
         selected_dates = tuple(date.fromisoformat(value) for value in legacy)
@@ -660,13 +705,18 @@ def build_report_snapshot(*, report, selection=None):
             "yandex_metrika": list(selection.get("yandex_metrika", ())),
             "yandex_webmaster": list(selection.get("yandex_webmaster", ())),
         },
-        "ranking_sources": _ranking_source_data(project, periods, selected_dates),
+        "ranking_sources": _ranking_source_data(
+            project, periods, selected_dates, selected_configurations
+        ),
         "source_snapshots": _external_source_data(
             project, periods, selected_source_ids if explicit_selection else None
         ),
         "calculated": {
             "positions": build_position_facts(
-                project=project, report_month=report.report_month, selected_dates=selected_dates
+                project=project,
+                report_month=report.report_month,
+                selected_dates=selected_dates,
+                selected_configurations=selected_configurations,
             ),
             "sources": build_source_facts(
                 project=project,
@@ -702,6 +752,14 @@ def build_report_snapshot(*, report, selection=None):
         ],
     }
     if selected_by_engine is not None:
+        if selected_configurations:
+            payload["source_selection"]["topvisor"]["configurations"] = {
+                configuration: {
+                    "engine": item["engine"],
+                    "selected_dates": item["dates"],
+                }
+                for configuration, item in selected_configurations.items()
+            }
         for engine in selected_by_engine:
             payload["source_selection"]["topvisor"][engine]["snapshots"] = [
                 {

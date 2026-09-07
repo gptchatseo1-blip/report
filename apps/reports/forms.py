@@ -426,6 +426,8 @@ class ReportCreateForm(forms.Form):
         self.source_availability = {}
         self.source_period_options = {}
         self.topvisor_report_link_fields = []
+        self.configuration_date_fields = []
+        self.use_configuration_calendars = False
         if project is None:
             for name in (
                 "yandex_dates",
@@ -524,6 +526,38 @@ class ReportCreateForm(forms.Form):
             )
             if engine:
                 required[engine].add(configuration_id(item))
+                self.configuration_date_fields.append(
+                    {
+                        "configuration_id": configuration_id(item),
+                        "engine": engine,
+                        "engine_label": "Яндекс" if engine == "yandex" else "Google",
+                        "region": str(item.get("region_name") or item.get("region") or "").strip(),
+                    }
+                )
+        engine_order = {"yandex": 0, "google": 1}
+        self.configuration_date_fields.sort(
+            key=lambda item: (engine_order[item["engine"]], item["region"].casefold())
+        )
+        self.use_configuration_calendars = len(self.configuration_date_fields) == 3
+        if self.use_configuration_calendars:
+            for index, item in enumerate(self.configuration_date_fields):
+                field_name = f"configuration_dates_{index}"
+                available = (
+                    RankingSnapshot.objects.filter(
+                        project=project,
+                        search_engine__iexact=item["engine"],
+                        topvisor_configuration_id=item["configuration_id"],
+                    )
+                    .order_by("-snapshot_date")
+                    .values_list("snapshot_date", flat=True)
+                    .distinct()
+                )
+                self.fields[field_name] = forms.MultipleChoiceField(
+                    required=False,
+                    widget=forms.CheckboxSelectMultiple,
+                    choices=[(day.isoformat(), day.strftime("%d.%m.%Y")) for day in available],
+                )
+                item["field_name"] = field_name
         self.connected_engines = set(required)
         for engine in ("yandex", "google"):
             available = []
@@ -614,10 +648,20 @@ class ReportCreateForm(forms.Form):
         webmaster_date_to = cleaned.get("webmaster_date_to")
         if webmaster_date_from and webmaster_date_to and webmaster_date_from > webmaster_date_to:
             self.add_error("webmaster_date_to", "Дата окончания должна быть не раньше даты начала.")
-        for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
-            if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:
-                self.add_error(f"{engine}_dates", f"{label}: выберите минимум две доступные даты.")
-            cleaned[f"{engine}_dates"] = sorted(cleaned.get(f"{engine}_dates", []))
+        if self.use_configuration_calendars:
+            for item in self.configuration_date_fields:
+                field_name = item["field_name"]
+                if len(cleaned.get(field_name, [])) < 2:
+                    label = f"{item['engine_label']} · {item['region'] or 'Регион не указан'}"
+                    self.add_error(field_name, f"{label}: выберите минимум две доступные даты.")
+                cleaned[field_name] = sorted(cleaned.get(field_name, []))
+        else:
+            for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
+                if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:
+                    self.add_error(
+                        f"{engine}_dates", f"{label}: выберите минимум две доступные даты."
+                    )
+                cleaned[f"{engine}_dates"] = sorted(cleaned.get(f"{engine}_dates", []))
         for field, source, label in (
             ("metrika_snapshots", "yandex_metrika", "Метрика"),
             ("webmaster_snapshots", "yandex_webmaster", "Вебмастер"),
@@ -678,6 +722,17 @@ class ReportCreateForm(forms.Form):
             str(item["configuration_id"]): self.cleaned_data.get(item["name"])
             for item in self.topvisor_report_link_fields
             if self.cleaned_data.get(item["name"])
+        }
+
+    def cleaned_configuration_dates(self):
+        if not self.use_configuration_calendars:
+            return {}
+        return {
+            str(item["configuration_id"]): {
+                "engine": item["engine"],
+                "dates": self.cleaned_data.get(item["field_name"], []),
+            }
+            for item in self.configuration_date_fields
         }
 
     def clean_webmaster_queries_screenshot(self):
