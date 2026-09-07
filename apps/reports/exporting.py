@@ -1318,9 +1318,7 @@ def _webmaster_chart_details(payload):
                     row
                     for row in rows or []
                     if row.get("date")
-                    and selected_start
-                    <= date.fromisoformat(str(row["date"])[:10])
-                    <= selected_end
+                    and selected_start <= date.fromisoformat(str(row["date"])[:10]) <= selected_end
                 ]
                 for key, rows in (source.get("daily") or {}).items()
             }
@@ -1365,9 +1363,7 @@ def _webmaster_summary_from_daily(rows):
         "ctr": str(clicks * Decimal(100) / shows) if shows else None,
         "average_position": (
             str(
-                sum(
-                    (weight * position for weight, position in weighted_positions), Decimal(0)
-                )
+                sum((weight * position for weight, position in weighted_positions), Decimal(0))
                 / position_base
             )
             if position_base
@@ -1387,8 +1383,10 @@ def _webmaster_query_summaries(payload, latest, current_rows):
         selected_start = selected_end = None
     latest_start = latest.get("period_start")
     latest_end = latest.get("period_end")
-    if not selected_start or not selected_end or (
-        latest_start == selected_start.isoformat() and latest_end == selected_end.isoformat()
+    if (
+        not selected_start
+        or not selected_end
+        or (latest_start == selected_start.isoformat() and latest_end == selected_end.isoformat())
     ):
         return (
             latest.get("query_summary") or {},
@@ -2134,9 +2132,7 @@ def _render_webmaster(doc, payload, blocks):
         query_rows = _daily_rows(details, "queries")
         _period_caption(doc, query_rows, provider="webmaster", detail="по дням")
         _add_report_picture(doc, _webmaster_search_chart(payload))
-        current_summary, previous_summary = _webmaster_query_summaries(
-            payload, latest, query_rows
-        )
+        current_summary, previous_summary = _webmaster_query_summaries(payload, latest, query_rows)
         if not current_summary:
             current_summary, previous_summary = _webmaster_query_summary_from_changes(payload)
         if current_summary:

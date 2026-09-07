@@ -283,9 +283,9 @@ def test_missing_query_dynamics_are_filled_from_popular_history(context):
         def query_analytics(self, *args, **kwargs):
             response = super().query_analytics(*args, **kwargs)
             if kwargs["date_to"].endswith("02-28"):
-                response["text_indicator_to_statistics"] = response[
-                    "text_indicator_to_statistics"
-                ][:1]
+                response["text_indicator_to_statistics"] = response["text_indicator_to_statistics"][
+                    :1
+                ]
             return response
 
         def popular_search_queries(self, *args, **kwargs):

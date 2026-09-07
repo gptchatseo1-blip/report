@@ -65,8 +65,7 @@ def test_docx_and_pdf_creation_show_ready_notification(
 
     assert response.status_code == 200
     assert (
-        f"Отчёт {artifact_type.upper()} создан и готов к скачиванию."
-        in response.content.decode()
+        f"Отчёт {artifact_type.upper()} создан и готов к скачиванию." in response.content.decode()
     )
 
 

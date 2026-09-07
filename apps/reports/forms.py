@@ -613,9 +613,7 @@ class ReportCreateForm(forms.Form):
         webmaster_date_from = cleaned.get("webmaster_date_from")
         webmaster_date_to = cleaned.get("webmaster_date_to")
         if webmaster_date_from and webmaster_date_to and webmaster_date_from > webmaster_date_to:
-            self.add_error(
-                "webmaster_date_to", "Дата окончания должна быть не раньше даты начала."
-            )
+            self.add_error("webmaster_date_to", "Дата окончания должна быть не раньше даты начала.")
         for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
             if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:
                 self.add_error(f"{engine}_dates", f"{label}: выберите минимум две доступные даты.")

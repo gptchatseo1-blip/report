@@ -122,9 +122,7 @@ def test_webmaster_date_range_is_persisted_and_validated(client, user, project):
     client.force_login(user)
     response = client.post(
         reverse("reports:report-settings-save", args=[project.id]),
-        data=json.dumps(
-            {"webmaster_date_from": "2026-08-04", "webmaster_date_to": "2026-08-29"}
-        ),
+        data=json.dumps({"webmaster_date_from": "2026-08-04", "webmaster_date_to": "2026-08-29"}),
         content_type="application/json",
     )
     assert response.status_code == 200
