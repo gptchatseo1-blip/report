@@ -102,7 +102,7 @@ def test_engines_have_independent_complete_date_sets(project):
 
 
 def test_three_configurations_use_three_ordered_two_month_calendars_and_create_report(
-    client, user, project
+    client, user, project, settings, tmp_path
 ):
     mapping(
         project,
@@ -169,6 +169,8 @@ def test_three_configurations_use_three_ordered_two_month_calendars_and_create_r
             "configuration_dates_2": [day.isoformat() for day in configured_dates["go"]],
             "include_metrika": "on",
             "metrika_snapshots": [str(metrika.id)],
+            "include_top_tables": "on",
+            "include_top_10": "on",
         },
     )
     assert created.status_code == 302
@@ -182,6 +184,15 @@ def test_three_configurations_use_three_ordered_two_month_calendars_and_create_r
     version = Report.objects.get().versions.get()
     assert not version.validation_issues.filter(code="traffic_shares_arithmetic").exists()
     assert version.validation_issues.filter(code="traffic_source_total_difference").exists()
+    settings.MEDIA_ROOT = tmp_path
+    document = Document(
+        io.BytesIO(
+            generate_artifact(version=version, artifact_type="docx", is_draft=True).file.read()
+        )
+    )
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "Запросы в TOP-10" in text
+    assert "Запросы в TOP-11–20" not in text
 
 
 def test_report_defaults_select_only_top_10_and_search_segment(project):
@@ -380,6 +391,8 @@ def test_new_snapshot_stores_flexible_report_options(client, user, project):
             "include_metrika": "on",
             "include_metrika_geography": "on",
             "geography_moscow": "on",
+            "webmaster_date_from": "2026-07-01",
+            "webmaster_date_to": "2026-07-31",
             "include_topvisor_report_link": "on",
             "topvisor_report_url": "https://topvisor.example/report/42",
         },
@@ -395,6 +408,9 @@ def test_new_snapshot_stores_flexible_report_options(client, user, project):
     assert options["geography_saint_petersburg"] is False
     assert options["topvisor_report_url"] == "https://topvisor.example/report/42"
     assert options["topvisor_report_urls"] == {"ya": "https://topvisor.example/report/42"}
+    saved = ProjectReportSettings.objects.get(project=project).values
+    assert saved["webmaster_date_from"] == "2026-07-01"
+    assert saved["webmaster_date_to"] == "2026-07-31"
 
 
 def test_topvisor_report_link_requires_url(project):

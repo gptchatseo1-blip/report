@@ -64,8 +64,8 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-07-v8"
-WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-07-v4"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-07-v9"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-07-v5"
 GOALS_PER_REQUEST = 6
 
 
@@ -554,20 +554,16 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
             for landing in landing_pages:
                 landing["dimensions"].insert(0, {"id": "all", "name": "Все источники"})
             landing_hierarchy = _landing_hierarchy_rows(client, filter_value, common)
-        landing_pages_total = _detail_total(landing_pages_response)
-        # Dimensioned reports may omit protected/low-volume URL rows.  Metrika's
-        # ungrouped segment total is authoritative for the "Итого" row.
-        segment_total = traffic_by_segment[segment][robotness]
-        for code in ("visits", "users", "bounce_rate"):
-            if segment_total.get(code) is not None:
-                landing_pages_total[code] = segment_total[code]
         detail_variants[segment][robotness] = {
             "search_engines": search_engines,
             "search_engines_total": _detail_total(search_engine_response),
             "search_geography": geography_details,
             "search_geography_total": _detail_total(geography_response),
             "landing_pages": landing_pages,
-            "landing_pages_total": landing_pages_total,
+            # Use the total returned by the same dimensioned report as the
+            # rows. A separate ungrouped request can represent a different
+            # population and previously changed the visible Metrika total.
+            "landing_pages_total": _detail_total(landing_pages_response),
             "landing_hierarchy": landing_hierarchy,
         }
         for code, value in _geography_totals(geography_details).items():
@@ -1062,10 +1058,9 @@ def _popular_queries(response):
 def _query_analytics_data(response, start, end):
     """Convert Query Analytics rows to the legacy history/popular shapes.
 
-    The reference Webmaster report uses ``ALL_LOCATIONS_ORGANIC`` (the UI
-    option "Все вместе без дополнительных кликов").  The older history
-    endpoint has no placement parameter and remains only a compatibility
-    fallback.
+    Query rows use ``ALL_LOCATIONS`` to match the unfiltered Webmaster table.
+    Aggregate totals remain sourced from the dedicated history endpoint,
+    because summing disclosed query rows omits provider-hidden traffic.
     """
     source_rows = response.get("text_indicator_to_statistics")
     if not isinstance(source_rows, list) or not source_rows:
@@ -1166,7 +1161,10 @@ def _query_analytics_data(response, start, end):
         key=lambda row: (_number(row.get("clicks")) or Decimal(0), row.get("query") or ""),
         reverse=True,
     )
-    return {"indicators": indicators}, popular[:50]
+    # Keep every returned query. The exporter performs the visible TOP limit;
+    # retaining the full previous-period set is required to show dynamics for
+    # every current row, including queries that were not previously in TOP-50.
+    return {"indicators": indicators}, popular
 
 
 def _query_key(row):
@@ -1271,7 +1269,7 @@ def _webmaster_month(
                         mapping.host_id,
                         date_from=start.isoformat(),
                         date_to=end.isoformat(),
-                        search_location="ALL_LOCATIONS_ORGANIC",
+                        search_location="ALL_LOCATIONS",
                     ),
                     start,
                     end,
@@ -1282,7 +1280,7 @@ def _webmaster_month(
                         mapping.host_id,
                         date_from=comparison_start.isoformat(),
                         date_to=comparison_end.isoformat(),
-                        search_location="ALL_LOCATIONS_ORGANIC",
+                        search_location="ALL_LOCATIONS",
                     ),
                     comparison_start,
                     comparison_end,
@@ -1297,13 +1295,9 @@ def _webmaster_month(
                     exc.error_code or "unknown",
                 )
         if analytics_current is not None:
-            queries, popular = analytics_current
-            query_summary = _query_summary(queries, start, end)
+            _analytics_queries, popular = analytics_current
         if analytics_previous is not None:
-            previous_queries, previous_popular = analytics_previous
-            previous_query_summary = _query_summary(
-                previous_queries, comparison_start, comparison_end
-            )
+            _analytics_previous_queries, previous_popular = analytics_previous
 
         if hasattr(client, "popular_search_queries"):
             query_indicators = [

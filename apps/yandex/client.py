@@ -273,13 +273,13 @@ class WebmasterClient(MetrikaClient):
             self._host_path(user_id, host_id, "/search-urls/in-search/history"), params
         )
 
-    def search_urls_samples(self, user_id, host_id, *, max_rows=5000):
-        """Return a bounded URL sample used for the in-search path legend."""
+    def search_urls_samples(self, user_id, host_id, *, max_rows=None):
+        """Return every URL available for the in-search path legend."""
         offset = 0
         rows = []
         available = None
-        while len(rows) < max_rows:
-            limit = min(100, max_rows - len(rows))
+        while max_rows is None or len(rows) < max_rows:
+            limit = 100 if max_rows is None else min(100, max_rows - len(rows))
             response = self._request(
                 self._host_path(user_id, host_id, "/search-urls/in-search/samples"),
                 {"offset": offset, "limit": limit},
@@ -289,8 +289,8 @@ class WebmasterClient(MetrikaClient):
             rows.extend(batch)
             if (
                 not batch
-                or len(batch) < limit
                 or (available is not None and len(rows) >= available)
+                or (available is None and len(batch) < limit)
             ):
                 break
             offset += len(batch)
@@ -320,7 +320,7 @@ class WebmasterClient(MetrikaClient):
         *,
         date_from,
         date_to,
-        search_location="ALL_LOCATIONS_ORGANIC",
+        search_location="ALL_LOCATIONS",
         page_size=500,
     ):
         """Return all query rows for the requested Webmaster placement filter."""

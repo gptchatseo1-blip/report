@@ -260,7 +260,7 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
     assert (refreshed.fetched_period_count, refreshed.reused_period_count) == (3, 0)
 
 
-def test_current_webmaster_totals_use_same_search_location_as_service(context):
+def test_current_webmaster_totals_use_history_aggregate_and_all_locations_rows(context):
     item = mapping(context)
     api = FakeWebmasterQueryAnalytics()
 
@@ -268,13 +268,15 @@ def test_current_webmaster_totals_use_same_search_location_as_service(context):
 
     assert run.status == run.Status.SUCCESS
     assert len(api.analytics_calls) == 2
-    assert all(call["search_location"] == "ALL_LOCATIONS_ORGANIC" for call in api.analytics_calls)
+    assert all(call["search_location"] == "ALL_LOCATIONS" for call in api.analytics_calls)
     march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
     points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
-    assert points["search_impressions"] == 120
-    assert points["search_clicks"] == 12
-    assert float(points["average_position"]) == pytest.approx(4.8333, abs=0.0001)
-    assert march.payload["query_summary"]["shows"] == "120"
+    # Totals come from /search-queries/all/history, not from summing disclosed
+    # query rows (120/12), which can omit provider-hidden traffic.
+    assert points["search_impressions"] == 400
+    assert points["search_clicks"] == 20
+    assert float(points["average_position"]) == pytest.approx(4, abs=0.0001)
+    assert march.payload["query_summary"]["shows"] == "400"
     assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
 
 
@@ -503,7 +505,7 @@ def test_query_analytics_posts_ui_location_and_period(context):
     body = json.loads(request.data)
     assert request.method == "POST"
     assert request.headers["Content-type"] == "application/json; charset=UTF-8"
-    assert body["search_location"] == "ALL_LOCATIONS_ORGANIC"
+    assert body["search_location"] == "ALL_LOCATIONS"
     assert body["filters"]["statistic_filters"][0]["from"] == "2026-08-01"
     assert body["filters"]["statistic_filters"][0]["to"] == "2026-08-31"
 
@@ -549,6 +551,68 @@ def test_query_analytics_follows_count_after_provider_short_page(context):
 
     assert offsets == [0, 2]
     assert len(result["text_indicator_to_statistics"]) == 3
+
+
+def test_search_url_samples_are_not_truncated_at_five_thousand(context):
+    class SampleClient(WebmasterClient):
+        def __init__(self, connection):
+            super().__init__(connection)
+            self.offsets = []
+
+        def _request(self, path, params=None, **kwargs):
+            offset = int((params or {}).get("offset", 0))
+            limit = int((params or {}).get("limit", 100))
+            self.offsets.append(offset)
+            count = 5001
+            size = max(0, min(limit, count - offset))
+            return {
+                "count": count,
+                "samples": [
+                    {"url": f"https://site.example/p/{index}"}
+                    for index in range(offset, offset + size)
+                ],
+            }
+
+    api = SampleClient(context[2])
+    result = api.search_urls_samples(7, "https:site.example:443")
+
+    assert len(result["samples"]) == 5001
+    assert result["truncated"] is False
+    assert api.offsets[-1] == 5000
+
+
+def test_query_analytics_keeps_all_previous_rows_for_dynamics(context):
+    class ManyQueries(FakeWebmasterQueryAnalytics):
+        def query_analytics(self, *args, **kwargs):
+            start = kwargs["date_from"]
+            return {
+                "count": 80,
+                "text_indicator_to_statistics": [
+                    {
+                        "text_indicator": {"type": "QUERY", "value": f"query-{index}"},
+                        "statistics": [
+                            {"date": start, "field": "IMPRESSIONS", "value": 100 - index},
+                            {"date": start, "field": "CLICKS", "value": 80 - index},
+                            {"date": start, "field": "POSITION", "value": index + 1},
+                        ],
+                    }
+                    for index in range(80)
+                ],
+            }
+
+        def popular_search_queries(self, *args, **kwargs):
+            raise AssertionError("Query Analytics supplied every row")
+
+    sync_webmaster(
+        mapping=mapping(context),
+        report_month=date(2026, 3, 1),
+        user=context[0],
+        client=ManyQueries(),
+    )
+    payload = SourceSnapshot.objects.get(period_start=date(2026, 3, 1)).payload
+
+    assert len(payload["popular_queries"]) == 80
+    assert len(payload["comparison_popular_queries"]) == 80
 
 
 def test_mutating_routes_reject_get(client, context):

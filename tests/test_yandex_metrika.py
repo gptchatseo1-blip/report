@@ -513,6 +513,40 @@ def test_default_search_segment_uses_last_significant_attribution(identity, yand
     )
 
 
+def test_landing_page_total_comes_from_the_same_dimensioned_report(identity, yandex_settings):
+    class DistinctLandingTotal(FakeMetrika):
+        def stat(self, **params):
+            dimensions = str(params.get("dimensions") or "")
+            if dimensions.endswith("ym:s:startURL"):
+                dimension_count = dimensions.count(",") + 1
+                return {
+                    "data": [
+                        {
+                            "dimensions": [
+                                {"id": "yandex", "name": "Яндекс"},
+                                {"id": "https://site.example/", "name": "https://site.example/"},
+                            ][:dimension_count],
+                            "metrics": [824, 598, 10],
+                        }
+                    ],
+                    "totals": [17979, 16092, 9],
+                }
+            return super().stat(**params)
+
+    mapping = mapping_with_goal(identity, yandex_settings)
+    run = sync_metrika(
+        mapping=mapping,
+        report_month=date(2026, 3, 1),
+        client=DistinctLandingTotal(),
+    )
+
+    assert run.status == run.Status.SUCCESS
+    snapshot = SourceSnapshot.objects.get(project=mapping.project, period_start=date(2026, 3, 1))
+    total = snapshot.payload["detail_variants"]["search"]["humans"]["landing_pages_total"]
+    assert total["visits"] == "17979"
+    assert total["users"] == "16092"
+
+
 def test_late_failure_preserves_existing_snapshots(identity, yandex_settings):
     mapping = mapping_with_goal(identity, yandex_settings)
     sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
