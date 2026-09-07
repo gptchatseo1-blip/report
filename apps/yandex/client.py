@@ -323,7 +323,7 @@ class WebmasterClient(MetrikaClient):
         search_location="ALL_LOCATIONS_ORGANIC",
         page_size=500,
     ):
-        """Return all query rows for the same placement filter as Webmaster UI."""
+        """Return all query rows for the requested Webmaster placement filter."""
         offset = 0
         rows = []
         available = None
@@ -359,7 +359,10 @@ class WebmasterClient(MetrikaClient):
                 available = int(response.get("count", len(rows)))
             except (TypeError, ValueError):
                 available = len(rows)
-            if not batch or len(batch) < page_size:
+            # The provider may cap a page below the requested limit.  ``count``
+            # is authoritative; stopping merely because a short page arrived
+            # silently loses low-volume queries and understates totals.
+            if not batch or (available is not None and len(rows) >= available):
                 break
             offset += len(batch)
         return {

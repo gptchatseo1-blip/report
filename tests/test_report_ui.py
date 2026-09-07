@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, date, datetime
+from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -43,8 +44,30 @@ def test_report_builder_uses_compact_spoilers_and_rich_work_editor(client, user,
     assert "Заполнить выполненные работы" in html
     assert "Хранение и очистка данных" in html
     assert "Точный выбор периодов" not in html
+    assert "Период данных Вебмастера" in html
+    assert 'name="webmaster_date_from"' in html
+    assert 'name="webmaster_date_to"' in html
+    assert "Только отчётный месяц" not in html
     assert 'data-rich-command="insertOrderedList"' in html
     assert "data-rich-link" in html
+
+
+@pytest.mark.parametrize("artifact_type", ["docx", "pdf"])
+def test_docx_and_pdf_creation_show_ready_notification(
+    client, user, preview_version, artifact_type
+):
+    client.force_login(user)
+    with patch("apps.reports.views.generate_artifact"):
+        response = client.post(
+            reverse("reports:artifact-generate", args=[preview_version.id, artifact_type]),
+            follow=True,
+        )
+
+    assert response.status_code == 200
+    assert (
+        f"Отчёт {artifact_type.upper()} создан и готов к скачиванию."
+        in response.content.decode()
+    )
 
 
 @pytest.mark.django_db

@@ -24,6 +24,7 @@ from apps.reports.exporting import (
     _configure_document,
     _configured_groups_table,
     _goal_card,
+    _landing_comparison_table,
     _landing_hierarchy_order,
     _landing_hierarchy_table,
     _landing_pages_table,
@@ -34,6 +35,7 @@ from apps.reports.exporting import (
     _position_fill,
     _render_monthly_topvisor_table,
     _render_topvisor_comparison,
+    _webmaster_chart_details,
     _webmaster_popular_table,
     _webmaster_query_summary_from_changes,
     _webmaster_query_summary_table,
@@ -92,6 +94,44 @@ def test_webmaster_chart_draws_better_average_position_higher(monkeypatch):
     _webmaster_search_chart(payload)
 
     assert plotted["Ср. позиция"] == [0.0, 1.0]
+
+
+def test_webmaster_date_range_filters_only_selected_daily_rows():
+    payload = {
+        "display_options": {
+            "webmaster_date_from": "2026-08-04",
+            "webmaster_date_to": "2026-08-05",
+        },
+        "calculated": {
+            "sources": {
+                "sources": {
+                    "yandex_webmaster": {
+                        "period_details": [
+                            {
+                                "payload": {
+                                    "daily": {
+                                        "queries": [
+                                            {"date": "2026-08-03", "shows": "1"},
+                                            {"date": "2026-08-04", "shows": "2"},
+                                            {"date": "2026-08-05", "shows": "3"},
+                                            {"date": "2026-08-06", "shows": "4"},
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+    }
+
+    details = _webmaster_chart_details(payload)
+
+    assert [row["date"] for row in details[0]["payload"]["daily"]["queries"]] == [
+        "2026-08-04",
+        "2026-08-05",
+    ]
 
 
 def test_manual_dynamics_merge_history_override_and_sort_by_month():
@@ -377,6 +417,42 @@ def test_landing_hierarchy_uses_provider_aggregate_for_total_and_root():
         "100",
         "75",
     ]
+
+
+def test_landing_comparison_uses_metrika_level_aggregates_without_resumming_leaves():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 8, 1))
+    current = [
+        {
+            "dimensions": [
+                {"id": "yandex", "name": "Yandex"},
+                {"id": "root", "name": "https://site.test/"},
+            ],
+            "visits": "7207",
+            "users": "6417",
+        },
+        {
+            "dimensions": [
+                {"id": "yandex", "name": "Yandex"},
+                {"id": "about", "name": "https://site.test/about/"},
+            ],
+            "visits": "4298",
+            "users": "3907",
+        },
+    ]
+
+    table = _landing_comparison_table(
+        document,
+        {"project": {"normalized_domain": "site.test"}},
+        current,
+        [],
+        "Яндекс",
+        total_values=({"visits": "7207", "users": "6417"}, {}),
+        provider_hierarchy=True,
+    )
+
+    about_row = next(row for row in table.rows if "https://site.test/about/" in row.cells[0].text)
+    assert about_row.cells[1].paragraphs[0].text == "4298"
 
 
 def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():

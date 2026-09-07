@@ -668,7 +668,8 @@ def report_create(request, project_id):
                             "include_top_30",
                             "include_topvisor_report_link",
                             "include_webmaster",
-                            "webmaster_chart_period",
+                            "webmaster_date_from",
+                            "webmaster_date_to",
                             "include_webmaster_popular_queries",
                             "include_metrika",
                             "metrika_robotness",
@@ -1184,7 +1185,8 @@ def artifact_generate(request, version_id, artifact_type):
             is_draft=request.POST.get("is_draft") == "on",
             created_by=request.user,
         )
-        messages.success(request, f"Файл {artifact_type.upper()} сформирован.")
+        noun = "Отчёт" if artifact_type in {"docx", "pdf"} else "Файл"
+        messages.success(request, f"{noun} {artifact_type.upper()} создан и готов к скачиванию.")
     except ExportBlocked as exc:
         messages.error(request, str(exc))
     except Exception as exc:
