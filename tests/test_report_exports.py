@@ -25,6 +25,7 @@ from apps.reports.exporting import (
     _configured_groups_table,
     _goal_card,
     _landing_hierarchy_order,
+    _landing_hierarchy_table,
     _landing_pages_table,
     _manual_topvisor_segment,
     _metrika_detail_table,
@@ -36,12 +37,61 @@ from apps.reports.exporting import (
     _webmaster_popular_table,
     _webmaster_query_summary_from_changes,
     _webmaster_query_summary_table,
+    _webmaster_search_chart,
     generate_artifact,
 )
 from apps.reports.models import Report, ReportDatasetSnapshot
 from apps.reports.services import create_report_version
 
 pytestmark = pytest.mark.django_db
+
+
+def test_webmaster_chart_draws_better_average_position_higher(monkeypatch):
+    plotted = {}
+
+    def capture(_axis, _x, values, **kwargs):
+        plotted[kwargs["label"]] = values
+
+    monkeypatch.setattr("apps.reports.exporting._plot_smooth_line", capture)
+    monkeypatch.setattr("apps.reports.exporting._save_figure", lambda figure: figure)
+    payload = {
+        "calculated": {
+            "sources": {
+                "sources": {
+                    "yandex_webmaster": {
+                        "period_details": [
+                            {
+                                "payload": {
+                                    "daily": {
+                                        "queries": [
+                                            {
+                                                "date": "2026-08-01",
+                                                "shows": 10,
+                                                "clicks": 1,
+                                                "ctr": 10,
+                                                "average_position": 12,
+                                            },
+                                            {
+                                                "date": "2026-08-02",
+                                                "shows": 20,
+                                                "clicks": 2,
+                                                "ctr": 10,
+                                                "average_position": 9,
+                                            },
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+    _webmaster_search_chart(payload)
+
+    assert plotted["Ср. позиция"] == [0.0, 1.0]
 
 
 def test_manual_dynamics_merge_history_override_and_sort_by_month():
@@ -289,6 +339,44 @@ def test_landing_url_rows_include_centered_project_favicon():
         row.cells[0].vertical_alignment == WD_CELL_VERTICAL_ALIGNMENT.CENTER
         for row in table.rows[1:]
     )
+
+
+def test_landing_hierarchy_uses_provider_aggregate_for_total_and_root():
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 7, 1))
+    current = {
+        "https://site.test/": {"visits": Decimal(80), "users": Decimal(70)},
+        "https://site.test/about/": {"visits": Decimal(20), "users": Decimal(18)},
+    }
+    previous = {
+        "https://site.test/": {"visits": Decimal(60), "users": Decimal(50)},
+    }
+
+    table = _landing_hierarchy_table(
+        document,
+        {"project": {"normalized_domain": "site.test"}},
+        current,
+        previous,
+        total_values=(
+            {"visits": "120", "users": "100"},
+            {"visits": "90", "users": "75"},
+        ),
+    )
+
+    assert [cell.text.splitlines()[0] for cell in table.rows[1].cells[:5]] == [
+        "Итого и среднее",
+        "120",
+        "90",
+        "100",
+        "75",
+    ]
+    assert [cell.text.splitlines()[0] for cell in table.rows[2].cells[:5]] == [
+        "https://site.test/",
+        "120",
+        "90",
+        "100",
+        "75",
+    ]
 
 
 def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
