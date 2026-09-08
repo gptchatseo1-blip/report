@@ -71,6 +71,149 @@ class ImportPreview:
         return len({error.row_number for error in self.errors})
 
 
+@dataclass(frozen=True)
+class HistoryImportPreview:
+    total_rows: int
+    keyword_count: int
+    dates: tuple[date, ...]
+    rows_by_date: dict[date, list[dict]]
+    warnings: tuple[ParsedError, ...] = ()
+
+
+def parse_position_history_xlsx(filename: str, data: bytes) -> HistoryImportPreview:
+    """Parse the multi-date XLSX format used by the file-import provider."""
+    if Path(filename).suffix.casefold() != ".xlsx":
+        raise ImportFileError("Поддерживаются только файлы XLSX.")
+    _validate_xlsx_archive(data)
+    try:
+        workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ImportFileError("Файл не удалось прочитать.") from exc
+    worksheet = workbook["Позиции"] if "Позиции" in workbook.sheetnames else workbook.active
+    rows = worksheet.iter_rows(values_only=True)
+    header = None
+    header_number = 0
+    for header_number, raw in enumerate(rows, start=1):
+        values = list(raw)
+        normalized = [_normalize_header(value) for value in values]
+        if any(
+            value in HEADER_ALIASES["query"] or value == "ключевое слово" for value in normalized
+        ):
+            header = values
+            break
+        if header_number >= MAX_HEADER_SCAN_ROWS:
+            break
+    if header is None:
+        raise ImportFileError("Не найдена колонка «Ключевое слово».")
+
+    normalized = [_normalize_header(value) for value in header]
+    query_index = next(
+        index
+        for index, value in enumerate(normalized)
+        if value in HEADER_ALIASES["query"] or value == "ключевое слово"
+    )
+    url_index = next(
+        (
+            index
+            for index, value in enumerate(normalized)
+            if value in HEADER_ALIASES["target_url"] or value == "страница"
+        ),
+        None,
+    )
+    frequency_index = next(
+        (index for index, value in enumerate(normalized) if value in HEADER_ALIASES["frequency"]),
+        None,
+    )
+    date_columns = [
+        (index, parsed)
+        for index, value in enumerate(header)
+        if (parsed := _date_from_header(value))
+    ]
+    if not date_columns:
+        raise ImportFileError("В файле не найдены столбцы с датами позиций.")
+
+    rows_by_date = {day: [] for _, day in date_columns}
+    warnings = []
+    keyword_count = 0
+    total_rows = 0
+    current_group = ""
+    seen = {day: set() for _, day in date_columns}
+    for row_number, raw in enumerate(rows, start=header_number + 1):
+        values = list(raw)
+        if not any(_string_value(value) for value in values):
+            continue
+        total_rows += 1
+        query = " ".join(_string_value(_cell(values, query_index)).split())
+        if not query:
+            continue
+        if query.casefold().startswith("группа:"):
+            current_group = query.split(":", 1)[1].strip()[:255]
+            continue
+        if len(query) > 500:
+            warnings.append(
+                ParsedError(
+                    row_number, "query_too_long", "Запрос длиннее 500 символов и пропущен.", {}
+                )
+            )
+            continue
+        normalized_query = normalize_query(query)
+        try:
+            frequency = (
+                _parse_frequency(_cell(values, frequency_index))
+                if frequency_index is not None
+                else 1
+            )
+        except ValueError:
+            frequency = 1
+        target_url = (
+            _string_value(_cell(values, url_index)).strip() if url_index is not None else ""
+        )
+        try:
+            normalized_url = normalize_url(target_url) if target_url else ""
+        except ValueError:
+            normalized_url = ""
+            warnings.append(
+                ParsedError(row_number, "invalid_url", "Некорректный URL пропущен.", {})
+            )
+        keyword_count += 1
+        for column, day in date_columns:
+            raw_position = _string_value(_cell(values, column))
+            try:
+                position_value, position_status = _parse_position(raw_position)
+            except ValueError:
+                position_value, position_status = None, KeywordPosition.Status.NOT_FOUND
+                warnings.append(
+                    ParsedError(
+                        row_number,
+                        "invalid_position",
+                        f"Некорректная позиция за {day:%d.%m.%Y} обработана как отсутствие данных.",
+                        {},
+                    )
+                )
+            key = (normalized_query, current_group.casefold())
+            if key in seen[day]:
+                continue
+            seen[day].add(key)
+            rows_by_date[day].append(
+                {
+                    "query": query,
+                    "normalized_query": normalized_query,
+                    "frequency": frequency,
+                    "position_raw": raw_position,
+                    "position_value": position_value,
+                    "position_status": position_status,
+                    "group_name": current_group,
+                    "target_url": target_url,
+                    "normalized_target_url": normalized_url,
+                }
+            )
+    if not keyword_count:
+        raise ImportFileError("В файле отсутствуют строки запросов.")
+    return HistoryImportPreview(
+        total_rows, keyword_count, tuple(sorted(rows_by_date)), rows_by_date, tuple(warnings)
+    )
+
+
 def parse_position_file(
     filename: str, data: bytes, snapshot_date: date | None = None
 ) -> ImportPreview:

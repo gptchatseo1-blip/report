@@ -10,4 +10,19 @@ urlpatterns = [
     path("upload/", views.import_upload, name="upload"),
     path("<uuid:batch_id>/", views.import_detail, name="detail"),
     path("<uuid:batch_id>/confirm/", views.import_confirm, name="confirm"),
+    path(
+        "projects/<uuid:project_id>/",
+        views.project_import_settings,
+        name="project-settings",
+    ),
+    path(
+        "projects/<uuid:project_id>/provider/",
+        views.select_position_provider,
+        name="select-provider",
+    ),
+    path(
+        "projects/<uuid:project_id>/segments/<uuid:segment_id>/delete/",
+        views.project_import_delete,
+        name="project-segment-delete",
+    ),
 ]

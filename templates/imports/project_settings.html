@@ -1,0 +1,25 @@
+{% extends "reports/base.html" %}
+{% block title %}Импорт позиций - {{ project.name }}{% endblock %}
+{% block content %}
+<div class="report-list-head"><div><h1>Импорт из файла - {{ project.name }}</h1><p>Один файл соответствует одной поисковой системе и региону. Даты берутся из листа «Позиции».</p></div><a class="button secondary" href="{% url 'reports:report-list' project.id %}">К отчётам</a></div>
+<section class="card">
+  <h2>Источник данных по позициям</h2>
+  <form method="post" action="{% url 'imports:select-provider' project.id %}" class="provider-choice">{% csrf_token %}
+    {% for value,label in provider_choices %}<label><input type="radio" name="position_provider" value="{{ value }}"{% if project.position_provider == value %} checked{% endif %}> {{ label }}</label>{% endfor %}
+    <button class="secondary">Сохранить источник</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Импортированные сегменты</h2>
+  <div class="import-segment-list">
+  {% for segment in segments %}<article class="source-picker">
+    <div><strong>{{ segment.get_search_engine_display }} · {{ segment.region }}</strong><small>{{ segment.last_filename|default:'Файл ещё не загружен' }} · импорт {{ segment.imported_at|date:'d.m.Y H:i'|default:'—' }} · запросов {{ segment.keyword_count }} · дат {{ segment.date_count }}</small></div>
+    <div class="actions"><a class="button secondary" href="?edit={{ segment.id }}">Обновить файл</a><form method="post" action="{% url 'imports:project-segment-delete' project.id segment.id %}" onsubmit="return confirm('Удалить этот сегмент импорта?')">{% csrf_token %}<button class="delete-button">Удалить</button></form></div>
+  </article>{% empty %}<p>Сегментов пока нет.</p>{% endfor %}
+  </div>
+</section>
+<section class="card">
+  <h2>{% if edit_segment %}Обновить сегмент{% else %}+ Добавить поисковую систему / регион{% endif %}</h2>
+  <form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button>Сохранить и обработать файл</button>{% if edit_segment %}<a class="button secondary" href="{% url 'imports:project-settings' project.id %}">Отмена</a>{% endif %}</form>
+</section>
+{% endblock %}

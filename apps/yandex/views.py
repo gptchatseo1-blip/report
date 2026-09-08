@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 import urllib.parse
 from datetime import timedelta
@@ -13,6 +14,7 @@ from django.http import HttpResponseBadRequest, HttpResponseNotAllowed, JsonResp
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from apps.metrics.models import SourceSnapshot
 from apps.projects.models import Project, normalize_domain
@@ -83,7 +85,14 @@ def _sync_json(mapping, source, run):
         {
             "id": str(row.id),
             "month": row.period_start.strftime("%Y-%m"),
-            "label": f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}",
+            "label": (
+                (
+                    f"{row.payload.get('host_url') or row.source_key} · "
+                    if source == SourceSnapshot.Source.WEBMASTER
+                    else ""
+                )
+                + f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}"
+            ),
         }
         for row in SourceSnapshot.objects.filter(project=mapping.project, source=source).order_by(
             "-period_start", "-period_end", "id"
@@ -238,13 +247,12 @@ def connection(request, project_id):
         .select_related("connection")
         .first()
     )
-    webmaster_mapping = (
+    webmaster_mappings = list(
         YandexWebmasterProjectMapping.objects.filter(
             project=project, connection__user=request.user, connection__active=True
-        )
-        .select_related("connection")
-        .first()
+        ).select_related("connection")
     )
+    webmaster_mapping = webmaster_mappings[0] if webmaster_mappings else None
     counters = hosts = []
     error = ""
     connection_obj = (
@@ -280,6 +288,7 @@ def connection(request, project_id):
             "counter_options": _counter_options(project, counters),
             "host_options": _host_options(project, hosts),
             "webmaster_mapping": webmaster_mapping,
+            "webmaster_mappings": webmaster_mappings,
             "webmaster_scope_missing": bool(
                 connection_obj
                 and any(scope not in connection_obj.scopes for scope in WEBMASTER_SCOPES)
@@ -287,7 +296,9 @@ def connection(request, project_id):
             "error": error,
             "configured": _configured(),
             "runs": mapping.sync_runs.all()[:10] if mapping else [],
-            "webmaster_runs": webmaster_mapping.sync_runs.all()[:10] if webmaster_mapping else [],
+            "webmaster_runs": YandexWebmasterSyncRun.objects.filter(
+                mapping__in=webmaster_mappings
+            ).select_related("mapping")[:30],
         },
     )
 
@@ -605,9 +616,9 @@ def select_host(request, project_id):
         return redirect("yandex:connection", project_id=project.id)
     YandexWebmasterProjectMapping.objects.update_or_create(
         project=project,
+        host_id=str(host["host_id"]),
         defaults={
             "connection": connection_obj,
-            "host_id": str(host["host_id"]),
             "host_url": host_url,
             "verification_status": "VERIFIED" if host.get("verified") is True else "UNVERIFIED",
             "main_mirror": str(
@@ -669,12 +680,17 @@ def sync(request, project_id):
 def sync_webmaster_view(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
-    mapping = get_object_or_404(
-        YandexWebmasterProjectMapping,
+    mappings = YandexWebmasterProjectMapping.objects.filter(
         project_id=project_id,
         connection__user=request.user,
         connection__active=True,
     )
+    mapping_id = request.POST.get("mapping_id")
+    if mapping_id:
+        mappings = mappings.filter(pk=mapping_id)
+    mappings = list(mappings.select_related("project", "connection"))
+    if not mappings:
+        return HttpResponseBadRequest("Не выбран сайт Яндекс.Вебмастера.")
     form = SyncForm(request.POST)
     if not form.is_valid():
         if _is_ajax(request):
@@ -683,17 +699,33 @@ def sync_webmaster_view(request, project_id):
                 status=400,
             )
         return HttpResponseBadRequest("Некорректный месяц.")
-    run = sync_webmaster(
-        mapping=mapping,
-        report_month=form.cleaned_data["month"],
-        user=request.user,
-        force_refresh=form.cleaned_data["force_refresh"],
-    )
+    runs = [
+        sync_webmaster(
+            mapping=item,
+            report_month=form.cleaned_data["month"],
+            user=request.user,
+            force_refresh=form.cleaned_data["force_refresh"],
+        )
+        for item in mappings
+    ]
+    mapping = mappings[0]
+    run = next((item for item in runs if item.status != item.Status.SUCCESS), runs[-1])
     mapping.refresh_from_db(fields=["last_successful_sync_at"])
     if _is_ajax(request):
-        return _sync_json(mapping, SourceSnapshot.Source.WEBMASTER, run)
-    if run.status == run.Status.SUCCESS:
-        messages.success(request, _sync_message(run))
+        if any(item.status != item.Status.SUCCESS for item in runs):
+            return JsonResponse(
+                {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
+                status=400,
+            )
+        response = _sync_json(mapping, SourceSnapshot.Source.WEBMASTER, run)
+        response_data = response.content
+        if len(runs) == 1:
+            return response
+        data = json.loads(response_data)
+        data["message"] = f"Синхронизировано сайтов Вебмастера: {len(runs)}."
+        return JsonResponse(data)
+    if all(item.status == item.Status.SUCCESS for item in runs):
+        messages.success(request, f"Синхронизировано сайтов Вебмастера: {len(runs)}.")
         if request.POST.get("return_to_reports") == "1":
             from apps.reports.models import Report
 
@@ -705,6 +737,25 @@ def sync_webmaster_view(request, project_id):
     messages.error(request, run.error_message)
     if request.POST.get("return_to_reports") == "1":
         return redirect("reports:report-list", project_id=mapping.project_id)
+    return redirect("yandex:connection", project_id=project_id)
+
+
+@login_required
+@require_POST
+def delete_webmaster_mapping(request, project_id, mapping_id):
+    mapping = get_object_or_404(
+        YandexWebmasterProjectMapping,
+        pk=mapping_id,
+        project_id=project_id,
+        connection__user=request.user,
+    )
+    SourceSnapshot.objects.filter(
+        project_id=project_id,
+        source=SourceSnapshot.Source.WEBMASTER,
+        source_key=mapping.host_id,
+    ).delete()
+    mapping.delete()
+    messages.success(request, "Сайт Яндекс.Вебмастера удалён из проекта.")
     return redirect("yandex:connection", project_id=project_id)
 
 

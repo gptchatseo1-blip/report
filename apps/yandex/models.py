@@ -118,8 +118,8 @@ class YandexMetrikaSyncRun(models.Model):
 
 
 class YandexWebmasterProjectMapping(models.Model):
-    project = models.OneToOneField(
-        Project, on_delete=models.CASCADE, related_name="yandex_webmaster_mapping"
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name="yandex_webmaster_mappings"
     )
     connection = models.ForeignKey(
         YandexConnection, on_delete=models.PROTECT, related_name="webmaster_mappings"
@@ -132,6 +132,14 @@ class YandexWebmasterProjectMapping(models.Model):
     last_successful_sync_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "host_id"], name="unique_project_webmaster_host"
+            )
+        ]
 
     def __str__(self):
         return f"{self.project} → {self.host_url}"

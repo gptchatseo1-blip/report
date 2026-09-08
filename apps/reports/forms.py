@@ -46,6 +46,7 @@ PERSISTED_REPORT_FIELDS = (
     "geography_saint_petersburg_region",
     "geography_undefined",
     "geography_area_undefined",
+    "metrika_manual_regions",
     "include_metrika_landing_pages",
     "include_metrika_landing_page_comparison",
     "include_metrika_url_groups",
@@ -310,6 +311,7 @@ class ReportCreateForm(forms.Form):
     geography_area_undefined = forms.BooleanField(
         label="Область не определена", required=False, initial=True
     )
+    metrika_manual_regions = forms.CharField(required=False, widget=forms.HiddenInput())
     include_metrika_landing_pages = forms.BooleanField(
         label="Популярные страницы входа", required=False, initial=True
     )
@@ -445,12 +447,10 @@ class ReportCreateForm(forms.Form):
 
         from apps.metrics.models import RankingSnapshot, SourceSnapshot
 
-        for source, relation in (
-            (SourceSnapshot.Source.METRIKA, "yandex_metrika_mapping"),
-            (SourceSnapshot.Source.WEBMASTER, "yandex_webmaster_mapping"),
-        ):
-            if hasattr(project, relation):
-                self.connected_sources.add(source)
+        if hasattr(project, "yandex_metrika_mapping"):
+            self.connected_sources.add(SourceSnapshot.Source.METRIKA)
+        if project.yandex_webmaster_mappings.exists():
+            self.connected_sources.add(SourceSnapshot.Source.WEBMASTER)
 
         required = defaultdict(set)
         if project.position_provider == project.PositionProvider.SERPHUNT:
@@ -460,6 +460,16 @@ class ReportCreateForm(forms.Form):
                 configurations = serphunt_configurations(project.serphunt_mapping)
             except (ImportError, AttributeError):
                 configurations = []
+        elif project.position_provider == project.PositionProvider.FILE_IMPORT:
+            configurations = [
+                {
+                    "id": segment.configuration_id,
+                    "search_engine": segment.search_engine,
+                    "region_name": segment.region,
+                    "depth": 100,
+                }
+                for segment in project.file_import_segments.all()
+            ]
         else:
             try:
                 configurations = project.topvisor_mapping.selected_configurations
@@ -541,8 +551,9 @@ class ReportCreateForm(forms.Form):
         # Use this special layout only when the project itself has exactly
         # three valid configurations.
         self.use_configuration_calendars = (
-            len(configurations) == 3 and len(self.configuration_date_fields) == 3
-        )
+            project.position_provider == project.PositionProvider.FILE_IMPORT
+            and bool(self.configuration_date_fields)
+        ) or (len(configurations) == 3 and len(self.configuration_date_fields) == 3)
         if self.use_configuration_calendars:
             for index, item in enumerate(self.configuration_date_fields):
                 field_name = f"configuration_dates_{index}"
@@ -591,6 +602,11 @@ class ReportCreateForm(forms.Form):
         self.report_month = report_month
         if not self.is_bound:
             self.initial.setdefault("month", report_month)
+            if (
+                project.position_provider == project.PositionProvider.FILE_IMPORT
+                and "include_visibility_table" not in saved
+            ):
+                self.initial["include_visibility_table"] = True
             self.initial.setdefault("webmaster_date_from", report_month)
             self.initial.setdefault(
                 "webmaster_date_to",
@@ -609,24 +625,43 @@ class ReportCreateForm(forms.Form):
                 )
             )
             self.fields[field].choices = [
-                (str(row.id), f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}")
+                (
+                    str(row.id),
+                    (
+                        f"{row.payload.get('host_url') or row.source_key} · "
+                        if source == SourceSnapshot.Source.WEBMASTER
+                        else ""
+                    )
+                    + f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}",
+                )
                 for row in rows
             ]
             self.source_period_options[field] = [
                 {
                     "id": str(row.id),
                     "month": row.period_start.strftime("%Y-%m"),
-                    "label": f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}",
+                    "label": (
+                        (
+                            f"{row.payload.get('host_url') or row.source_key} · "
+                            if source == SourceSnapshot.Source.WEBMASTER
+                            else ""
+                        )
+                        + f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}"
+                    ),
                 }
                 for row in rows
             ]
             defaults = []
-            selected_months = set()
+            selected_periods = set()
             for row in rows:
                 row_month = row.period_start.year * 12 + row.period_start.month - 1
-                if row_month in month_indexes and row_month not in selected_months:
+                selection_key = (
+                    row_month,
+                    row.source_key if source == SourceSnapshot.Source.WEBMASTER else "",
+                )
+                if row_month in month_indexes and selection_key not in selected_periods:
                     defaults.append(str(row.id))
-                    selected_months.add(row_month)
+                    selected_periods.add(selection_key)
             self.source_availability[source] = {
                 "connected": source in self.connected_sources,
                 "count": len(rows),
@@ -641,6 +676,24 @@ class ReportCreateForm(forms.Form):
             validate_topvisor_manual_rows(self.cleaned_data.get("topvisor_manual_rows") or "[]"),
             ensure_ascii=False,
         )
+
+    def clean_metrika_manual_regions(self):
+        value = self.cleaned_data.get("metrika_manual_regions") or "[]"
+        try:
+            values = json.loads(value) if isinstance(value, str) else value
+        except json.JSONDecodeError as exc:
+            raise forms.ValidationError("Некорректный список регионов.") from exc
+        if not isinstance(values, list):
+            raise forms.ValidationError("Некорректный список регионов.")
+        result = []
+        known = set()
+        for raw in values[:30]:
+            region = " ".join(str(raw).split())[:120]
+            key = region.casefold()
+            if region and key not in known:
+                known.add(key)
+                result.append(region)
+        return json.dumps(result, ensure_ascii=False)
 
     def clean_month(self):
         value = self.cleaned_data.get("month")
