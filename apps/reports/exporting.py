@@ -4185,7 +4185,7 @@ def _render_metrika(doc, payload, blocks):
                     else None
                 )
                 doc.add_paragraph(
-                    f"Трафик из региона «{REGION_LABELS[key]}» "
+                    f"Трафик из региона «{labels[key]}» "
                     f"{'увеличился' if delta is not None and delta >= 0 else 'снизился'} на "
                     f"{_number(abs(delta), '%', decimal_places=1) if delta is not None else '—'}. "
                     f"Изменение доли трафика: предыдущий месяц — "

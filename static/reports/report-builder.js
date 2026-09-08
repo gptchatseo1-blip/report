@@ -16,10 +16,7 @@
   const manualRegionsField = form.querySelector('[name=metrika_manual_regions]');
   const manualRegionsContainer = form.querySelector('[data-manual-regions]');
   const manualRegionInput = form.querySelector('[data-manual-region-input]');
-  const manualRegionEditor = form.querySelector('[data-manual-region-editor]');
-  const manualRegionTrigger = form.querySelector('[data-manual-region-trigger]');
   const manualRegionSave = form.querySelector('[data-manual-region-save]');
-  const manualRegionCancel = form.querySelector('[data-manual-region-cancel]');
   let manualRegions = [];
   try { manualRegions = JSON.parse(manualRegionsField?.value || '[]'); }
   catch (_error) { manualRegions = []; }
@@ -42,7 +39,7 @@
       checkbox.addEventListener('change', () => { region.active = checkbox.checked; saveManualRegions(); });
       const name = document.createElement('span'); name.textContent = region.name;
       const remove = document.createElement('button');
-      remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
+      remove.type = 'button'; remove.className = 'manual-region-remove'; remove.textContent = '×';
       remove.setAttribute('aria-label', `Удалить регион ${region.name}`);
       remove.addEventListener('click', () => {
         manualRegions.splice(index, 1); renderManualRegions(); saveManualRegions();
@@ -54,16 +51,9 @@
     const region = String(manualRegionInput?.value || '').trim().replace(/\s+/g, ' ').slice(0, 120);
     if (!region || manualRegions.some(item => item.name.toLowerCase() === region.toLowerCase())) return;
     manualRegions.push({name: region, active: true}); manualRegionInput.value = '';
-    manualRegionEditor.hidden = true; manualRegionTrigger.hidden = false;
     renderManualRegions(); saveManualRegions();
   };
-  manualRegionTrigger?.addEventListener('click', () => {
-    manualRegionTrigger.hidden = true; manualRegionEditor.hidden = false; manualRegionInput?.focus();
-  });
   manualRegionSave?.addEventListener('click', addManualRegion);
-  manualRegionCancel?.addEventListener('click', () => {
-    manualRegionInput.value = ''; manualRegionEditor.hidden = true; manualRegionTrigger.hidden = false;
-  });
   manualRegionInput?.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); addManualRegion(); }
   });
