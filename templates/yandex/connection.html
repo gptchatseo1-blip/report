@@ -96,8 +96,8 @@
   <form method="post" action="{% url 'yandex:oauth-start' project.id %}">{% csrf_token %}<div class="actions"><button>Повторно авторизовать аккаунт Яндекса</button></div></form>
   {% elif connection %}
   {% if webmaster_mappings %}
-  <div class="table-wrap"><table><thead><tr><th>Выбранные сайты</th><th>Последняя синхронизация</th><th></th></tr></thead><tbody>
-  {% for item in webmaster_mappings %}<tr><td><strong>{{ item.host_url }}</strong></td><td>{{ item.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</td><td><form method="post" action="{% url 'yandex:delete-webmaster-mapping' project.id item.id %}" onsubmit="return confirm('Удалить этот сайт из отчёта?')">{% csrf_token %}<button class="delete-button">Удалить</button></form></td></tr>{% endfor %}
+  <div class="table-wrap"><table><thead><tr><th>Выбранные сайты</th><th>ИКС</th><th>Последняя синхронизация</th><th></th></tr></thead><tbody>
+  {% for item in webmaster_mappings %}<tr><td><strong>{{ item.host_url }}</strong></td><td><form method="post" action="{% url 'yandex:update-webmaster-iks' project.id item.id %}" class="inline-checkbox-form">{% csrf_token %}<label><input type="checkbox" name="include_iks" value="1"{% if item.include_iks %} checked{% endif %} onchange="this.form.submit()"> Выводить ИКС</label></form></td><td>{{ item.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</td><td><form method="post" action="{% url 'yandex:delete-webmaster-mapping' project.id item.id %}" onsubmit="return confirm('Удалить этот сайт из отчёта?')">{% csrf_token %}<button class="delete-button">Удалить</button></form></td></tr>{% endfor %}
   </tbody></table></div>
   {% endif %}
   {% if host_options %}

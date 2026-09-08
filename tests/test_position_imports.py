@@ -140,6 +140,9 @@ def test_file_import_creates_independent_idempotent_segments_and_standard_calend
     assert response.status_code == 200
     assert len(response.context["form"].configuration_date_fields) == 2
     assert response.context["form"].initial["include_visibility_table"] is True
+    assert 'class="calendar-pair file-import-calendars calendar-count-2"' in (
+        response.content.decode()
+    )
 
 
 def test_csv_preview_and_confirmation_create_normalized_positions(staff_client, project):

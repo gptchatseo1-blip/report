@@ -2,13 +2,15 @@ import io
 import json
 import urllib.error
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from apps.metrics.models import SourceSnapshot
+from apps.metrics.models import MetricPoint, SourceSnapshot
 from apps.projects.models import Project
+from apps.reports.services import build_source_facts
 from apps.yandex.client import (
     MetrikaClient,
     WebmasterClient,
@@ -279,6 +281,91 @@ def test_current_webmaster_totals_and_rows_use_same_all_locations_dataset(contex
     assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
 
 
+def test_empty_query_analytics_falls_back_to_legacy_totals_and_popular_rows(context):
+    class EmptyAnalytics(FakeWebmasterQueryAnalytics):
+        def query_analytics(self, *args, **kwargs):
+            self.analytics_calls.append(kwargs)
+            return {"count": 0, "text_indicator_to_statistics": []}
+
+        def popular_search_queries(self, *args, **kwargs):
+            return {
+                "queries": [
+                    {
+                        "query_id": "legacy",
+                        "query_text": "legacy query",
+                        "indicators": {
+                            "TOTAL_SHOWS": 40,
+                            "TOTAL_CLICKS": 4,
+                            "AVG_SHOW_POSITION": 5,
+                        },
+                    }
+                ]
+            }
+
+    sync_webmaster(
+        mapping=mapping(context),
+        report_month=date(2026, 3, 1),
+        user=context[0],
+        client=EmptyAnalytics(),
+    )
+
+    march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
+    assert march.payload["query_summary"]["shows"] == "400"
+    assert march.payload["query_summary"]["clicks"] == "20"
+    assert march.payload["query_data_source"] == "legacy_search_queries_fallback"
+    assert [row["query"] for row in march.payload["popular_queries"]] == ["legacy query"]
+
+
+def test_current_query_analytics_period_never_extends_beyond_today(context, monkeypatch):
+    api = FakeWebmasterQueryAnalytics()
+    monkeypatch.setattr("apps.yandex.services.timezone.localdate", lambda: date(2026, 9, 8))
+
+    sync_webmaster(
+        mapping=mapping(context),
+        report_month=date(2026, 9, 1),
+        user=context[0],
+        client=api,
+    )
+
+    assert api.analytics_calls[0]["date_from"] == "2026-09-01"
+    assert api.analytics_calls[0]["date_to"] == "2026-09-08"
+
+
+def test_empty_refresh_keeps_previously_saved_webmaster_query_data(context):
+    item = mapping(context)
+    sync_webmaster(
+        mapping=item,
+        report_month=date(2026, 3, 1),
+        user=context[0],
+        client=FakeWebmasterQueryAnalytics(),
+    )
+
+    class EmptyRefresh(FakeWebmasterQueryAnalytics):
+        def query_analytics(self, *args, **kwargs):
+            return {"count": 0, "text_indicator_to_statistics": []}
+
+        def search_query_history(self, *args, **kwargs):
+            return {"indicators": {}}
+
+        def popular_search_queries(self, *args, **kwargs):
+            return {"queries": []}
+
+    sync_webmaster(
+        mapping=item,
+        report_month=date(2026, 3, 1),
+        user=context[0],
+        client=EmptyRefresh(),
+        force_refresh=True,
+    )
+
+    march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
+    points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
+    assert march.payload["query_summary"]["shows"] == "120"
+    assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
+    assert points["search_impressions"] == 120
+    assert points["search_clicks"] == 12
+
+
 def test_query_analytics_rows_are_not_mixed_with_legacy_popular_history(context):
     class PartialPrevious(FakeWebmasterQueryAnalytics):
         def query_analytics(self, *args, **kwargs):
@@ -458,6 +545,68 @@ def test_host_selection_keeps_multiple_webmaster_sites(client, context, monkeypa
     assert list(
         project.yandex_webmaster_mappings.order_by("host_id").values_list("host_id", flat=True)
     ) == ["host-1", "host-2"]
+
+
+def test_webmaster_sites_follow_mapping_order_and_freeze_iks_choice(context):
+    _, project, connection = context
+    first = YandexWebmasterProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        host_id="z-host",
+        host_url="https://z.example",
+        include_iks=False,
+    )
+    second = YandexWebmasterProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        host_id="a-host",
+        host_url="https://a.example",
+        include_iks=True,
+    )
+    snapshots = []
+    for mapping_item, value in ((first, 10), (second, 20)):
+        snapshot = SourceSnapshot.objects.create(
+            project=project,
+            source=SourceSnapshot.Source.WEBMASTER,
+            source_key=mapping_item.host_id,
+            period_start=date(2026, 8, 1),
+            period_end=date(2026, 8, 31),
+            checksum=f"checksum-{mapping_item.id}",
+            payload={"host_url": mapping_item.host_url},
+        )
+        MetricPoint.objects.create(
+            snapshot=snapshot,
+            metric_code="search_impressions",
+            numeric_value=Decimal(value),
+            unit=MetricPoint.Unit.COUNT,
+        )
+        snapshots.append(snapshot)
+
+    facts = build_source_facts(
+        project=project,
+        report_month=date(2026, 8, 1),
+        selected_snapshot_ids={
+            SourceSnapshot.Source.METRIKA: [],
+            SourceSnapshot.Source.WEBMASTER: [str(item.id) for item in snapshots],
+        },
+    )
+
+    assert [site["source_key"] for site in facts["webmaster_sites"]] == ["z-host", "a-host"]
+    assert [site["include_iks"] for site in facts["webmaster_sites"]] == [False, True]
+
+
+def test_webmaster_iks_checkbox_is_project_scoped_and_post_only(client, context):
+    user, project, _ = context
+    item = mapping(context)
+    client.force_login(user)
+    url = reverse("yandex:update-webmaster-iks", args=[project.id, item.id])
+
+    assert client.get(url).status_code == 405
+    response = client.post(url, {"include_iks": "0"})
+
+    assert response.status_code == 302
+    item.refresh_from_db()
+    assert item.include_iks is False
 
 
 def test_missing_scope_requires_reauthorization(client, context):

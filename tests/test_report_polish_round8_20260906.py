@@ -19,7 +19,7 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
     assert 'label="Видимость"' not in source
-    assert 'exp.GENERATOR_VERSION = "mvp1.14-2026-09-06"' in source
+    assert 'exp.GENERATOR_VERSION = "mvp1.15-2026-09-08"' in source
 
 
 def test_current_manual_editor_is_not_overwritten_by_legacy_scripts():
@@ -63,6 +63,127 @@ def test_distribution_chart_contains_only_position_ranges(monkeypatch):
     legend_labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
     assert "Видимость" not in legend_labels
     assert legend_labels == ["1-3", "1-10", "11-30", "31-50", "51-100", "101+"]
+    assert [text.get_text() for text in figure.axes[0].get_xticklabels()] == [
+        "07.2026",
+        "08.2026",
+    ]
+
+
+def test_selected_day_positions_are_columns_inside_filtered_top_table():
+    payload = {
+        "display_options": {"include_visibility_table": True},
+        "ranking_sources": [
+            {
+                "id": "old",
+                "configuration_id": "ya-msk",
+                "search_engine": "yandex",
+                "region": "Москва",
+                "date": "2026-07-14",
+                "ranking_depth": 20,
+                "positions": [
+                    {
+                        "query": "top query",
+                        "normalized_query": "top query",
+                        "frequency": 100,
+                        "position": 8,
+                        "group": "Группа",
+                    }
+                ],
+            },
+            {
+                "id": "current",
+                "configuration_id": "ya-msk",
+                "search_engine": "yandex",
+                "region": "Москва",
+                "date": "2026-08-16",
+                "ranking_depth": 20,
+                "positions": [
+                    {
+                        "query": "top query",
+                        "normalized_query": "top query",
+                        "frequency": 100,
+                        "position": 3,
+                        "group": "Группа",
+                    },
+                    {
+                        "query": "outside top",
+                        "normalized_query": "outside top",
+                        "frequency": 200,
+                        "position": 12,
+                        "group": "Группа",
+                    },
+                ],
+            },
+        ],
+    }
+    segment = {
+        "configuration_id": "ya-msk",
+        "search_engine": "yandex",
+        "region": "Москва",
+    }
+    document = Document()
+    exporting._configure_document(document, "example.test", "2026-08-01")
+
+    assert exporting._render_position_table(document, payload, segment, 1, 10) is True
+
+    table = document.tables[0]
+    assert [cell.text for cell in table.rows[0].cells] == [
+        "Запросы",
+        "WS",
+        "14.07",
+        "16.08",
+        "Имя группы",
+    ]
+    assert len(table.rows) == 2
+    assert [cell.text for cell in table.rows[1].cells] == [
+        "top query",
+        "100",
+        "8",
+        "3",
+        "Группа",
+    ]
+
+
+def test_multiple_webmaster_sites_render_selected_iks_first_then_every_site(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        exporting,
+        "_render_webmaster_single",
+        lambda _doc, _payload, _blocks, **kwargs: calls.append(kwargs),
+    )
+    payload = {
+        "calculated": {
+            "sources": {
+                "sources": {"yandex_webmaster": {}},
+                "webmaster_sites": [
+                    {
+                        "source_key": "first",
+                        "host_url": "https://first.example/",
+                        "include_iks": False,
+                        "facts": {},
+                    },
+                    {
+                        "source_key": "second",
+                        "host_url": "https://second.example/",
+                        "include_iks": True,
+                        "facts": {},
+                    },
+                ],
+            }
+        },
+        "source_snapshots": [],
+    }
+
+    exporting._render_webmaster(Document(), payload, {})
+
+    assert [call["allowed_sections"] for call in calls] == [
+        {"iks"},
+        {"indexing", "clicks_impressions", "ctr"},
+        {"indexing", "clicks_impressions", "ctr"},
+    ]
+    assert "second.example" in calls[0]["heading"]
+    assert "first.example" in calls[1]["heading"]
+    assert "second.example" in calls[2]["heading"]
 
 
 def test_distribution_cards_have_no_empty_paragraph_before_rows():
@@ -351,3 +472,4 @@ def test_project_settings_uses_clean_stroke_gear():
 
     assert 'class="settings-icon"' in template
     assert '<circle cx="12" cy="12" r="3"/>' in template
+    assert ">XLSX</a>" not in template
