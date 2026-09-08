@@ -65,7 +65,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
 METRIKA_COLLECTOR_VERSION = "metrika-2026-09-07-v9"
-WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-08-v6"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-08-v7"
 GOALS_PER_REQUEST = 6
 
 
@@ -1243,7 +1243,8 @@ def _webmaster_month(
     previous_popular = []
     path_distribution = None
     if include_current:
-        day_count = (end - start).days + 1
+        analytics_end = min(end, timezone.localdate())
+        day_count = max((analytics_end - start).days + 1, 1)
         comparison_end = start - timedelta(days=1)
         comparison_start = comparison_end - timedelta(days=day_count - 1)
         comparison_params = {
@@ -1264,7 +1265,7 @@ def _webmaster_month(
         previous_query_summary = _query_summary(previous_queries, comparison_start, comparison_end)
         analytics_current = None
         analytics_previous = None
-        analytics_attempted = hasattr(client, "query_analytics")
+        analytics_attempted = hasattr(client, "query_analytics") and analytics_end >= start
         if analytics_attempted:
             try:
                 analytics_current = _query_analytics_data(
@@ -1272,11 +1273,11 @@ def _webmaster_month(
                         user_id,
                         mapping.host_id,
                         date_from=start.isoformat(),
-                        date_to=end.isoformat(),
+                        date_to=analytics_end.isoformat(),
                         search_location="ALL_LOCATIONS",
                     ),
                     start,
-                    end,
+                    analytics_end,
                 )
                 analytics_previous = _query_analytics_data(
                     client.query_analytics(
@@ -1306,13 +1307,6 @@ def _webmaster_month(
             previous_query_summary = _query_summary(
                 analytics_previous_queries, comparison_start, comparison_end
             )
-        if analytics_attempted and analytics_current is None:
-            query_summary = _query_summary({}, start, end)
-            popular = []
-        if analytics_attempted and analytics_previous is None:
-            previous_query_summary = _query_summary({}, comparison_start, comparison_end)
-            previous_popular = []
-
         if hasattr(client, "popular_search_queries"):
             query_indicators = [
                 "TOTAL_SHOWS",
@@ -1320,7 +1314,7 @@ def _webmaster_month(
                 "AVG_SHOW_POSITION",
                 "AVG_CLICK_POSITION",
             ]
-            if not analytics_attempted:
+            if analytics_current is None:
                 popular = _popular_queries(
                     _optional_webmaster_resource(
                         mapping,
@@ -1337,7 +1331,7 @@ def _webmaster_month(
                         ),
                     )
                 )
-            if not analytics_attempted:
+            if analytics_previous is None:
                 fallback_previous = _popular_queries(
                     _optional_webmaster_resource(
                         mapping,
@@ -1421,13 +1415,7 @@ def _webmaster_month(
         "metrics": metrics,
         "site_problems": (summary or {}).get("site_problems", {}),
         "actual_period": actual_period,
-        "availability_reason": (
-            "API Query Analytics не вернул данные ALL_LOCATIONS за выбранный период."
-            if include_current and analytics_attempted and analytics_current is None
-            else None
-            if response_dates
-            else "API не вернул данные за период."
-        ),
+        "availability_reason": (None if response_dates else "API не вернул данные за период."),
         "daily": {
             "queries": query_summary.get("daily", []),
             "indexed_pages": [
@@ -1448,12 +1436,44 @@ def _webmaster_month(
         "query_data_source": (
             "query_analytics_all_locations"
             if include_current and analytics_current is not None
-            else "query_analytics_all_locations_unavailable"
+            else "legacy_search_queries_fallback"
             if include_current and analytics_attempted
             else "legacy_search_queries"
         ),
         "includes_current_details": include_current,
     }
+
+
+def _preserve_webmaster_queries_if_empty(data, existing):
+    """Never replace a valid saved query block with an empty provider response."""
+    summary = data.get("query_summary") or {}
+    if summary.get("shows") is not None or summary.get("clicks") is not None or not existing:
+        return data
+    previous = existing.payload if isinstance(existing.payload, dict) else {}
+    previous_summary = previous.get("query_summary") or {}
+    if previous_summary.get("shows") is None and previous_summary.get("clicks") is None:
+        return data
+    data["query_summary"] = previous_summary
+    data["comparison_query_summary"] = previous.get("comparison_query_summary")
+    data["popular_queries"] = previous.get("popular_queries") or []
+    data["comparison_popular_queries"] = previous.get("comparison_popular_queries") or []
+    data.setdefault("daily", {})["queries"] = (previous.get("daily") or {}).get("queries") or []
+    data["query_data_source"] = previous.get("query_data_source") or "saved_snapshot_fallback"
+    previous_metrics = previous.get("metrics") or {}
+    units = {
+        "search_impressions": "count",
+        "search_clicks": "count",
+        "search_ctr": "percent",
+        "average_position": "number",
+    }
+    for code, unit in units.items():
+        value = _number(previous_metrics.get(code))
+        if value is None:
+            point = existing.metrics.filter(metric_code=code).only("numeric_value").first()
+            value = point.numeric_value if point else None
+        if value is not None:
+            data.setdefault("metrics", {})[code] = (value, unit)
+    return data
 
 
 def sync_webmaster(*, mapping, report_month, user=None, client=None, force_refresh=False):
@@ -1513,6 +1533,14 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None, force_refre
         now = timezone.now()
         with transaction.atomic():
             for data in fetched:
+                existing = SourceSnapshot.objects.filter(
+                    project=mapping.project,
+                    source=SourceSnapshot.Source.WEBMASTER,
+                    source_key=mapping.host_id,
+                    period_start=date.fromisoformat(data["period_start"]),
+                    period_end=date.fromisoformat(data["period_end"]),
+                ).first()
+                data = _preserve_webmaster_queries_if_empty(data, existing)
                 payload = {
                     "schema_version": 2,
                     "source": "yandex_webmaster",

@@ -16,10 +16,16 @@
   const manualRegionsField = form.querySelector('[name=metrika_manual_regions]');
   const manualRegionsContainer = form.querySelector('[data-manual-regions]');
   const manualRegionInput = form.querySelector('[data-manual-region-input]');
-  const manualRegionAdd = form.querySelector('[data-manual-region-add]');
+  const manualRegionEditor = form.querySelector('[data-manual-region-editor]');
+  const manualRegionTrigger = form.querySelector('[data-manual-region-trigger]');
+  const manualRegionSave = form.querySelector('[data-manual-region-save]');
+  const manualRegionCancel = form.querySelector('[data-manual-region-cancel]');
   let manualRegions = [];
   try { manualRegions = JSON.parse(manualRegionsField?.value || '[]'); }
   catch (_error) { manualRegions = []; }
+  manualRegions = Array.isArray(manualRegions) ? manualRegions.map(item => (
+    typeof item === 'string' ? {name: item, active: true} : {name: String(item?.name || ''), active: item?.active !== false}
+  )).filter(item => item.name) : [];
   const saveManualRegions = () => {
     if (!manualRegionsField) return;
     manualRegionsField.value = JSON.stringify(manualRegions);
@@ -30,23 +36,34 @@
     manualRegionsContainer.replaceChildren();
     manualRegions.forEach((region, index) => {
       const label = document.createElement('label');
-      label.className = 'manual-region-chip';
-      label.textContent = region;
+      label.className = 'manual-region-row';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox'; checkbox.checked = region.active;
+      checkbox.addEventListener('change', () => { region.active = checkbox.checked; saveManualRegions(); });
+      const name = document.createElement('span'); name.textContent = region.name;
       const remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
-      remove.setAttribute('aria-label', `Удалить регион ${region}`);
+      remove.setAttribute('aria-label', `Удалить регион ${region.name}`);
       remove.addEventListener('click', () => {
         manualRegions.splice(index, 1); renderManualRegions(); saveManualRegions();
       });
-      label.append(remove); manualRegionsContainer.append(label);
+      label.append(checkbox, name, remove); manualRegionsContainer.append(label);
     });
   };
   const addManualRegion = () => {
     const region = String(manualRegionInput?.value || '').trim().replace(/\s+/g, ' ').slice(0, 120);
-    if (!region || manualRegions.some(item => item.toLowerCase() === region.toLowerCase())) return;
-    manualRegions.push(region); manualRegionInput.value = ''; renderManualRegions(); saveManualRegions();
+    if (!region || manualRegions.some(item => item.name.toLowerCase() === region.toLowerCase())) return;
+    manualRegions.push({name: region, active: true}); manualRegionInput.value = '';
+    manualRegionEditor.hidden = true; manualRegionTrigger.hidden = false;
+    renderManualRegions(); saveManualRegions();
   };
-  manualRegionAdd?.addEventListener('click', addManualRegion);
+  manualRegionTrigger?.addEventListener('click', () => {
+    manualRegionTrigger.hidden = true; manualRegionEditor.hidden = false; manualRegionInput?.focus();
+  });
+  manualRegionSave?.addEventListener('click', addManualRegion);
+  manualRegionCancel?.addEventListener('click', () => {
+    manualRegionInput.value = ''; manualRegionEditor.hidden = true; manualRegionTrigger.hidden = false;
+  });
   manualRegionInput?.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); addManualRegion(); }
   });
@@ -310,13 +327,17 @@
     const empty = card.querySelector('[data-source-empty]');
     if (!optionsRoot) return;
     optionsRoot.replaceChildren();
-    periods.forEach((period, index) => {
+    const selectedPerSource = new Map();
+    periods.forEach(period => {
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.name = sourceName;
       input.value = period.id;
       input.dataset.periodMonth = period.month;
-      input.checked = index < 3;
+      input.dataset.periodSource = period.source_key || '';
+      const selectedCount = selectedPerSource.get(input.dataset.periodSource) || 0;
+      input.checked = selectedCount < 3;
+      if (input.checked) selectedPerSource.set(input.dataset.periodSource, selectedCount + 1);
       optionsRoot.append(input);
     });
     range.hidden = periods.length === 0;

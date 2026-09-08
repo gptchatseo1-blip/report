@@ -85,6 +85,7 @@ def _sync_json(mapping, source, run):
         {
             "id": str(row.id),
             "month": row.period_start.strftime("%Y-%m"),
+            "source_key": row.source_key if source == SourceSnapshot.Source.WEBMASTER else "",
             "label": (
                 (
                     f"{row.payload.get('host_url') or row.source_key} · "
@@ -756,6 +757,21 @@ def delete_webmaster_mapping(request, project_id, mapping_id):
     ).delete()
     mapping.delete()
     messages.success(request, "Сайт Яндекс.Вебмастера удалён из проекта.")
+    return redirect("yandex:connection", project_id=project_id)
+
+
+@login_required
+@require_POST
+def update_webmaster_iks(request, project_id, mapping_id):
+    mapping = get_object_or_404(
+        YandexWebmasterProjectMapping,
+        pk=mapping_id,
+        project_id=project_id,
+        connection__user=request.user,
+    )
+    mapping.include_iks = request.POST.get("include_iks") == "1"
+    mapping.save(update_fields=["include_iks", "updated_at"])
+    messages.success(request, "Настройка ИКС сохранена.")
     return redirect("yandex:connection", project_id=project_id)
 
 

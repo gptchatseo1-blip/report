@@ -487,11 +487,17 @@ def build_source_facts(
             )
         else:
             webmaster_rows = webmaster_rows.filter(id__in=ids)
+        mappings = list(project.yandex_webmaster_mappings.order_by("id"))
+        mapping_by_key = {item.host_id: item for item in mappings}
         grouped = {}
-        for row in webmaster_rows.order_by("source_key", "period_start", "id"):
+        for row in webmaster_rows.order_by("period_start", "id"):
             key = row.source_key or row.payload.get("host_id") or row.payload.get("host_url") or ""
             grouped.setdefault(key, []).append(row)
-        for key, rows in grouped.items():
+        ordered_keys = [item.host_id for item in mappings if item.host_id in grouped]
+        ordered_keys.extend(key for key in grouped if key not in ordered_keys)
+        for order, key in enumerate(ordered_keys):
+            rows = grouped[key]
+            mapping = mapping_by_key.get(key)
             site_result = build_source_facts(
                 project=project,
                 report_month=report_month,
@@ -506,6 +512,8 @@ def build_source_facts(
                 {
                     "source_key": key,
                     "host_url": rows[-1].payload.get("host_url") or key,
+                    "include_iks": mapping.include_iks if mapping else True,
+                    "order": order,
                     "facts": site_result,
                 }
             )

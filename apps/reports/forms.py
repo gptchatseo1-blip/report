@@ -87,6 +87,29 @@ BOOLEAN_REPORT_FIELDS = frozenset(
 )
 
 
+def normalize_manual_regions(value):
+    try:
+        values = json.loads(value or "[]") if isinstance(value, str) else value
+    except json.JSONDecodeError as exc:
+        raise forms.ValidationError("Некорректный список регионов.") from exc
+    if not isinstance(values, list):
+        raise forms.ValidationError("Некорректный список регионов.")
+    result = []
+    known = set()
+    for raw in values[:30]:
+        if isinstance(raw, dict):
+            region = " ".join(str(raw.get("name") or "").split())[:120]
+            active = bool(raw.get("active", True))
+        else:
+            region = " ".join(str(raw).split())[:120]
+            active = True
+        key = region.casefold()
+        if region and key not in known:
+            known.add(key)
+            result.append({"name": region, "active": active})
+    return result
+
+
 def parse_named_url_groups(value):
     """Parse user-friendly `name | mask` lines into deterministic URL groups."""
     groups = {}
@@ -640,6 +663,9 @@ class ReportCreateForm(forms.Form):
                 {
                     "id": str(row.id),
                     "month": row.period_start.strftime("%Y-%m"),
+                    "source_key": (
+                        row.source_key if source == SourceSnapshot.Source.WEBMASTER else ""
+                    ),
                     "label": (
                         (
                             f"{row.payload.get('host_url') or row.source_key} · "
@@ -678,22 +704,10 @@ class ReportCreateForm(forms.Form):
         )
 
     def clean_metrika_manual_regions(self):
-        value = self.cleaned_data.get("metrika_manual_regions") or "[]"
-        try:
-            values = json.loads(value) if isinstance(value, str) else value
-        except json.JSONDecodeError as exc:
-            raise forms.ValidationError("Некорректный список регионов.") from exc
-        if not isinstance(values, list):
-            raise forms.ValidationError("Некорректный список регионов.")
-        result = []
-        known = set()
-        for raw in values[:30]:
-            region = " ".join(str(raw).split())[:120]
-            key = region.casefold()
-            if region and key not in known:
-                known.add(key)
-                result.append(region)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(
+            normalize_manual_regions(self.cleaned_data.get("metrika_manual_regions") or "[]"),
+            ensure_ascii=False,
+        )
 
     def clean_month(self):
         value = self.cleaned_data.get("month")

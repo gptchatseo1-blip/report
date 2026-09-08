@@ -560,6 +560,18 @@ def _date_ticks(labels, maximum=7):
     return indexes, [labels[index] for index in indexes]
 
 
+def _distribution_period_ticks(history):
+    """Label only the first and last report points with their months."""
+    if not history:
+        return [], []
+    indexes = [0] if len(history) == 1 else [0, len(history) - 1]
+    labels = []
+    for index in indexes:
+        parsed = date.fromisoformat(str(history[index].get("month"))[:10])
+        labels.append(parsed.strftime("%m.%Y"))
+    return indexes, labels
+
+
 def _visibility_chart(points, title=None):
     useful = [(month, value) for month, value in points if value is not None]
     if not useful:
@@ -657,7 +669,7 @@ def _distribution_chart(history, depth):
             _plot_smooth_line(axis, x_values, values, color=color, linewidth=1.7, label=name)
             axis.scatter(x_values, values, color=color, s=12, zorder=3)
             axis.fill_between(x_values, values, color=color, alpha=0.055)
-        ticks, tick_labels = _date_ticks(labels)
+        ticks, tick_labels = _distribution_period_ticks(useful_rows)
         axis.set_xticks(ticks, tick_labels)
         top = max(float(bucket["share"] or 0) for row in bucket_rows for bucket in row)
         axis.set_ylim(0, max(10, math.ceil(top / 10) * 10 + 2))
@@ -869,17 +881,63 @@ def _render_position_table(doc, payload, segment, start, end):
     if not rows:
         doc.add_paragraph("Запросы в выбранном диапазоне отсутствуют.", style="Data Missing")
         return False
+    selected_days = bool(payload.get("display_options", {}).get("include_visibility_table"))
+    headers = ("Запросы", "WS", engine_header, "Имя группы")
     widths = [7.74, 1.50, 1.56, 8.25] if engine == "yandex" else [8.63, 1.17, 1.52, 7.42]
+    position_columns = (2,)
+    if selected_days:
+        configuration_id = str(segment.get("configuration_id") or "")
+        sources = sorted(
+            (
+                item
+                for item in payload.get("ranking_sources", [])
+                if str(item.get("configuration_id") or "") == configuration_id
+            ),
+            key=lambda item: str(item.get("date") or ""),
+        )
+        dates = [str(item.get("date"))[:10] for item in sources]
+
+        def query_key(value):
+            return " ".join(str(value or "").casefold().split())
+
+        by_date = {
+            day: {
+                query_key(item.get("normalized_query") or item.get("query")): item
+                for item in snapshot.get("positions", [])
+            }
+            for day, snapshot in zip(dates, sources, strict=True)
+        }
+        rows = [
+            (
+                row[0],
+                row[1],
+                *[(by_date[day].get(query_key(row[0])) or {}).get("position") for day in dates],
+                row[3],
+            )
+            for row in rows
+        ]
+        headers = (
+            "Запросы",
+            "WS",
+            *[date.fromisoformat(day).strftime("%d.%m") for day in dates],
+            "Имя группы",
+        )
+        date_width = max(0.72, min(1.45, 7.4 / max(len(dates), 1)))
+        widths = [6.1, 1.15, *([date_width] * len(dates)), 4.2]
+        position_columns = tuple(range(2, 2 + len(dates)))
     cell_fills = []
     cluster_order = {}
     for row in rows:
-        cluster = str(row[3] or "Без группы")
+        cluster = str(row[-1] or "Без группы")
         cluster_order.setdefault(cluster, len(cluster_order))
         cluster_fill = "F7F8FA" if cluster_order[cluster] % 2 == 0 else None
-        cell_fills.append((cluster_fill, cluster_fill, _position_fill(row[2]), cluster_fill))
+        fills = [cluster_fill] * len(row)
+        for column in position_columns:
+            fills[column] = _position_fill(row[column])
+        cell_fills.append(tuple(fills))
     table = _table(
         doc,
-        ("Запросы", "WS", engine_header, "Имя группы"),
+        headers,
         rows,
         widths,
         header_fill="EEF1F2",
@@ -895,7 +953,7 @@ def _render_position_table(doc, payload, segment, start, end):
         for cell in row.cells:
             for run in cell.paragraphs[0].runs:
                 run.font.size = Pt(10)
-        for column in (1, 2):
+        for column in (1, *position_columns):
             row.cells[column].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
     return True
 
@@ -1196,9 +1254,6 @@ def _render_topvisor_segment(doc, payload, segment, blocks, *, report_url=""):
             "Видимость сайта — это доля показов сайта в поисковых системах, которая "
             "зависит от частот и позиций запросов."
         )
-        if payload.get("display_options", {}).get("include_visibility_table"):
-            doc.add_paragraph("Позиции по выбранным дням", style="Table Heading")
-            _render_daily_position_table(doc, payload, segment)
     doc.add_paragraph(
         "График распределения по топам по основным ключевым словам за отчётный период."
     )
@@ -2036,11 +2091,11 @@ def _render_iks_explanation(doc):
     )
 
 
-def _render_webmaster_single(doc, payload, blocks, *, heading=None):
+def _render_webmaster_single(doc, payload, blocks, *, heading=None, allowed_sections=None):
     enabled = [
         code
         for code in ("iks", "indexing", "clicks_impressions", "ctr")
-        if section_enabled(payload, code)
+        if section_enabled(payload, code) and (allowed_sections is None or code in allowed_sections)
     ]
     if not enabled:
         return
@@ -2162,7 +2217,9 @@ def _render_webmaster_single(doc, payload, blocks, *, heading=None):
         )
         if current_summary and previous_summary:
             doc.add_paragraph(_webmaster_query_text(current_summary, previous_summary))
-    if section_enabled(payload, "webmaster_popular_queries"):
+    if section_enabled(payload, "webmaster_popular_queries") and (
+        allowed_sections is None or "clicks_impressions" in allowed_sections
+    ):
         doc.add_paragraph("Самые кликабельные запросы:", style="Table Heading")
         current_queries = latest.get("popular_queries") or []
         previous_queries = latest.get("comparison_popular_queries") or []
@@ -2192,10 +2249,11 @@ def _render_webmaster_single(doc, payload, blocks, *, heading=None):
 
 def _render_webmaster(doc, payload, blocks):
     sites = payload.get("calculated", {}).get("sources", {}).get("webmaster_sites", [])
-    if len(sites) <= 1:
+    if not sites:
         _render_webmaster_single(doc, payload, blocks)
         return
-    for index, site in enumerate(sites):
+
+    def site_payload(site):
         site_payload = copy.deepcopy(payload)
         sources = site_payload["calculated"]["sources"]["sources"]
         sources["yandex_webmaster"] = site["facts"]
@@ -2205,14 +2263,43 @@ def _render_webmaster(doc, payload, blocks):
             for row in site_payload.get("source_snapshots", [])
             if row.get("source") != "yandex_webmaster" or row.get("source_key") == key
         ]
-        if index:
+        return site_payload
+
+    if len(sites) == 1:
+        site = sites[0]
+        allowed = {"indexing", "clicks_impressions", "ctr"}
+        if site.get("include_iks", True):
+            allowed.add("iks")
+        _render_webmaster_single(doc, site_payload(site), blocks, allowed_sections=allowed)
+        return
+
+    section_number = 1
+    for site in sites:
+        if not site.get("include_iks", True):
+            continue
+        if section_number > 1:
             doc.add_page_break()
         _render_webmaster_single(
             doc,
-            site_payload,
+            site_payload(site),
             blocks,
-            heading=f"2.{index + 1}) Индексация сайта {site.get('host_url')} (Яндекс.Вебмастер)",
+            heading=f"2.{section_number}) ИКС сайта {site.get('host_url')} (Яндекс.Вебмастер)",
+            allowed_sections={"iks"},
         )
+        section_number += 1
+    for site in sites:
+        if section_number > 1:
+            doc.add_page_break()
+        _render_webmaster_single(
+            doc,
+            site_payload(site),
+            blocks,
+            heading=(
+                f"2.{section_number}) Индексация сайта {site.get('host_url')} (Яндекс.Вебмастер)"
+            ),
+            allowed_sections={"indexing", "clicks_impressions", "ctr"},
+        )
+        section_number += 1
 
 
 def _metrika_comparison_chart(payload, codes, *, title):
@@ -2988,6 +3075,20 @@ def _aggregate_regions(rows, manual_regions=()):
         if key in aggregate:
             result[key] = aggregate[key]
     return result
+
+
+def _active_manual_regions(value):
+    try:
+        rows = json.loads(value or "[]") if isinstance(value, str) else value
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    return [
+        str(item.get("name") or "").strip()
+        for item in rows
+        if isinstance(item, dict) and item.get("active", True) and item.get("name")
+    ] + [str(item).strip() for item in rows if isinstance(item, str) and item.strip()]
 
 
 REGION_LABELS = {
@@ -4001,10 +4102,7 @@ def _render_metrika(doc, payload, blocks):
             )
     if geography_enabled:
         geography_periods = _metrika_period_rows(payload, "search_geography")
-        try:
-            manual_regions = json.loads(options.get("metrika_manual_regions") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            manual_regions = []
+        manual_regions = _active_manual_regions(options.get("metrika_manual_regions"))
         current = (
             _aggregate_regions(geography_periods[-1]["rows"], manual_regions)
             if geography_periods

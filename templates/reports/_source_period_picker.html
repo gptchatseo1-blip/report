@@ -6,7 +6,7 @@
     <label>По месяц <input type="month" value="{{ source.end }}" data-period-end></label>
   </div>
   <p class="source-period-summary" data-period-summary>{{ source.short_label }}: выбрано {{ source.selected_count }} {{ source.period_word }}.</p>
-  <div data-period-options hidden>{% for option in source.options %}<input type="checkbox" name="{{ source.name }}" value="{{ option.id }}" data-period-month="{{ option.month }}"{% if option.selected %} checked{% endif %}>{% endfor %}</div>
+  <div data-period-options hidden>{% for option in source.options %}<input type="checkbox" name="{{ source.name }}" value="{{ option.id }}" data-period-month="{{ option.month }}" data-period-source="{{ option.source_key|default:'' }}"{% if option.selected %} checked{% endif %}>{% endfor %}</div>
   {% for error in source.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
   <p class="inline-warning warning" data-source-empty{% if source.options %} hidden{% endif %}>{{ source.short_label }}: данные недоступны — {{ source.unavailable_description }}</p>
   {% if source.connected %}

@@ -39,6 +39,7 @@ from .forms import (
     PERSISTED_REPORT_FIELDS,
     NarrativeEditForm,
     ReportCreateForm,
+    normalize_manual_regions,
     parse_named_url_groups,
     validate_topvisor_manual_rows,
 )
@@ -859,20 +860,9 @@ def report_settings_save(request, project_id):
                 return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
         elif name == "metrika_manual_regions":
             try:
-                raw_regions = json.loads(value or "[]") if isinstance(value, str) else value
-            except json.JSONDecodeError:
-                raw_regions = []
-            if not isinstance(raw_regions, list):
-                raw_regions = []
-            regions = []
-            known = set()
-            for raw in raw_regions[:30]:
-                region = " ".join(str(raw).split())[:120]
-                key = region.casefold()
-                if region and key not in known:
-                    known.add(key)
-                    regions.append(region)
-            values[name] = json.dumps(regions, ensure_ascii=False)
+                values[name] = json.dumps(normalize_manual_regions(value), ensure_ascii=False)
+            except ValidationError as exc:
+                return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
         else:
             values[name] = (
                 sanitize_report_html(value)

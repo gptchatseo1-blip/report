@@ -270,6 +270,26 @@ def test_project_report_settings_autosave_and_restore_are_isolated(client, user,
     assert untouched["metrika_search_segment"].value() is True
 
 
+def test_manual_geography_regions_save_active_state_per_project(client, user, project):
+    other = Project.objects.create(name="Other regions", domain="other-regions.example")
+    client.force_login(user)
+    regions = [
+        {"name": "Крым", "active": True},
+        {"name": "Краснодарский край", "active": False},
+    ]
+
+    response = client.post(
+        reverse("reports:report-settings-save", args=[project.id]),
+        data=json.dumps({"metrika_manual_regions": regions}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    restored = ReportCreateForm(project=project)
+    assert json.loads(restored["metrika_manual_regions"].value()) == regions
+    assert ReportCreateForm(project=other)["metrika_manual_regions"].value() in (None, "")
+
+
 def test_named_url_groups_accept_masks_and_repeated_labels():
     groups = parse_named_url_groups(
         "Лечение | https://example.test/treatment/*\n"

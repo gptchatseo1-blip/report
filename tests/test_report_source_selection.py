@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -432,6 +433,37 @@ def test_report_page_ajax_sync_returns_periods_without_reload(client, monkeypatc
         "Загружен 1 новый период, использованы 2 сохранённых периода."
     )
     assert not Report.objects.filter(project=project).exists()
+
+
+def test_webmaster_defaults_select_three_periods_for_each_site():
+    project = Project.objects.create(name="Many sites", domain="many-sites.example")
+    for host in ("host-b", "host-a"):
+        for month in (6, 7, 8):
+            SourceSnapshot.objects.create(
+                project=project,
+                source=SourceSnapshot.Source.WEBMASTER,
+                source_key=host,
+                period_start=date(2026, month, 1),
+                period_end=date(2026, month, 28),
+                checksum=f"{host}-{month}",
+                payload={"host_url": f"https://{host}.example/"},
+            )
+
+    form = ReportCreateForm(project=project)
+
+    assert len(form.initial["webmaster_snapshots"]) == 6
+    assert {item["source_key"] for item in form.source_period_options["webmaster_snapshots"]} == {
+        "host-a",
+        "host-b",
+    }
+
+
+def test_ajax_period_replacement_tracks_selection_per_webmaster_site():
+    builder = (Path(__file__).resolve().parents[1] / "static/reports/report-builder.js").read_text()
+
+    assert "const selectedPerSource = new Map();" in builder
+    assert "input.dataset.periodSource = period.source_key || '';" in builder
+    assert "selectedCount < 3" in builder
 
 
 def test_connection_page_sync_returns_to_connection_without_creating_report(client, monkeypatch):

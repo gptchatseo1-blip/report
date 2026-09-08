@@ -129,6 +129,7 @@ class YandexWebmasterProjectMapping(models.Model):
     verification_status = models.CharField(max_length=64, blank=True)
     main_mirror = models.URLField(max_length=2000, blank=True)
     domain_mismatch_confirmed = models.BooleanField(default=False)
+    include_iks = models.BooleanField(default=True)
     last_successful_sync_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

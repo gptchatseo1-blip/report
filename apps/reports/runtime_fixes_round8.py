@@ -259,7 +259,7 @@ def _distribution_chart_top_ranges_only(exp, history, depth):
             axis.scatter(x_values, values, color=color, s=12, zorder=3)
             axis.fill_between(x_values, values, color=color, alpha=0.055)
             handles.append(_legend_dot(color, name))
-        ticks, tick_labels = exp._date_ticks(labels)
+        ticks, tick_labels = exp._distribution_period_ticks(useful_rows)
         axis.set_xticks(ticks, tick_labels)
         values_for_top = [float(bucket.get("share") or 0) for row in bucket_rows for bucket in row]
         top = max(values_for_top or [0])
@@ -320,7 +320,7 @@ def apply():
             return current_monthly_renderer(doc, segment, show_visibility=False)
         return _render_monthly_table_with_visibility(exp, doc, segment)
 
-    exp.GENERATOR_VERSION = "mvp1.14-2026-09-06"
+    exp.GENERATOR_VERSION = "mvp1.15-2026-09-08"
     exp._topvisor_buckets = lambda distribution, depth: _manual_buckets_with_yandex_tail(
         current_buckets, distribution, depth
     )
