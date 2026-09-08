@@ -6,8 +6,8 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from openpyxl import Workbook
 
-from apps.imports.models import ImportBatch
-from apps.imports.parser import parse_position_file
+from apps.imports.models import FileImportSegment, ImportBatch
+from apps.imports.parser import parse_position_file, parse_position_history_xlsx
 from apps.metrics.models import KeywordPosition, RankingSnapshot
 from apps.projects.models import Project
 
@@ -49,6 +49,97 @@ def upload_positions(client, project, source_file):
             "source_file": source_file,
         },
     )
+
+
+def history_xlsx_upload(name="history.xlsx", *, later_position=3):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Позиции"
+    sheet.append(["Ключевое слово", "Страница", "Частота", "17.08.2026", "06.09.2026"])
+    sheet.append(["Группа: плитка", "", "", "", ""])
+    sheet.append(["низкая частота", "https://example.com/low", 10, 8, later_position])
+    sheet.append(["высокая частота", "https://example.com/high", 500, 4, "-"])
+    stream = BytesIO()
+    workbook.save(stream)
+    return SimpleUploadedFile(
+        name,
+        stream.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def test_history_xlsx_parses_groups_dates_missing_positions_and_frequency():
+    upload = history_xlsx_upload()
+    preview = parse_position_history_xlsx(upload.name, upload.read())
+
+    assert preview.dates == (date(2026, 8, 17), date(2026, 9, 6))
+    assert preview.keyword_count == 2
+    september = preview.rows_by_date[date(2026, 9, 6)]
+    assert [row["group_name"] for row in september] == ["плитка", "плитка"]
+    assert september[0]["position_value"] == 3
+    assert september[1]["position_status"] == KeywordPosition.Status.NOT_FOUND
+
+
+def test_file_import_creates_independent_idempotent_segments_and_standard_calendars(
+    staff_client, project
+):
+    url = reverse("imports:project-settings", args=[project.id])
+    first = staff_client.post(
+        url,
+        {
+            "search_engine": "yandex",
+            "region": "Москва",
+            "calculate_visibility": "on",
+            "source_file": history_xlsx_upload(),
+        },
+    )
+    assert first.status_code == 302
+    segment = FileImportSegment.objects.get(project=project, search_engine="yandex")
+    assert (
+        RankingSnapshot.objects.filter(
+            project=project, topvisor_configuration_id=segment.configuration_id
+        ).count()
+        == 2
+    )
+    september = RankingSnapshot.objects.get(
+        project=project,
+        topvisor_configuration_id=segment.configuration_id,
+        snapshot_date=date(2026, 9, 6),
+    )
+    assert september.depth_source == RankingSnapshot.DepthSource.FILE_IMPORT
+    assert september.visibility is not None
+
+    staff_client.post(
+        url + f"?edit={segment.id}",
+        {
+            "search_engine": "yandex",
+            "region": "Москва",
+            "calculate_visibility": "on",
+            "source_file": history_xlsx_upload(later_position=1),
+        },
+    )
+    assert (
+        RankingSnapshot.objects.filter(
+            project=project, topvisor_configuration_id=segment.configuration_id
+        ).count()
+        == 2
+    )
+    september.refresh_from_db()
+    assert september.positions.get(normalized_query="низкая частота").position_value == 1
+
+    staff_client.post(
+        url,
+        {
+            "search_engine": "google",
+            "region": "Москва",
+            "source_file": history_xlsx_upload("google.xlsx"),
+        },
+    )
+    assert FileImportSegment.objects.filter(project=project).count() == 2
+    response = staff_client.get(reverse("reports:report-list", args=[project.id]))
+    assert response.status_code == 200
+    assert len(response.context["form"].configuration_date_fields) == 2
+    assert response.context["form"].initial["include_visibility_table"] is True
 
 
 def test_csv_preview_and_confirmation_create_normalized_positions(staff_client, project):

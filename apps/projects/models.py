@@ -35,6 +35,7 @@ class Project(TimestampedModel):
     class PositionProvider(models.TextChoices):
         TOPVISOR = "topvisor", "Topvisor"
         SERPHUNT = "serphunt", "Serphunt"
+        FILE_IMPORT = "file_import", "Импорт из файла"
 
     class Top1120Mode(models.TextChoices):
         AUTO = "auto", "Автоматически"
@@ -75,6 +76,11 @@ class Project(TimestampedModel):
 
     def __str__(self):
         return f"{self.name} ({self.normalized_domain})"
+
+    @property
+    def yandex_webmaster_mapping(self):
+        """Compatibility accessor for code that expects the former one-to-one mapping."""
+        return self.yandex_webmaster_mappings.order_by("id").first()
 
 
 class ProjectBrandRule(TimestampedModel):

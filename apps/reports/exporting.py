@@ -1,8 +1,10 @@
 """Offline renderers whose business data comes only from a frozen report snapshot."""
 
 import base64
+import copy
 import hashlib
 import io
+import json
 import math
 import re
 import shutil
@@ -826,7 +828,14 @@ def _position_rows(source, start=None, end=None, *, show_urls=True):
             item.get("target_url"),
         ]
         rows.append(tuple(values if show_urls else values[:-1]))
-    return rows
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row[3] or "Без группы").casefold(),
+            -int(row[1] or 0),
+            str(row[0] or "").casefold(),
+        ),
+    )
 
 
 def _add_report_picture(doc, picture, *, width=18.2):
@@ -911,7 +920,14 @@ def _render_daily_position_table(doc, payload, segment):
     latest = sources[-1].get("positions", [])
     query_rows = []
     current_group = None
-    for row in sorted(latest, key=lambda item: (item.get("group") or "", item.get("query") or "")):
+    for row in sorted(
+        latest,
+        key=lambda item: (
+            str(item.get("group") or "Без группы").casefold(),
+            -int(item.get("frequency") or 0),
+            str(item.get("query") or "").casefold(),
+        ),
+    ):
         group = row.get("group") or "Без группы"
         if group != current_group:
             query_rows.append((f"Группа: {group}", "", *([""] * len(dates))))
@@ -2020,7 +2036,7 @@ def _render_iks_explanation(doc):
     )
 
 
-def _render_webmaster(doc, payload, blocks):
+def _render_webmaster_single(doc, payload, blocks, *, heading=None):
     enabled = [
         code
         for code in ("iks", "indexing", "clicks_impressions", "ctr")
@@ -2028,7 +2044,7 @@ def _render_webmaster(doc, payload, blocks):
     ]
     if not enabled:
         return
-    doc.add_heading("2) Индексация сайта (Яндекс.Вебмастер)", level=1)
+    doc.add_heading(heading or "2) Индексация сайта (Яндекс.Вебмастер)", level=1)
     source = "yandex_webmaster"
     details = _webmaster_chart_details(payload)
     latest = _latest_webmaster_payload(payload)
@@ -2172,6 +2188,31 @@ def _render_webmaster(doc, payload, blocks):
                 "API не вернул список популярных запросов, и скриншот не загружен.",
                 style="Data Missing",
             )
+
+
+def _render_webmaster(doc, payload, blocks):
+    sites = payload.get("calculated", {}).get("sources", {}).get("webmaster_sites", [])
+    if len(sites) <= 1:
+        _render_webmaster_single(doc, payload, blocks)
+        return
+    for index, site in enumerate(sites):
+        site_payload = copy.deepcopy(payload)
+        sources = site_payload["calculated"]["sources"]["sources"]
+        sources["yandex_webmaster"] = site["facts"]
+        key = site.get("source_key") or ""
+        site_payload["source_snapshots"] = [
+            row
+            for row in site_payload.get("source_snapshots", [])
+            if row.get("source") != "yandex_webmaster" or row.get("source_key") == key
+        ]
+        if index:
+            doc.add_page_break()
+        _render_webmaster_single(
+            doc,
+            site_payload,
+            blocks,
+            heading=f"2.{index + 1}) Индексация сайта {site.get('host_url')} (Яндекс.Вебмастер)",
+        )
 
 
 def _metrika_comparison_chart(payload, codes, *, title):
@@ -2920,7 +2961,7 @@ def _region_key(row):
     return city or area
 
 
-def _aggregate_regions(rows):
+def _aggregate_regions(rows, manual_regions=()):
     result = _aggregate_detail_rows(rows, _region_key)
     for combined, needle, city_key in (
         ("moscow_region", "москов", "moscow"),
@@ -2934,6 +2975,18 @@ def _aggregate_regions(rows):
         aggregate = _aggregate_detail_rows(selected, lambda _row, key=combined: key)
         if combined in aggregate:
             result[combined] = aggregate[combined]
+    for index, label in enumerate(manual_regions):
+        needle = " ".join(str(label).casefold().split())
+        selected = []
+        for row in rows:
+            area = " ".join(str(_row_dimension(row, 0).get("name") or "").casefold().split())
+            city = " ".join(str(_row_dimension(row, 1).get("name") or "").casefold().split())
+            if needle and (needle == city or needle == area or needle in area):
+                selected.append(row)
+        key = f"manual_{index}"
+        aggregate = _aggregate_detail_rows(selected, lambda _row, value=key: value)
+        if key in aggregate:
+            result[key] = aggregate[key]
     return result
 
 
@@ -3948,9 +4001,19 @@ def _render_metrika(doc, payload, blocks):
             )
     if geography_enabled:
         geography_periods = _metrika_period_rows(payload, "search_geography")
-        current = _aggregate_regions(geography_periods[-1]["rows"]) if geography_periods else {}
+        try:
+            manual_regions = json.loads(options.get("metrika_manual_regions") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            manual_regions = []
+        current = (
+            _aggregate_regions(geography_periods[-1]["rows"], manual_regions)
+            if geography_periods
+            else {}
+        )
         previous = (
-            _aggregate_regions(geography_periods[-2]["rows"]) if len(geography_periods) >= 2 else {}
+            _aggregate_regions(geography_periods[-2]["rows"], manual_regions)
+            if len(geography_periods) >= 2
+            else {}
         )
         flags = {
             "moscow": "geography_moscow",
@@ -3960,8 +4023,15 @@ def _render_metrika(doc, payload, blocks):
             "undefined": "geography_undefined",
             "area_undefined": "geography_area_undefined",
         }
+        labels = dict(REGION_LABELS)
+        for index, label in enumerate(manual_regions):
+            key = f"manual_{index}"
+            flags[key] = key
+            labels[key] = label
         chart_selected = [
-            key for key, flag in flags.items() if options.get(flag, True) and key in current
+            key
+            for key, flag in flags.items()
+            if (key.startswith("manual_") or options.get(flag, True)) and key in current
         ]
         table_selected = list(chart_selected)
         doc.add_paragraph(
@@ -3974,7 +4044,7 @@ def _render_metrika(doc, payload, blocks):
             _metrika_comparison_bars(
                 [
                     {
-                        "label": REGION_LABELS[key],
+                        "label": labels[key],
                         "previous": previous.get(key, {}).get("visits"),
                         "current": current[key].get("visits"),
                         "color": METRIKA_COLORS[index % len(METRIKA_COLORS)],
@@ -3987,10 +4057,7 @@ def _render_metrika(doc, payload, blocks):
         if table_selected:
             _metrika_detail_table(
                 doc,
-                [
-                    (REGION_LABELS[key], current[key], previous.get(key, {}))
-                    for key in table_selected
-                ],
+                [(labels[key], current[key], previous.get(key, {})) for key in table_selected],
                 first_header="Регион",
                 total_values=(
                     (

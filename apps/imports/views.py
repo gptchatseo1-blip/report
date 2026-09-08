@@ -1,13 +1,22 @@
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
-from .forms import PositionImportForm
-from .models import ImportBatch
+from apps.metrics.models import RankingSnapshot
+from apps.projects.models import Project
+
+from .forms import FileImportSegmentForm, PositionImportForm
+from .models import FileImportSegment, ImportBatch
 from .parser import ImportFileError
-from .services import ImportConfirmationError, confirm_import, create_import_preview
+from .services import (
+    ImportConfirmationError,
+    confirm_import,
+    create_import_preview,
+    import_history_file,
+)
 
 
 @staff_member_required
@@ -79,3 +88,87 @@ def import_confirm(request, batch_id):
         else:
             messages.info(request, "Эта партия уже была импортирована.")
     return redirect("imports:detail", batch_id=batch.id)
+
+
+@login_required
+def project_import_settings(request, project_id):
+    project = get_object_or_404(Project, pk=project_id)
+    edit_segment = None
+    if request.GET.get("edit"):
+        edit_segment = get_object_or_404(FileImportSegment, pk=request.GET["edit"], project=project)
+    form = FileImportSegmentForm(request.POST or None, request.FILES or None, instance=edit_segment)
+    if request.method == "POST" and form.is_valid():
+        try:
+            segment, _batch, created = import_history_file(
+                project=project,
+                segment=edit_segment,
+                search_engine=form.cleaned_data["search_engine"],
+                region=form.cleaned_data["region"],
+                uploaded_file=form.cleaned_data["source_file"],
+                calculate_visibility=form.cleaned_data["calculate_visibility"],
+                user=request.user,
+            )
+        except ImportFileError as exc:
+            form.add_error("source_file", str(exc))
+        else:
+            project.position_provider = Project.PositionProvider.FILE_IMPORT
+            project.save(update_fields=["position_provider", "updated_at"])
+            messages.success(
+                request,
+                (
+                    f"Файл обработан. Найдено {segment.keyword_count} строк, "
+                    f"{segment.date_count} дат."
+                    if created
+                    else "Этот файл уже импортирован; данные не дублировались."
+                ),
+            )
+            return redirect("imports:project-settings", project_id=project.id)
+    return render(
+        request,
+        "imports/project_settings.html",
+        {
+            "project": project,
+            "segments": project.file_import_segments.all(),
+            "form": form,
+            "edit_segment": edit_segment,
+            "provider_choices": Project.PositionProvider.choices,
+        },
+    )
+
+
+@login_required
+@require_POST
+def project_import_delete(request, project_id, segment_id):
+    project = get_object_or_404(Project, pk=project_id)
+    segment = get_object_or_404(FileImportSegment, pk=segment_id, project=project)
+    RankingSnapshot.objects.filter(
+        project=project, topvisor_configuration_id=segment.configuration_id
+    ).delete()
+    segment.delete()
+    messages.success(request, "Сегмент импорта удалён. Остальные сегменты не изменены.")
+    return redirect("imports:project-settings", project_id=project.id)
+
+
+@login_required
+@require_POST
+def select_position_provider(request, project_id):
+    project = get_object_or_404(Project, pk=project_id)
+    provider = request.POST.get("position_provider")
+    if provider not in Project.PositionProvider.values:
+        return HttpResponse("Некорректный источник позиций.", status=400)
+    previous_provider = project.position_provider
+    project.position_provider = provider
+    project.save(update_fields=["position_provider", "updated_at"])
+    if (
+        provider == Project.PositionProvider.FILE_IMPORT
+        and previous_provider != Project.PositionProvider.FILE_IMPORT
+    ):
+        from apps.reports.models import ProjectReportSettings
+
+        settings_row, _ = ProjectReportSettings.objects.get_or_create(project=project)
+        settings_row.values = {**(settings_row.values or {}), "include_visibility_table": True}
+        settings_row.save(update_fields=["values", "updated_at"])
+    messages.success(request, f"Источник позиций: {project.get_position_provider_display()}.")
+    if provider == Project.PositionProvider.FILE_IMPORT:
+        return redirect("imports:project-settings", project_id=project.id)
+    return redirect("reports:report-list", project_id=project.id)

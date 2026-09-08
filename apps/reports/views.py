@@ -149,6 +149,16 @@ def _topvisor_editor_data(project):
             active_configurations = serphunt_configurations(project.serphunt_mapping)
         except (ImportError, AttributeError):
             active_configurations = []
+    elif project.position_provider == Project.PositionProvider.FILE_IMPORT:
+        active_configurations = [
+            {
+                "id": segment.configuration_id,
+                "search_engine": segment.search_engine,
+                "region_name": segment.region,
+                "depth": 100,
+            }
+            for segment in project.file_import_segments.all()
+        ]
     else:
         mapping = TopvisorProjectMapping.objects.filter(project=project).first()
         active_configurations = mapping.selected_configurations if mapping else []
@@ -493,6 +503,8 @@ def _topvisor_report_url(payload, source):
 
 
 def _position_sync_url(project):
+    if project.position_provider == Project.PositionProvider.FILE_IMPORT:
+        return ""
     if project.position_provider == Project.PositionProvider.SERPHUNT:
         if not hasattr(project, "serphunt_mapping"):
             return ""
@@ -502,6 +514,14 @@ def _position_sync_url(project):
         if TopvisorProjectMapping.objects.filter(project=project).exists()
         else ""
     )
+
+
+def _position_settings_url(project):
+    if project.position_provider == Project.PositionProvider.FILE_IMPORT:
+        return reverse("imports:project-settings", args=[project.id])
+    if project.position_provider == Project.PositionProvider.SERPHUNT:
+        return reverse("serphunt:connection", args=[project.id])
+    return reverse("topvisor:connection", args=[project.id])
 
 
 @login_required
@@ -614,6 +634,7 @@ def report_list(request, project_id):
         "can_create": can_create,
         "position_sync_url": _position_sync_url(project),
         "position_provider_label": project.get_position_provider_display(),
+        "position_settings_url": _position_settings_url(project),
         "topvisor_editor_rows": topvisor_editor_rows,
         "topvisor_editor_segments": topvisor_editor_segments,
         "goal_sync_month": next(
@@ -677,7 +698,11 @@ def report_create(request, project_id):
             if selected_dates
             else max((item.period_end for item in source_rows), default=timezone.localdate())
         )
-        month = form.cleaned_data.get("month") or endpoint.replace(day=1)
+        month = (
+            endpoint.replace(day=1)
+            if project.position_provider == Project.PositionProvider.FILE_IMPORT and selected_dates
+            else form.cleaned_data.get("month") or endpoint.replace(day=1)
+        )
         report, created = Report.objects.get_or_create(project=project, report_month=month)
         screenshot = form.cleaned_data.get("webmaster_queries_screenshot")
         screenshot_payload = None
@@ -736,6 +761,7 @@ def report_create(request, project_id):
                             "geography_saint_petersburg_region",
                             "geography_undefined",
                             "geography_area_undefined",
+                            "metrika_manual_regions",
                             "include_metrika_landing_pages",
                             "include_metrika_landing_page_comparison",
                             "include_metrika_url_groups",
@@ -788,6 +814,7 @@ def report_create(request, project_id):
         "can_create": can_create,
         "position_sync_url": _position_sync_url(project),
         "position_provider_label": project.get_position_provider_display(),
+        "position_settings_url": _position_settings_url(project),
         "topvisor_editor_rows": topvisor_editor_rows,
         "topvisor_editor_segments": topvisor_editor_segments,
     }
@@ -830,6 +857,22 @@ def report_settings_save(request, project_id):
                 values[name] = json.dumps(_validated_manual_rows(value), ensure_ascii=False)
             except ValidationError as exc:
                 return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
+        elif name == "metrika_manual_regions":
+            try:
+                raw_regions = json.loads(value or "[]") if isinstance(value, str) else value
+            except json.JSONDecodeError:
+                raw_regions = []
+            if not isinstance(raw_regions, list):
+                raw_regions = []
+            regions = []
+            known = set()
+            for raw in raw_regions[:30]:
+                region = " ".join(str(raw).split())[:120]
+                key = region.casefold()
+                if region and key not in known:
+                    known.add(key)
+                    regions.append(region)
+            values[name] = json.dumps(regions, ensure_ascii=False)
         else:
             values[name] = (
                 sanitize_report_html(value)
@@ -1054,7 +1097,11 @@ def _segment_rows(payload, code):
                     and start <= item["position"] <= end
                 ]
                 row["rows"].sort(
-                    key=lambda item: (item.get("position"), str(item.get("query", "")).casefold())
+                    key=lambda item: (
+                        str(item.get("group") or "Без группы").casefold(),
+                        -int(item.get("frequency") or 0),
+                        str(item.get("query", "")).casefold(),
+                    )
                 )
                 cluster_order = {}
                 for item in row["rows"]:

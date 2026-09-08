@@ -327,7 +327,14 @@ def build_position_facts(
     return {"formula_version": FORMULA_VERSION, "periods": periods, "segments": facts}
 
 
-def build_source_facts(*, project, report_month, selected_snapshot_ids=None, display_options=None):
+def build_source_facts(
+    *,
+    project,
+    report_month,
+    selected_snapshot_ids=None,
+    display_options=None,
+    _single_webmaster=False,
+):
     """Calculate each source exclusively from its independently selected snapshots."""
     periods = calculate_periods(report_month)
     selected_snapshot_ids = selected_snapshot_ids or {}
@@ -411,6 +418,8 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
             {
                 "period_start": snapshot.period_start,
                 "period_end": snapshot.period_end,
+                "source_key": snapshot.source_key,
+                "host_url": snapshot.payload.get("host_url", ""),
                 "payload": redact_sensitive_source_data(snapshot.payload),
             }
             for snapshot, _metrics in points
@@ -466,7 +475,48 @@ def build_source_facts(*, project, report_month, selected_snapshot_ids=None, dis
                 current["search_ctr"].numeric_value if "search_ctr" in current else None,
             )
         result[source] = {"normalized_changes": changes, "three_month_series": series, **extra}
-    return {"formula_version": FORMULA_VERSION, "periods": periods, "sources": result}
+    sites = []
+    if not _single_webmaster:
+        ids = selected_snapshot_ids.get(SourceSnapshot.Source.WEBMASTER)
+        webmaster_rows = SourceSnapshot.objects.filter(
+            project=project, source=SourceSnapshot.Source.WEBMASTER
+        )
+        if ids is None:
+            webmaster_rows = webmaster_rows.filter(
+                period_start__range=(periods.three_months.start, periods.report.start)
+            )
+        else:
+            webmaster_rows = webmaster_rows.filter(id__in=ids)
+        grouped = {}
+        for row in webmaster_rows.order_by("source_key", "period_start", "id"):
+            key = row.source_key or row.payload.get("host_id") or row.payload.get("host_url") or ""
+            grouped.setdefault(key, []).append(row)
+        for key, rows in grouped.items():
+            site_result = build_source_facts(
+                project=project,
+                report_month=report_month,
+                selected_snapshot_ids={
+                    SourceSnapshot.Source.METRIKA: [],
+                    SourceSnapshot.Source.WEBMASTER: [str(row.id) for row in rows],
+                },
+                display_options=display_options,
+                _single_webmaster=True,
+            )["sources"][SourceSnapshot.Source.WEBMASTER]
+            sites.append(
+                {
+                    "source_key": key,
+                    "host_url": rows[-1].payload.get("host_url") or key,
+                    "facts": site_result,
+                }
+            )
+        if sites:
+            result[SourceSnapshot.Source.WEBMASTER] = sites[0]["facts"]
+    return {
+        "formula_version": FORMULA_VERSION,
+        "periods": periods,
+        "sources": result,
+        "webmaster_sites": sites,
+    }
 
 
 def _json_value(value):
@@ -582,6 +632,7 @@ def _external_source_data(project, periods, selected_ids=None):
         {
             "id": str(row.id),
             "source": row.source,
+            "source_key": row.source_key,
             "period_start": row.period_start,
             "period_end": row.period_end,
             "payload": redact_sensitive_source_data(row.payload),

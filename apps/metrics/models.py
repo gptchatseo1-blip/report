@@ -10,12 +10,12 @@ from apps.projects.models import Project
 class RankingSnapshot(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="ranking_snapshots")
-    import_batch = models.OneToOneField(
+    import_batch = models.ForeignKey(
         ImportBatch,
         null=True,
         blank=True,
         on_delete=models.RESTRICT,
-        related_name="ranking_snapshot",
+        related_name="ranking_snapshots",
     )
     snapshot_date = models.DateField()
     search_engine = models.CharField(max_length=16)
@@ -29,6 +29,7 @@ class RankingSnapshot(models.Model):
         TOPVISOR_API = "topvisor_api", "Topvisor API"
         SERPHUNT_API = "serphunt_api", "Serphunt API"
         MANUAL = "manual", "Ручной импорт"
+        FILE_IMPORT = "file_import", "Импорт из файла"
 
     depth_source = models.CharField(
         max_length=16, choices=DepthSource.choices, default=DepthSource.MANUAL
@@ -113,6 +114,7 @@ class SourceSnapshot(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="source_snapshots")
     source = models.CharField(max_length=32, choices=Source.choices)
+    source_key = models.CharField(max_length=512, blank=True, default="")
     retrieval_method = models.CharField(
         max_length=16, choices=RetrievalMethod.choices, default=RetrievalMethod.SYNTHETIC
     )
@@ -139,8 +141,8 @@ class SourceSnapshot(models.Model):
         verbose_name_plural = "Снимки источников"
         constraints = [
             models.UniqueConstraint(
-                fields=["project", "source", "period_start", "period_end"],
-                name="unique_project_source_period",
+                fields=["project", "source", "source_key", "period_start", "period_end"],
+                name="unique_project_source_key_period",
             )
         ]
 

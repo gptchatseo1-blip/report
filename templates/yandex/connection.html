@@ -95,25 +95,29 @@
   <div class="notice">Подключению не хватает прав Вебмастера. В приложении OAuth Яндекса включите «Получение информации о сайтах» и «Добавление сайтов, получение статуса индексирования», затем выполните повторную авторизацию.</div>
   <form method="post" action="{% url 'yandex:oauth-start' project.id %}">{% csrf_token %}<div class="actions"><button>Повторно авторизовать аккаунт Яндекса</button></div></form>
   {% elif connection %}
-  {% if webmaster_mapping %}<p>Выбран: <strong>{{ webmaster_mapping.host_url }}</strong> — подтверждение: {{ webmaster_mapping.verification_status|default:'неизвестно' }}{% if webmaster_mapping.main_mirror %}; главное зеркало: {{ webmaster_mapping.main_mirror }}{% endif %}.</p>{% endif %}
+  {% if webmaster_mappings %}
+  <div class="table-wrap"><table><thead><tr><th>Выбранные сайты</th><th>Последняя синхронизация</th><th></th></tr></thead><tbody>
+  {% for item in webmaster_mappings %}<tr><td><strong>{{ item.host_url }}</strong></td><td>{{ item.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</td><td><form method="post" action="{% url 'yandex:delete-webmaster-mapping' project.id item.id %}" onsubmit="return confirm('Удалить этот сайт из отчёта?')">{% csrf_token %}<button class="delete-button">Удалить</button></form></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
   {% if host_options %}
   <form method="post" action="{% url 'yandex:select-host' project.id %}" class="source-picker" data-domain-picker>
     {% csrf_token %}<input type="hidden" name="connection_id" value="{{ connection.id }}">
     <label for="host-id">Сайт</label>
     <select id="host-id" name="host_id" required data-domain-select>
       <option value="">Выберите подтверждённый сайт</option>
-      {% for option in host_options %}<option value="{{ option.id }}" data-domain-mismatch="{{ option.mismatch|yesno:'true,false' }}"{% if not option.verified %} disabled{% endif %}{% if webmaster_mapping.host_id|stringformat:'s' == option.id %} selected{% endif %}>{{ option.label }}{% if not option.verified %} — не подтверждён{% endif %}</option>{% endfor %}
+      {% for option in host_options %}<option value="{{ option.id }}" data-domain-mismatch="{{ option.mismatch|yesno:'true,false' }}"{% if not option.verified %} disabled{% endif %}>{{ option.label }}{% if not option.verified %} — не подтверждён{% endif %}</option>{% endfor %}
     </select>
     <label class="domain-confirm" data-domain-confirm hidden><input type="checkbox" name="confirm_domain_mismatch"> Сайт относится к другому домену. Подтверждаю выбор.</label>
-    <div class="actions"><button>Сохранить сайт</button></div>
+    <div class="actions"><button>Добавить сайт</button></div>
   </form>
   {% else %}<p>Доступных сайтов нет.</p>{% endif %}
 
-  {% if webmaster_mapping %}
+  {% if webmaster_mappings %}
   <div class="integration-subsection">
     <h3>Синхронизация Вебмастера</h3>
     <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих. Если отдельная история ещё не рассчитана Яндексом, остальные доступные показатели всё равно будут сохранены.</p>
-    <p>Последняя успешная: {{ webmaster_mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
+    <p>Синхронизация выполняется для всех выбранных сайтов.</p>
     <form method="post" action="{% url 'yandex:sync-webmaster' project.id %}" class="sync-form" data-yandex-sync-form data-sync-label="Вебмастера">
       {% csrf_token %}
       <label>Отчётный месяц <input type="month" name="month" required></label>
@@ -126,7 +130,7 @@
   {% endif %}
 </section>
 
-{% if webmaster_mapping %}
+{% if webmaster_mappings %}
 <section class="sync-log">
   <h2>Последние запуски Вебмастера</h2>
   <div class="table-wrap">
@@ -135,7 +139,7 @@
       <tbody>
       {% for run in webmaster_runs %}
       <tr>
-        <td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td>
+        <td>{{ run.started_at|date:'d.m.Y H:i' }}<br><small>{{ run.mapping.host_url }}</small></td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td>
         <td><form method="post" action="{% url 'yandex:delete-webmaster-run' project.id run.id %}" class="run-delete-form" onsubmit="return confirm('Удалить запись запуска Вебмастера?')">{% csrf_token %}<button class="delete-button" aria-label="Удалить запись запуска Вебмастера">Удалить</button></form></td>
       </tr>
       {% empty %}<tr><td colspan="5">Запусков нет.</td></tr>{% endfor %}

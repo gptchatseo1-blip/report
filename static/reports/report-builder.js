@@ -13,6 +13,44 @@
     : form.querySelector('[data-topvisor-manual-segments]');
   const manualStatus = form.querySelector('[data-topvisor-manual-status]');
   const reportMonth = form.querySelector('[name=month]');
+  const manualRegionsField = form.querySelector('[name=metrika_manual_regions]');
+  const manualRegionsContainer = form.querySelector('[data-manual-regions]');
+  const manualRegionInput = form.querySelector('[data-manual-region-input]');
+  const manualRegionAdd = form.querySelector('[data-manual-region-add]');
+  let manualRegions = [];
+  try { manualRegions = JSON.parse(manualRegionsField?.value || '[]'); }
+  catch (_error) { manualRegions = []; }
+  const saveManualRegions = () => {
+    if (!manualRegionsField) return;
+    manualRegionsField.value = JSON.stringify(manualRegions);
+    manualRegionsField.dispatchEvent(new Event('change', {bubbles: true}));
+  };
+  const renderManualRegions = () => {
+    if (!manualRegionsContainer) return;
+    manualRegionsContainer.replaceChildren();
+    manualRegions.forEach((region, index) => {
+      const label = document.createElement('label');
+      label.className = 'manual-region-chip';
+      label.textContent = region;
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'delete-button'; remove.textContent = '×';
+      remove.setAttribute('aria-label', `Удалить регион ${region}`);
+      remove.addEventListener('click', () => {
+        manualRegions.splice(index, 1); renderManualRegions(); saveManualRegions();
+      });
+      label.append(remove); manualRegionsContainer.append(label);
+    });
+  };
+  const addManualRegion = () => {
+    const region = String(manualRegionInput?.value || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+    if (!region || manualRegions.some(item => item.toLowerCase() === region.toLowerCase())) return;
+    manualRegions.push(region); manualRegionInput.value = ''; renderManualRegions(); saveManualRegions();
+  };
+  manualRegionAdd?.addEventListener('click', addManualRegion);
+  manualRegionInput?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); addManualRegion(); }
+  });
+  renderManualRegions();
   reportMonth?.addEventListener('change', () => {
     document.querySelectorAll('[data-sync-month-for]').forEach(input => {
       input.value = reportMonth.value;

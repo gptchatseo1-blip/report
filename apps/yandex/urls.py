@@ -11,6 +11,11 @@ urlpatterns = [
     path("projects/<uuid:project_id>/counter/", views.select_counter, name="select-counter"),
     path("projects/<uuid:project_id>/goals/", views.select_goals, name="select-goals"),
     path("projects/<uuid:project_id>/host/", views.select_host, name="select-host"),
+    path(
+        "projects/<uuid:project_id>/host/<int:mapping_id>/delete/",
+        views.delete_webmaster_mapping,
+        name="delete-webmaster-mapping",
+    ),
     path("projects/<uuid:project_id>/sync/", views.sync, name="sync"),
     path(
         "projects/<uuid:project_id>/webmaster/sync/",

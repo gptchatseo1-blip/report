@@ -65,7 +65,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
 METRIKA_COLLECTOR_VERSION = "metrika-2026-09-07-v9"
-WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-07-v5"
+WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-08-v6"
 GOALS_PER_REQUEST = 6
 
 
@@ -113,6 +113,8 @@ def _reusable_snapshots(mapping, source, months, fingerprint, *, force_refresh=F
         period_start__in=months,
         retrieval_method=SourceSnapshot.RetrievalMethod.YANDEX_API,
     )
+    if source == SourceSnapshot.Source.WEBMASTER:
+        rows = rows.filter(source_key=mapping.host_id)
     return {
         row.period_start: row
         for row in rows
@@ -1059,8 +1061,9 @@ def _query_analytics_data(response, start, end):
     """Convert Query Analytics rows to the legacy history/popular shapes.
 
     Query rows use ``ALL_LOCATIONS`` to match the unfiltered Webmaster table.
-    Aggregate totals remain sourced from the dedicated history endpoint,
-    because summing disclosed query rows omits provider-hidden traffic.
+    Totals and rows intentionally come from the same filtered dataset. Mixing
+    these rows with the legacy history endpoint changes impressions/clicks and
+    cannot match the corresponding Webmaster table.
     """
     source_rows = response.get("text_indicator_to_statistics")
     if not isinstance(source_rows, list) or not source_rows:
@@ -1261,7 +1264,8 @@ def _webmaster_month(
         previous_query_summary = _query_summary(previous_queries, comparison_start, comparison_end)
         analytics_current = None
         analytics_previous = None
-        if hasattr(client, "query_analytics"):
+        analytics_attempted = hasattr(client, "query_analytics")
+        if analytics_attempted:
             try:
                 analytics_current = _query_analytics_data(
                     client.query_analytics(
@@ -1295,9 +1299,19 @@ def _webmaster_month(
                     exc.error_code or "unknown",
                 )
         if analytics_current is not None:
-            _analytics_queries, popular = analytics_current
+            analytics_queries, popular = analytics_current
+            query_summary = _query_summary(analytics_queries, start, end)
         if analytics_previous is not None:
-            _analytics_previous_queries, previous_popular = analytics_previous
+            analytics_previous_queries, previous_popular = analytics_previous
+            previous_query_summary = _query_summary(
+                analytics_previous_queries, comparison_start, comparison_end
+            )
+        if analytics_attempted and analytics_current is None:
+            query_summary = _query_summary({}, start, end)
+            popular = []
+        if analytics_attempted and analytics_previous is None:
+            previous_query_summary = _query_summary({}, comparison_start, comparison_end)
+            previous_popular = []
 
         if hasattr(client, "popular_search_queries"):
             query_indicators = [
@@ -1306,7 +1320,7 @@ def _webmaster_month(
                 "AVG_SHOW_POSITION",
                 "AVG_CLICK_POSITION",
             ]
-            if not popular:
+            if not analytics_attempted:
                 popular = _popular_queries(
                     _optional_webmaster_resource(
                         mapping,
@@ -1323,10 +1337,7 @@ def _webmaster_month(
                         ),
                     )
                 )
-            previous_keys = {_query_key(row) for row in previous_popular}
-            if not previous_popular or any(
-                _query_key(row) not in previous_keys for row in popular if _query_key(row)
-            ):
+            if not analytics_attempted:
                 fallback_previous = _popular_queries(
                     _optional_webmaster_resource(
                         mapping,
@@ -1343,7 +1354,7 @@ def _webmaster_month(
                         ),
                     )
                 )
-                previous_popular = _merge_popular_rows(previous_popular, fallback_previous)
+                previous_popular = fallback_previous
         if hasattr(client, "search_urls_samples"):
             path_distribution = _path_distribution(
                 _optional_webmaster_resource(
@@ -1410,7 +1421,13 @@ def _webmaster_month(
         "metrics": metrics,
         "site_problems": (summary or {}).get("site_problems", {}),
         "actual_period": actual_period,
-        "availability_reason": None if response_dates else "API не вернул данные за период.",
+        "availability_reason": (
+            "API Query Analytics не вернул данные ALL_LOCATIONS за выбранный период."
+            if include_current and analytics_attempted and analytics_current is None
+            else None
+            if response_dates
+            else "API не вернул данные за период."
+        ),
         "daily": {
             "queries": query_summary.get("daily", []),
             "indexed_pages": [
@@ -1428,6 +1445,13 @@ def _webmaster_month(
         "comparison_popular_queries": previous_popular,
         "path_distribution": path_distribution,
         "host": host or {},
+        "query_data_source": (
+            "query_analytics_all_locations"
+            if include_current and analytics_current is not None
+            else "query_analytics_all_locations_unavailable"
+            if include_current and analytics_attempted
+            else "legacy_search_queries"
+        ),
         "includes_current_details": include_current,
     }
 
@@ -1495,6 +1519,8 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None, force_refre
                     "retrieval_method": "yandex_api",
                     "host_id": mapping.host_id,
                     "host_url": mapping.host_url,
+                    "search_location": "ALL_LOCATIONS",
+                    "query_data_source": data["query_data_source"],
                     "sync_fingerprint": fingerprint,
                     "period_start": data["period_start"],
                     "period_end": data["period_end"],
@@ -1520,6 +1546,7 @@ def sync_webmaster(*, mapping, report_month, user=None, client=None, force_refre
                 snapshot, _ = SourceSnapshot.objects.update_or_create(
                     project=mapping.project,
                     source=SourceSnapshot.Source.WEBMASTER,
+                    source_key=mapping.host_id,
                     period_start=date.fromisoformat(data["period_start"]),
                     period_end=date.fromisoformat(data["period_end"]),
                     defaults={

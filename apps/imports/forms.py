@@ -5,7 +5,7 @@ from django.conf import settings
 
 from apps.projects.models import Project
 
-from .models import ImportBatch
+from .models import FileImportSegment, ImportBatch
 
 
 class PositionImportForm(forms.Form):
@@ -35,6 +35,23 @@ class PositionImportForm(forms.Form):
         extension = Path(uploaded_file.name).suffix.casefold()
         if extension not in {".csv", ".xlsx"}:
             raise forms.ValidationError("Поддерживаются только файлы CSV и XLSX.")
+        if uploaded_file.size > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+            raise forms.ValidationError(f"Файл больше {settings.MAX_UPLOAD_SIZE_MB} МБ.")
+        return uploaded_file
+
+
+class FileImportSegmentForm(forms.ModelForm):
+    source_file = forms.FileField(label="Файл XLSX", required=True)
+
+    class Meta:
+        model = FileImportSegment
+        fields = ["search_engine", "region", "calculate_visibility"]
+        labels = {"calculate_visibility": "Рассчитывать видимость"}
+
+    def clean_source_file(self):
+        uploaded_file = self.cleaned_data["source_file"]
+        if Path(uploaded_file.name).suffix.casefold() != ".xlsx":
+            raise forms.ValidationError("Поддерживаются только файлы XLSX.")
         if uploaded_file.size > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
             raise forms.ValidationError(f"Файл больше {settings.MAX_UPLOAD_SIZE_MB} МБ.")
         return uploaded_file
