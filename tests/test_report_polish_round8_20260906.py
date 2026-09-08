@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from docx import Document
@@ -19,7 +20,7 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
     assert 'label="Видимость"' not in source
-    assert 'exp.GENERATOR_VERSION = "mvp1.15-2026-09-08"' in source
+    assert 'exp.GENERATOR_VERSION = "mvp1.16-2026-09-09"' in source
 
 
 def test_current_manual_editor_is_not_overwritten_by_legacy_scripts():
@@ -36,6 +37,94 @@ def test_current_manual_editor_is_not_overwritten_by_legacy_scripts():
     assert "void flushSave();" in current
     assert "(!oldTrigger && !legacyEditor)" in current
     assert "else legacyEditor.replaceWith(trigger)" in current
+
+
+def test_webmaster_iks_and_manual_region_controls_use_compact_layout():
+    root = Path(__file__).resolve().parents[1]
+    yandex_template = (root / "templates/yandex/connection.html").read_text()
+    report_template = (root / "templates/reports/report_list.html").read_text()
+    builder = (root / "static/reports/report-builder.js").read_text()
+    styles = (root / "static/reports/app.css").read_text()
+
+    assert "> Выводить ИКС</label>" not in yandex_template
+    assert 'aria-label="Выводить ИКС для ' in yandex_template
+    assert "data-manual-region-trigger" not in report_template
+    assert 'data-manual-region-editor><input type="text"' in report_template
+    assert "manual-region-remove" in builder
+    assert ".manual-region-remove{" in styles
+    assert "border:0;background:transparent" in styles
+
+
+def test_manual_geography_region_renders_without_standard_label_keyerror(monkeypatch):
+    monkeypatch.setattr(exporting, "_add_report_picture", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(exporting, "_comparison_period_pills", lambda *_args, **_kwargs: None)
+    payload = {
+        "display_options": {
+            "configuration_version": 3,
+            "include_metrika": True,
+            "include_metrika_geography": True,
+            "metrika_manual_regions": json.dumps([{"name": "Республика Крым", "active": True}]),
+            "include_metrika_search_engines": False,
+            "include_metrika_landing_pages": False,
+            "include_metrika_landing_page_comparison": False,
+            "include_metrika_url_groups": False,
+            "include_metrika_sections": False,
+            "include_metrika_categories": False,
+            "include_metrika_goals": False,
+        },
+        "calculated": {
+            "sources": {
+                "sources": {
+                    "yandex_metrika": {
+                        "period_details": [
+                            {
+                                "period_start": "2026-07-01",
+                                "period_end": "2026-07-31",
+                                "payload": {
+                                    "search_geography": [
+                                        {
+                                            "dimensions": [
+                                                {"name": "Республика Крым"},
+                                                {"name": "Симферополь"},
+                                            ],
+                                            "visits": 100,
+                                            "users": 80,
+                                            "bounce_rate": 10,
+                                        }
+                                    ]
+                                },
+                            },
+                            {
+                                "period_start": "2026-08-01",
+                                "period_end": "2026-08-31",
+                                "payload": {
+                                    "search_geography": [
+                                        {
+                                            "dimensions": [
+                                                {"name": "Республика Крым"},
+                                                {"name": "Симферополь"},
+                                            ],
+                                            "visits": 120,
+                                            "users": 90,
+                                            "bounce_rate": 9,
+                                        }
+                                    ]
+                                },
+                            },
+                        ]
+                    }
+                }
+            }
+        },
+    }
+    document = Document()
+    exporting._configure_document(document, "example.test", "2026-08-01")
+
+    exporting._render_metrika(document, payload, {})
+
+    assert any(
+        "Трафик из региона «Республика Крым»" in paragraph.text for paragraph in document.paragraphs
+    )
 
 
 def test_distribution_chart_contains_only_position_ranges(monkeypatch):
