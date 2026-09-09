@@ -334,11 +334,12 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
 
 
 def _save_figure(figure):
+    """Save report graphics at print quality for both DOCX and PDF export."""
     output = io.BytesIO()
     figure.savefig(
         output,
         format="png",
-        dpi=300,
+        dpi=450,
         facecolor="white",
         metadata={"Software": GENERATOR_VERSION},
     )
@@ -2305,7 +2306,12 @@ def _render_webmaster(doc, payload, blocks):
 def _metrika_comparison_chart(payload, codes, *, title):
     changes = _metric_source(payload, "yandex_metrika").get("normalized_changes", {})
     rows = [(code, changes.get(code) or {}) for code in codes]
-    rows = [item for item in rows if item[1].get("current") is not None]
+    rows = [
+        item
+        for item in rows
+        if item[1].get("current") is not None
+        and any((_decimal_or_none(item[1].get(key)) or 0) != 0 for key in ("previous", "current"))
+    ]
     if not rows:
         return None
     labels = [METRIC_LABELS.get(code, code) for code, _ in rows]
@@ -2489,7 +2495,9 @@ def _metrika_sources_chart(facts):
 
 def _metrika_period_rows(payload, key):
     options = payload.get("display_options", {})
-    robotness = options.get("metrika_robotness", "humans")
+    robotness = options.get("metrika_robotness")
+    if robotness not in {"humans", "all"}:
+        robotness = "humans"
     force_search = key in {
         "search_engines",
         "search_landing_pages",
@@ -2503,26 +2511,29 @@ def _metrika_period_rows(payload, key):
     periods = []
     for detail in _period_details(payload, "yandex_metrika"):
         source = _detail_payload(detail)
-        variant = (
-            ((source.get("detail_variants") or {}).get(segment) or {}).get(robotness)
-            or (source.get("search_details") or {}).get(robotness)
-            or source
-        )
-        rows = (
-            source.get("traffic_source_details") or []
-            if key == "traffic_source_details"
-            else variant.get(detail_key) or []
-        )
+        variant = ((source.get("detail_variants") or {}).get(segment) or {}).get(robotness)
+        if variant is None and segment == "search":
+            variant = (source.get("search_details") or {}).get(robotness)
+        if variant is None and robotness == "humans":
+            variant = source
+        variant = variant or {}
+        if key == "traffic_source_details":
+            traffic_variant = (source.get("traffic_source_variants") or {}).get(robotness) or {}
+            rows = traffic_variant.get("rows") or (
+                source.get("traffic_source_details") or [] if robotness == "humans" else []
+            )
+            total = traffic_variant.get("total") or (
+                source.get("traffic_source_total") or {} if robotness == "humans" else {}
+            )
+        else:
+            rows = variant.get(detail_key) or []
+            total = variant.get(f"{detail_key}_total") or {}
         periods.append(
             {
                 "period_start": detail.get("period_start"),
                 "period_end": detail.get("period_end"),
                 "rows": rows,
-                "total": (
-                    source.get("traffic_source_total") or {}
-                    if key == "traffic_source_details"
-                    else variant.get(f"{detail_key}_total") or {}
-                ),
+                "total": total,
                 "payload": source,
             }
         )
@@ -2597,9 +2608,13 @@ def _duration(value):
     return f"{minutes} м {seconds} с" if minutes else f"{seconds} с"
 
 
-def _metrika_sources_quarter_table(doc, periods):
-    quarter_rows = (
-        (periods[-1].get("payload") or {}).get("traffic_source_quarter_details") if periods else []
+def _metrika_sources_quarter_table(doc, periods, *, robotness="humans"):
+    source_payload = periods[-1].get("payload") or {} if periods else {}
+    quarter_variant = (source_payload.get("traffic_source_quarter_variants") or {}).get(
+        robotness
+    ) or {}
+    quarter_rows = quarter_variant.get("rows") or (
+        source_payload.get("traffic_source_quarter_details") if robotness == "humans" else []
     )
     totals = _aggregate_traffic_source_rows(
         [{"rows": quarter_rows}] if quarter_rows else periods[-3:]
@@ -2622,9 +2637,9 @@ def _metrika_sources_quarter_table(doc, periods):
         )
         for code, values in ordered
     ]
-    provider_total = (
-        (periods[-1].get("payload") or {}).get("traffic_source_quarter_total") if periods else {}
-    ) or {}
+    provider_total = quarter_variant.get("total") or (
+        source_payload.get("traffic_source_quarter_total") or {} if robotness == "humans" else {}
+    )
     if provider_total:
         rows.insert(
             0,
@@ -2723,13 +2738,17 @@ def _metrika_search_quarter_chart(periods):
     series = []
     colors = {"Google": "#7A45E5", "Яндекс": "#FF3399"}
     for index, engine in enumerate(engines):
-        series.append(
-            (
-                engine,
-                [aggregate.get(engine, {}).get("visits") or Decimal(0) for aggregate in aggregates],
-                colors.get(engine, METRIKA_COLORS[index % len(METRIKA_COLORS)]),
+        values = [aggregate.get(engine, {}).get("visits") or Decimal(0) for aggregate in aggregates]
+        if any(value != 0 for value in values):
+            series.append(
+                (
+                    engine,
+                    values,
+                    colors.get(engine, METRIKA_COLORS[index % len(METRIKA_COLORS)]),
+                )
             )
-        )
+    if not series:
+        return None
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
         figure, axis = plt.subplots(figsize=(7.2, 3.45), dpi=150, facecolor="white")
         for label, values, color in series:
@@ -2775,7 +2794,12 @@ def _metrika_search_quarter_chart(periods):
 
 
 def _metrika_comparison_bars(rows, *, title):
-    useful = [row for row in rows if row.get("current") is not None]
+    useful = [
+        row
+        for row in rows
+        if row.get("current") is not None
+        and any((_decimal_or_none(row.get(key)) or 0) != 0 for key in ("previous", "current"))
+    ]
     if not useful:
         return None
     x = list(range(len(useful)))
@@ -2889,8 +2913,8 @@ def _metrika_detail_table(
         for code in metrics:
             values.extend(
                 (
-                    _provider_value(code, current.get(code)),
                     _provider_value(code, previous.get(code)),
+                    _provider_value(code, current.get(code)),
                 )
             )
         table_rows.append(tuple(values))
@@ -2916,8 +2940,8 @@ def _metrika_detail_table(
         for run in label_cell.paragraphs[0].runs:
             _style_run(run, size=11)
         for metric_index, code in enumerate(metrics):
-            current_cell = table.rows[row_index].cells[1 + metric_index * 2]
-            previous_cell = table.rows[row_index].cells[2 + metric_index * 2]
+            previous_cell = table.rows[row_index].cells[1 + metric_index * 2]
+            current_cell = table.rows[row_index].cells[2 + metric_index * 2]
             previous_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             current_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             previous_cell.paragraphs[0].paragraph_format.space_after = Pt(0)
@@ -3016,7 +3040,7 @@ def _comparison_period_pills(doc, periods):
     if len(periods) < 2:
         return
     labels = []
-    for period in reversed(periods[-2:]):
+    for period in periods[-2:]:
         start = date.fromisoformat(str(period["period_start"])[:10])
         end = date.fromisoformat(str(period.get("period_end") or period["period_start"])[:10])
         labels.append(
@@ -3251,6 +3275,11 @@ def _metrika_groups_chart(periods, groups, *, title="Визиты", only_group=N
     if not grouped:
         return None
     selected = [group for group in groups if not only_group or group["name"] == only_group]
+    selected = [
+        group
+        for group in selected
+        if any((row["values"].get(group["name"], {}).get("visits") or 0) != 0 for row in grouped)
+    ]
     if not selected:
         return None
     labels = [
@@ -3416,8 +3445,8 @@ def _draw_metrika_goal_icon(figure, goal, *, x=0.046, y=0.878, color="#7A45E5"):
     kind = _metrika_goal_icon(goal)
     asset = Path(__file__).resolve().parent / "assets" / "metrika_goal_icons" / f"{kind}.png"
     if asset.exists():
-        icon_axis = figure.add_axes((x - 0.017, y - 0.023, 0.036, 0.048))
-        icon_axis.imshow(plt.imread(asset))
+        icon_axis = figure.add_axes((x - 0.025, y - 0.034, 0.052, 0.070))
+        icon_axis.imshow(plt.imread(asset), interpolation="lanczos", resample=True)
         icon_axis.axis("off")
         return
     transform = figure.transFigure
@@ -3959,7 +3988,11 @@ def _render_metrika(doc, payload, blocks):
                     )
                     _style_traffic_source_icons(table)
             else:
-                _metrika_sources_quarter_table(doc, source_periods)
+                _metrika_sources_quarter_table(
+                    doc,
+                    source_periods,
+                    robotness=options.get("metrika_robotness", "humans"),
+                )
     if traffic_enabled:
         search_periods = _metrika_period_rows(payload, "search_engines")
         if section_enabled(payload, "metrika_search_engines") and search_periods:
@@ -4477,7 +4510,7 @@ def _render_metrika(doc, payload, blocks):
                 )
 
     if section_enabled(payload, "metrika_goals") and period_details:
-        robotness = options.get("metrika_robotness", "humans")
+        robotness = "humans" if options.get("metrika_goals_humans_only", True) else "all"
         segment = "search" if options.get("metrika_search_segment", True) else "all"
         goal_periods = []
         for detail in period_details:
@@ -4496,7 +4529,7 @@ def _render_metrika(doc, payload, blocks):
         current_goals = goal_periods[-1]["rows"]
         if current_goals:
             doc.add_heading("4) Сводная информация по конверсии (Яндекс.Метрика).", level=1)
-            robotness_label = "только люди" if robotness == "humans" else "все визиты"
+            robotness_label = "только люди" if robotness == "humans" else "люди и роботы"
             segment_label = "переходы из поисковых систем" if segment == "search" else "весь трафик"
             segment_description = (
                 "только по поисковому трафику" if segment == "search" else "по всему трафику"
@@ -4713,6 +4746,14 @@ def _render_work(doc, payload, narrative):
 
 
 def _configure_document(doc, domain, period):
+    settings_element = doc.settings._element
+    if settings_element.find(qn("w:doNotCompressPictures")) is None:
+        settings_element.append(OxmlElement("w:doNotCompressPictures"))
+    image_dpi = settings_element.find(qn("w14:defaultImageDpi"))
+    if image_dpi is None:
+        image_dpi = OxmlElement("w14:defaultImageDpi")
+        settings_element.append(image_dpi)
+    image_dpi.set(qn("w14:val"), "450")
     section = doc.sections[0]
     section.orientation = WD_ORIENT.PORTRAIT
     section.page_width, section.page_height = Cm(21), Cm(29.7)

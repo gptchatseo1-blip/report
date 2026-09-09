@@ -465,6 +465,8 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert snapshots[0].provenance["counter_id"] == "42"
     points = {p.metric_code: p for p in snapshots[0].metrics.all()}
     assert points["source_search_visits"].numeric_value == 60
+    assert points["source_humans_search_visits"].numeric_value == 60
+    assert points["source_all_search_visits"].numeric_value == 60
     assert points["goal_7_reaches"].dimensions["label"] == "Client label"
     assert points["geography_moscow_visits"].numeric_value == 40
     assert points["geography_saint_petersburg_visits"].numeric_value == 20
@@ -475,6 +477,13 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert source_details[0]["visits"] == "60"
     assert {"users", "bounce_rate", "page_depth", "avg_visit_duration_seconds"} <= set(
         source_details[0]
+    )
+    assert set(snapshots[0].payload["traffic_source_variants"]) == {"humans", "all"}
+    assert set(snapshots[2].payload["traffic_source_quarter_variants"]) == {"humans", "all"}
+    assert any(
+        call.get("dimensions") == "ym:s:<attribution>TrafficSource"
+        and call.get("filters") == "ym:s:isRobot=='No'"
+        for call in api.calls
     )
     assert snapshots[2].payload["traffic_source_quarter_details"][0]["visits"] == "60"
     cached_api = FakeMetrika()
@@ -579,7 +588,7 @@ def test_goal_requests_are_batched_and_rate_limit_is_reported(identity, yandex_s
     run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
 
     assert run.status == run.Status.SUCCESS
-    assert len(api.calls) == 145
+    assert len(api.calls) == 149
     limited = sync_metrika(
         mapping=mapping,
         report_month=date(2026, 3, 1),
