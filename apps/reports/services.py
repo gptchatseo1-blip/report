@@ -73,6 +73,54 @@ def redact_sensitive_source_data(value):
     return value
 
 
+def _report_metrika_payload(payload, display_options):
+    """Freeze only Metrika variants that the immutable report can render."""
+    if not payload.get("detail_variants"):
+        # Snapshots created before segmented imports keep their report rows in
+        # the direct aliases. They are already substantially smaller.
+        return redact_sensitive_source_data(payload)
+    options = display_options or {}
+    robotness = options.get("metrika_robotness")
+    if robotness not in {"humans", "all"}:
+        robotness = "humans"
+    segment = "search" if options.get("metrika_search_segment", True) else "all"
+    goal_robotness = "humans" if options.get("metrika_goals_humans_only", True) else "all"
+    bulky_aliases = {
+        "detail_variants",
+        "search_details",
+        "search_engines",
+        "search_geography",
+        "landing_pages",
+        "traffic_source_variants",
+        "traffic_source_details",
+        "traffic_source_total",
+        "traffic_source_quarter_variants",
+        "traffic_source_quarter_details",
+        "traffic_source_quarter_total",
+        "goals",
+        "goals_by_robotness",
+        "goals_by_segment",
+    }
+    compact = {key: value for key, value in payload.items() if key not in bulky_aliases}
+
+    detail_variants = payload.get("detail_variants") or {}
+    needed_segments = {segment, "search"}
+    compact["detail_variants"] = {
+        name: {robotness: (detail_variants.get(name) or {}).get(robotness) or {}}
+        for name in needed_segments
+    }
+    traffic_variant = (payload.get("traffic_source_variants") or {}).get(robotness) or {}
+    compact["traffic_source_variants"] = {robotness: traffic_variant}
+    quarter_variant = (payload.get("traffic_source_quarter_variants") or {}).get(robotness) or {}
+    if quarter_variant:
+        compact["traffic_source_quarter_variants"] = {robotness: quarter_variant}
+    goal_rows = ((payload.get("goals_by_segment") or {}).get(segment) or {}).get(
+        goal_robotness
+    ) or []
+    compact["goals_by_segment"] = {segment: {goal_robotness: goal_rows}}
+    return redact_sensitive_source_data(compact)
+
+
 def _project_favicon(domain):
     """Freeze a small public favicon in the snapshot; test domains never trigger I/O."""
     if not getattr(settings, "REPORT_FAVICON_FETCH_ENABLED", True):
@@ -438,7 +486,11 @@ def build_source_facts(
                 "period_end": snapshot.period_end,
                 "source_key": snapshot.source_key,
                 "host_url": snapshot.payload.get("host_url", ""),
-                "payload": redact_sensitive_source_data(snapshot.payload),
+                "payload": (
+                    _report_metrika_payload(snapshot.payload, options)
+                    if source == SourceSnapshot.Source.METRIKA
+                    else redact_sensitive_source_data(snapshot.payload)
+                ),
             }
             for snapshot, _metrics in points
         ]
@@ -553,14 +605,24 @@ def build_source_facts(
     }
 
 
-def _json_value(value):
-    """Turn calculation dataclasses into a stable, JSON-compatible value."""
+def _json_value_in_place(value):
+    """Normalize a freshly built snapshot without duplicating its whole object graph."""
     if is_dataclass(value):
-        value = asdict(value)
+        return _json_value_in_place(asdict(value))
     if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_value(item) for item in value]
+        for key, item in tuple(value.items()):
+            normalized_key = str(key)
+            normalized_item = _json_value_in_place(item)
+            if normalized_key != key:
+                del value[key]
+            value[normalized_key] = normalized_item
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _json_value_in_place(item)
+        return value
+    if isinstance(value, tuple):
+        return [_json_value_in_place(item) for item in value]
     if isinstance(value, date | datetime):
         return value.isoformat()
     if isinstance(value, Decimal):
@@ -568,10 +630,17 @@ def _json_value(value):
     return value
 
 
+class SnapshotJSONEncoder(DjangoJSONEncoder):
+    def default(self, value):
+        if is_dataclass(value):
+            return asdict(value)
+        return super().default(value)
+
+
 def canonical_json(payload):
     return json.dumps(
-        _json_value(payload),
-        cls=DjangoJSONEncoder,
+        payload,
+        cls=SnapshotJSONEncoder,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -579,7 +648,15 @@ def canonical_json(payload):
 
 
 def snapshot_checksum(payload):
-    return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+    digest = hashlib.sha256()
+    encoder = SnapshotJSONEncoder(
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    for chunk in encoder.iterencode(payload):
+        digest.update(chunk.encode())
+    return digest.hexdigest()
 
 
 def _ranking_source_data(project, periods, selected_dates=None, selected_configurations=None):
@@ -659,6 +736,7 @@ def _external_source_data(project, periods, selected_ids=None):
         filters["period_start__range"] = (periods.three_months.start, periods.report.start)
     rows = (
         SourceSnapshot.objects.filter(**filters)
+        .defer("payload")
         .prefetch_related("metrics")
         .order_by("source", "period_start", "period_end", "id")
     )
@@ -669,7 +747,10 @@ def _external_source_data(project, periods, selected_ids=None):
             "source_key": row.source_key,
             "period_start": row.period_start,
             "period_end": row.period_end,
-            "payload": redact_sensitive_source_data(row.payload),
+            # Detailed provider data is frozen once in calculated period_details.
+            # Keeping a second copy here made large Metrika reports exceed the
+            # web worker timeout and doubled the immutable JSON snapshot.
+            "payload": {},
             "metrics": [
                 {
                     "code": point.metric_code,
@@ -861,7 +942,7 @@ def build_report_snapshot(*, report, selection=None):
                 for source in payload["ranking_sources"]
                 if source["search_engine"] == engine
             ]
-    return _json_value(payload)
+    return _json_value_in_place(payload)
 
 
 @transaction.atomic
@@ -894,7 +975,7 @@ def create_report_version(*, report, created_by=None, selection=None):
     ValidationIssue.objects.bulk_create(issues)
     from .narratives import generate_narratives
 
-    generate_narratives(version)
+    generate_narratives(version, payload=payload)
     return version
 
 

@@ -375,7 +375,49 @@ def _can_create_report(form):
     )
 
 
-def _source_period_fields(form):
+def _metrika_sync_state(project, user):
+    from apps.yandex.models import YandexMetrikaSyncRun
+
+    run = (
+        YandexMetrikaSyncRun.objects.filter(
+            mapping__project=project,
+            mapping__connection__user=user,
+        )
+        .order_by("-started_at", "-id")
+        .first()
+    )
+    if run is None:
+        return None
+    active = run.status in {
+        YandexMetrikaSyncRun.Status.QUEUED,
+        YandexMetrikaSyncRun.Status.RUNNING,
+    }
+    if run.status == YandexMetrikaSyncRun.Status.QUEUED:
+        message = "Синхронизация Метрики в очереди. Создать отчёт можно после её завершения."
+        kind = "progress"
+    elif run.status == YandexMetrikaSyncRun.Status.RUNNING:
+        message = "Синхронизация Метрики выполняется. Создать отчёт можно после её завершения."
+        kind = "progress"
+    elif run.status == YandexMetrikaSyncRun.Status.SUCCESS:
+        completed = timezone.localtime(run.completed_at or run.started_at).strftime(
+            "%d.%m.%Y %H:%M"
+        )
+        message = f"Синхронизация Метрики завершена {completed}. Отчёт можно создавать."
+        kind = "success"
+    else:
+        detail = run.error_message or "неизвестная ошибка"
+        message = f"Синхронизация Метрики завершилась с ошибкой: {detail}"
+        kind = "error"
+    return {
+        "active": active,
+        "status": run.status,
+        "status_url": reverse("yandex:metrika-sync-status", args=[project.id, run.id]),
+        "message": message,
+        "kind": kind,
+    }
+
+
+def _source_period_fields(form, *, metrika_sync_state=None):
     def period_word(count):
         if count % 10 == 1 and count % 100 != 11:
             return "период"
@@ -444,6 +486,7 @@ def _source_period_fields(form):
                 "cleanup_form_id": f"cleanup-{name.replace('_snapshots', '')}-form",
                 "sync_url": reverse(sync_route, args=[form.project.id]),
                 "sync_month": sync_month,
+                "sync_state": metrika_sync_state if name == "metrika_snapshots" else None,
             }
         )
     return fields
@@ -453,7 +496,7 @@ def _topvisor_report_link_fields(form):
     return [{**item, "field": form[item["name"]]} for item in form.topvisor_report_link_fields]
 
 
-def _metrika_goal_context(project, user):
+def _metrika_goal_context(project, user, *, refresh=True):
     from apps.yandex.client import MetrikaClient, YandexAPIError
     from apps.yandex.crypto import CredentialConfigurationError
     from apps.yandex.models import YandexMetrikaProjectMapping
@@ -468,11 +511,14 @@ def _metrika_goal_context(project, user):
     if not mapping:
         return {"metrika_mapping": None, "metrika_goal_options": [], "goal_picker_error": ""}
     error = ""
-    try:
-        available = list(MetrikaClient(mapping.connection).goals(mapping.counter_id))
-    except (YandexAPIError, CredentialConfigurationError):
+    if not refresh:
         available = mapping.selected_goals
-        error = "Не удалось обновить список целей. Показаны ранее выбранные цели."
+    else:
+        try:
+            available = list(MetrikaClient(mapping.connection).goals(mapping.counter_id))
+        except (YandexAPIError, CredentialConfigurationError):
+            available = mapping.selected_goals
+            error = "Не удалось обновить список целей. Показаны ранее выбранные цели."
     selected = {str(goal.get("id")) for goal in mapping.selected_goals}
     options = [
         {
@@ -620,11 +666,14 @@ def report_list(request, project_id):
     token = secrets.token_urlsafe(24)
     request.session[f"report_create_token:{project.id}"] = token
     form = ReportCreateForm(project=project, initial={"submission_token": token})
+    metrika_sync_state = _metrika_sync_state(project, request.user)
     calendar_fields = _calendar_fields(form)
-    source_period_fields = _source_period_fields(form)
+    source_period_fields = _source_period_fields(form, metrika_sync_state=metrika_sync_state)
     topvisor_report_link_fields = _topvisor_report_link_fields(form)
     topvisor_editor_rows, topvisor_editor_segments = _topvisor_editor_data(project)
-    can_create = _can_create_report(form)
+    dates_ready = _can_create_report(form)
+    sync_active = bool(metrika_sync_state and metrika_sync_state["active"])
+    can_create = dates_ready and not sync_active
     context = {
         "project": project,
         "reports": reports,
@@ -633,6 +682,14 @@ def report_list(request, project_id):
         "source_period_fields": source_period_fields,
         "topvisor_report_link_fields": topvisor_report_link_fields,
         "can_create": can_create,
+        "create_block_reason": (
+            "Синхронизация Метрики выполняется. Дождитесь завершения."
+            if sync_active
+            else "Для каждой подключённой поисковой системы нужны минимум две даты"
+            if not dates_ready
+            else ""
+        ),
+        "metrika_sync_state": metrika_sync_state,
         "position_sync_url": _position_sync_url(project),
         "position_provider_label": project.get_position_provider_display(),
         "position_settings_url": _position_settings_url(project),
@@ -647,7 +704,7 @@ def report_list(request, project_id):
             form.report_month.strftime("%Y-%m"),
         ),
     }
-    context.update(_metrika_goal_context(project, request.user))
+    context.update(_metrika_goal_context(project, request.user, refresh=not sync_active))
     return render(
         request,
         "reports/report_list.html",
@@ -660,6 +717,13 @@ def report_create(request, project_id):
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
     project = get_object_or_404(Project, pk=project_id)
+    metrika_sync_state = _metrika_sync_state(project, request.user)
+    if metrika_sync_state and metrika_sync_state["active"]:
+        messages.warning(
+            request,
+            "Синхронизация Метрики ещё выполняется. Отчёт можно создать после её завершения.",
+        )
+        return redirect("reports:report-list", project_id=project.id)
     form = ReportCreateForm(request.POST, request.FILES, project=project)
     if form.is_valid():
         submitted_token = form.cleaned_data.get("submission_token")
@@ -801,11 +865,14 @@ def report_create(request, project_id):
     reports = project.reports.annotate(
         version_count=Count("versions"), latest_version_at=Max("versions__created_at")
     )
+    metrika_sync_state = _metrika_sync_state(project, request.user)
     calendar_fields = _calendar_fields(form)
-    source_period_fields = _source_period_fields(form)
+    source_period_fields = _source_period_fields(form, metrika_sync_state=metrika_sync_state)
     topvisor_report_link_fields = _topvisor_report_link_fields(form)
     topvisor_editor_rows, topvisor_editor_segments = _topvisor_editor_data(project)
-    can_create = _can_create_report(form)
+    dates_ready = _can_create_report(form)
+    sync_active = bool(metrika_sync_state and metrika_sync_state["active"])
+    can_create = dates_ready and not sync_active
     context = {
         "project": project,
         "reports": reports,
@@ -814,13 +881,21 @@ def report_create(request, project_id):
         "source_period_fields": source_period_fields,
         "topvisor_report_link_fields": topvisor_report_link_fields,
         "can_create": can_create,
+        "create_block_reason": (
+            "Синхронизация Метрики выполняется. Дождитесь завершения."
+            if sync_active
+            else "Для каждой подключённой поисковой системы нужны минимум две даты"
+            if not dates_ready
+            else ""
+        ),
+        "metrika_sync_state": metrika_sync_state,
         "position_sync_url": _position_sync_url(project),
         "position_provider_label": project.get_position_provider_display(),
         "position_settings_url": _position_settings_url(project),
         "topvisor_editor_rows": topvisor_editor_rows,
         "topvisor_editor_segments": topvisor_editor_segments,
     }
-    context.update(_metrika_goal_context(project, request.user))
+    context.update(_metrika_goal_context(project, request.user, refresh=not sync_active))
     return render(
         request,
         "reports/report_list.html",

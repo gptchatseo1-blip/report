@@ -518,14 +518,15 @@ def build_narrative_specs(payload):
 
 
 @transaction.atomic
-def generate_narratives(version):
-    snapshot = ReportDatasetSnapshot.objects.only("payload").get(version=version)
+def generate_narratives(version, *, payload=None):
+    if payload is None:
+        payload = ReportDatasetSnapshot.objects.only("payload").get(version=version).payload
     existing = {
         (block.section_code, block.sort_order): block
         for block in version.narrative_blocks.select_for_update()
     }
     result = []
-    for spec in build_narrative_specs(snapshot.payload):
+    for spec in build_narrative_specs(payload):
         key = (spec["section"], 0)
         block = existing.pop(key, None)
         if block is None:

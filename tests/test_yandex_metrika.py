@@ -707,6 +707,13 @@ def test_report_snapshot_contains_safe_source_metadata(identity, yandex_settings
     report = Report.objects.create(project=mapping.project, report_month=date(2026, 3, 1))
     version = create_report_version(report=report, created_by=identity[0])
     source = version.snapshot.payload["source_snapshots"][0]
+    assert source["payload"] == {}
+    period_payload = version.snapshot.payload["calculated"]["sources"]["sources"][
+        SourceSnapshot.Source.METRIKA
+    ]["period_details"][0]["payload"]
+    assert set(period_payload["detail_variants"]) == {"search"}
+    assert set(period_payload["detail_variants"]["search"]) == {"humans"}
+    assert set(period_payload["traffic_source_variants"]) == {"humans"}
     assert {
         "retrieval_method",
         "checksum",

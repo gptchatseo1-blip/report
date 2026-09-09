@@ -4,19 +4,61 @@
 
   const notice = form.querySelector('[data-report-form-notice]');
   const csrf = form.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+  const createButton = form.querySelector('[data-report-create-button]');
+  const globalSyncStatus = form.querySelector('[data-global-sync-status]');
   let saveTimer;
 
-  const waitForQueuedSync = async data => {
+  const setMetrikaCreateBlocked = (blocked, message = '') => {
+    if (!createButton) return;
+    createButton.dataset.syncBlocked = blocked ? 'true' : 'false';
+    if (blocked) {
+      createButton.disabled = true;
+      createButton.setAttribute('aria-disabled', 'true');
+      createButton.title = 'Синхронизация Метрики выполняется. Дождитесь завершения.';
+      if (globalSyncStatus) {
+        globalSyncStatus.textContent = message || 'Синхронизация Метрики выполняется — создание отчёта временно недоступно.';
+      }
+      return;
+    }
+    if (globalSyncStatus) globalSyncStatus.textContent = message;
+    document.querySelector('[data-calendar]')?.dispatchEvent(new Event('change'));
+  };
+
+  const waitForQueuedSync = async (data, statusNode = null) => {
     while (data.queued && data.status_url) {
       await new Promise(resolve => window.setTimeout(resolve, 2000));
       const response = await fetch(data.status_url, {credentials: 'same-origin'});
       data = await response.json();
+      if (statusNode && data.message) statusNode.textContent = data.message;
       if (!response.ok && response.status !== 202) {
         throw new Error(data.message || 'Синхронизация не выполнена.');
       }
     }
     return data;
   };
+
+  const persistedMetrikaStatus = form.querySelector('[data-metrika-sync-state]');
+  if (persistedMetrikaStatus?.dataset.syncActive === 'true') {
+    setMetrikaCreateBlocked(true);
+    waitForQueuedSync(
+      {queued: true, status_url: persistedMetrikaStatus.dataset.statusUrl},
+      persistedMetrikaStatus,
+    ).then(data => {
+      persistedMetrikaStatus.dataset.kind = 'success';
+      persistedMetrikaStatus.dataset.syncActive = 'false';
+      persistedMetrikaStatus.textContent = `${data.message || 'Синхронизация Метрики завершена.'} Отчёт можно создавать.`;
+      const card = persistedMetrikaStatus.closest('[data-source-period-picker]');
+      replacePeriods(card, data.periods || [], card?.dataset.sourceName || 'metrika_snapshots');
+      const lastSynced = card?.querySelector('[data-last-synced]');
+      if (lastSynced && data.last_synced_at) lastSynced.textContent = data.last_synced_at;
+      setMetrikaCreateBlocked(false, 'Синхронизация Метрики завершена — отчёт можно создавать.');
+    }).catch(error => {
+      persistedMetrikaStatus.dataset.kind = 'error';
+      persistedMetrikaStatus.dataset.syncActive = 'false';
+      persistedMetrikaStatus.textContent = error.message || 'Синхронизация Метрики завершилась с ошибкой.';
+      setMetrikaCreateBlocked(false, 'Синхронизация Метрики завершилась с ошибкой.');
+    });
+  }
 
   const manualField = form.querySelector('[name=topvisor_manual_rows]');
   const useCurrentManualEditor = form.dataset.manualEditorVersion === '2';
@@ -369,14 +411,22 @@
         });
         let data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || 'Синхронизация не выполнена.');
+        if (data.queued && sourceName === 'metrika_snapshots') {
+          setMetrikaCreateBlocked(true);
+        }
         if (data.queued && status) status.textContent = data.message;
-        data = await waitForQueuedSync(data);
+        data = await waitForQueuedSync(data, status);
         replacePeriods(card, data.periods || [], sourceName);
         const lastSynced = card?.querySelector('[data-last-synced]');
         if (lastSynced) lastSynced.textContent = data.last_synced_at;
         if (status) {
           status.dataset.kind = 'success';
-          status.textContent = data.message;
+          status.textContent = sourceName === 'metrika_snapshots'
+            ? `${data.message || 'Синхронизация Метрики завершена.'} Отчёт можно создавать.`
+            : data.message;
+        }
+        if (sourceName === 'metrika_snapshots') {
+          setMetrikaCreateBlocked(false, 'Синхронизация Метрики завершена — отчёт можно создавать.');
         }
         const forceRefresh = document.querySelector(`[name=force_refresh][form="${syncForm.id}"]`);
         if (forceRefresh) forceRefresh.checked = false;
@@ -384,6 +434,9 @@
         if (status) {
           status.dataset.kind = 'error';
           status.textContent = error.message || 'Синхронизация не выполнена.';
+        }
+        if (sourceName === 'metrika_snapshots') {
+          setMetrikaCreateBlocked(false, 'Синхронизация Метрики завершилась с ошибкой.');
         }
       } finally {
         if (button) button.disabled = false;
@@ -417,14 +470,26 @@
             ? await response.json()
             : {ok: false, message: `Сервер вернул некорректный ответ (${response.status}).`};
           if (!response.ok || !data.ok) throw new Error(data.message || 'ошибка синхронизации');
+          if (data.queued && source.dataset.sourceName === 'metrika_snapshots') {
+            setMetrikaCreateBlocked(true);
+          }
           if (data.queued && status) status.textContent = data.message;
-          data = await waitForQueuedSync(data);
+          data = await waitForQueuedSync(data, status);
           if (source.dataset.sourceName && data.periods) {
             const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
             replacePeriods(card, data.periods, source.dataset.sourceName);
           }
+          if (source.dataset.sourceName === 'metrika_snapshots') {
+            setMetrikaCreateBlocked(
+              false,
+              'Синхронизация Метрики завершена — отчёт можно создавать.',
+            );
+          }
           results.push({label, ok: true, message: data.message || 'завершено'});
         } catch (error) {
+          if (source.dataset.sourceName === 'metrika_snapshots') {
+            setMetrikaCreateBlocked(false, 'Синхронизация Метрики завершилась с ошибкой.');
+          }
           results.push({label, ok: false, message: error.message || 'ошибка синхронизации'});
         }
       }

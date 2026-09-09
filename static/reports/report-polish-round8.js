@@ -20,7 +20,7 @@
     calendars.forEach(clearResolvedWarning);
     const datesReady = calendars.length > 0 && calendars.every(calendar => selectedCount(calendar) >= 2);
     if (!createButton) return;
-    if (datesReady) {
+    if (datesReady && createButton.dataset.syncBlocked !== 'true') {
       createButton.disabled = false;
       createButton.removeAttribute('aria-disabled');
       createButton.removeAttribute('title');
