@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.http import QueryDict
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from apps.metrics.models import MetricPoint, RankingSnapshot, SourceSnapshot
@@ -155,6 +157,31 @@ def test_form_defaults_to_three_report_month_source_periods_and_preserves_bound_
     data.pop("include_webmaster")
     disabled = ReportCreateForm(data, project=project)
     assert disabled.is_valid()
+
+
+def test_report_form_does_not_select_metrika_payload():
+    project = Project.objects.create(name="Light form", domain="light-form.example")
+    snapshot = source_snapshot(
+        project, SourceSnapshot.Source.METRIKA, date(2026, 7, 1), 10, "visits"
+    )
+    SourceSnapshot.objects.filter(pk=snapshot.pk).update(
+        payload={"detail_variants": {"large": ["value"] * 100}}
+    )
+
+    with CaptureQueriesContext(connection) as queries:
+        form = ReportCreateForm(project=project)
+
+    assert str(snapshot.id) in {value for value, _label in form.fields["metrika_snapshots"].choices}
+    metrika_queries = [
+        query["sql"]
+        for query in queries.captured_queries
+        if 'FROM "metrics_sourcesnapshot"' in query["sql"] and "yandex_metrika" in query["sql"]
+    ]
+    assert metrika_queries
+    assert all(
+        '"metrics_sourcesnapshot"."payload"' not in sql.partition(" FROM ")[0]
+        for sql in metrika_queries
+    )
 
 
 def test_traffic_sources_use_total_from_same_metrika_response():
