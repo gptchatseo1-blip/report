@@ -23,6 +23,11 @@ urlpatterns = [
     ),
     path("projects/<uuid:project_id>/sync/", views.sync, name="sync"),
     path(
+        "projects/<uuid:project_id>/metrika/runs/<int:run_id>/status/",
+        views.metrika_sync_status,
+        name="metrika-sync-status",
+    ),
+    path(
         "projects/<uuid:project_id>/webmaster/sync/",
         views.sync_webmaster_view,
         name="sync-webmaster",

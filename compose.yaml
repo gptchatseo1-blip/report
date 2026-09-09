@@ -29,6 +29,17 @@ services:
       timeout: 5s
       retries: 10
 
+  metrika-worker:
+    build: .
+    command: python manage.py run_metrika_sync_worker
+    env_file: .env
+    volumes:
+      - media_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   media_data:
