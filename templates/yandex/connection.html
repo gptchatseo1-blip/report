@@ -58,6 +58,7 @@
     <h3>Синхронизация Метрики</h3>
     <p class="source-help">Выберите отчётный месяц. Сервис загрузит этот месяц и два предыдущих.</p>
     <p>Последняя успешная: {{ mapping.last_successful_sync_at|date:'d.m.Y H:i'|default:'—' }}</p>
+    {% if latest_metrika_run %}<p class="sync-progress-notice persistent-sync-status" data-persisted-metrika-sync data-sync-active="{% if latest_metrika_run.status == 'queued' or latest_metrika_run.status == 'running' %}true{% else %}false{% endif %}" data-status-url="{{ latest_metrika_status_url }}" aria-live="polite">{% if latest_metrika_run.status == 'queued' %}Синхронизация Метрики в очереди. Отчёт можно создавать после завершения.{% elif latest_metrika_run.status == 'running' %}Синхронизация Метрики выполняется. Отчёт можно создавать после завершения.{% elif latest_metrika_run.status == 'success' %}Синхронизация Метрики завершена {{ latest_metrika_run.completed_at|date:'d.m.Y H:i' }}. Отчёт можно создавать.{% else %}Синхронизация Метрики завершилась с ошибкой: {{ latest_metrika_run.error_message|default:'неизвестная ошибка' }}{% endif %}</p>{% endif %}
     <form method="post" action="{% url 'yandex:sync' project.id %}" class="sync-form" data-yandex-sync-form data-sync-label="Метрики">
       {% csrf_token %}
       <label>Отчётный месяц <input type="month" name="month" required></label>

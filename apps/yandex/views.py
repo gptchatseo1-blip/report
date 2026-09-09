@@ -317,6 +317,8 @@ def connection(request, project_id):
                 hosts = list(webmaster.hosts(webmaster_user_id)) if webmaster_user_id else []
             except (YandexAPIError, CredentialConfigurationError):
                 error = "Не удалось получить данные Яндекс Вебмастера."
+    metrika_runs = list(mapping.sync_runs.all()[:10]) if mapping else []
+    latest_metrika_run = metrika_runs[0] if metrika_runs else None
     return render(
         request,
         "yandex/connection.html",
@@ -334,7 +336,16 @@ def connection(request, project_id):
             ),
             "error": error,
             "configured": _configured(),
-            "runs": mapping.sync_runs.all()[:10] if mapping else [],
+            "runs": metrika_runs,
+            "latest_metrika_run": latest_metrika_run,
+            "latest_metrika_status_url": (
+                reverse(
+                    "yandex:metrika-sync-status",
+                    args=[project.id, latest_metrika_run.id],
+                )
+                if latest_metrika_run
+                else ""
+            ),
             "webmaster_runs": YandexWebmasterSyncRun.objects.filter(
                 mapping__in=webmaster_mappings
             ).select_related("mapping")[:30],

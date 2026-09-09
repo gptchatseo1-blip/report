@@ -14,7 +14,7 @@
     <p class="source-sync-status">Последняя синхронизация: <strong data-last-synced>{{ source.last_synced_at|date:'d.m.Y H:i'|default:'ещё не выполнялась' }}</strong></p>
     <button type="submit" class="secondary" form="{{ source.sync_form_id }}" data-source-sync-button>Синхронизировать данные</button>
     <label class="force-refresh"><input type="checkbox" name="force_refresh" value="1" form="{{ source.sync_form_id }}"> Обновить ранее загруженные периоды</label>
-    <p class="source-sync-notice" data-source-sync-notice hidden role="status"></p>
+    <p class="source-sync-notice" data-source-sync-notice{% if source.sync_state %} data-kind="{{ source.sync_state.kind }}" data-metrika-sync-state data-sync-active="{{ source.sync_state.active|yesno:'true,false' }}" data-status-url="{{ source.sync_state.status_url }}"{% else %} hidden{% endif %} role="status" aria-live="polite">{% if source.sync_state %}{{ source.sync_state.message }}{% endif %}</p>
     <small>Загрузятся выбранный последний месяц и два предыдущих.</small>
   </div>
   {% endif %}

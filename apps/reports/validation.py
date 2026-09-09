@@ -95,6 +95,20 @@ def _contains_secret(value):
 
 def _repair_legacy_source_credentials(snapshot, payload):
     """Redact only provider-owned raw fields while preserving report facts."""
+    candidates = []
+    for source in payload.get("source_snapshots", []):
+        candidates.extend(source.get(field) for field in ("payload", "provenance"))
+    calculated_sources = payload.get("calculated", {}).get("sources", {}).get("sources", {})
+    for source in calculated_sources.values():
+        candidates.extend(
+            period.get("payload")
+            for period in source.get("period_details", [])
+            if "payload" in period
+        )
+    candidates.extend(source.get("provenance") for source in payload.get("ranking_sources", []))
+    if not any(_contains_secret(value) for value in candidates if value is not None):
+        return payload
+
     cleaned = deepcopy(payload)
     changed = False
 

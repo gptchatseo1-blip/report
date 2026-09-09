@@ -11,6 +11,11 @@ from django.urls import reverse
 from apps.projects.models import Project
 from apps.reports.models import GeneratedArtifact, Report, ReportDatasetSnapshot, ReportVersion
 from apps.reports.services import create_report_version
+from apps.yandex.models import (
+    YandexConnection,
+    YandexMetrikaProjectMapping,
+    YandexMetrikaSyncRun,
+)
 
 
 @pytest.fixture
@@ -80,6 +85,71 @@ def test_report_creation_normalizes_month_and_reuses_report(client, user, projec
     second = client.post(url, {"month": "2026-07"})
     assert second.url == reverse("reports:report-detail", args=[report.id])
     assert Report.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_active_metrika_sync_disables_and_server_guards_report_creation(client, user, project):
+    connection = YandexConnection.objects.create(
+        user=user, access_token_encrypted=b"token", active=True
+    )
+    mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    run = YandexMetrikaSyncRun.objects.create(
+        mapping=mapping,
+        report_month=date(2026, 7, 1),
+        status=YandexMetrikaSyncRun.Status.RUNNING,
+        requested_by=user,
+    )
+    client.force_login(user)
+
+    with patch("apps.yandex.client.MetrikaClient.goals", return_value=[]):
+        page = client.get(reverse("reports:report-list", args=[project.id]))
+    html = page.content.decode()
+
+    assert 'data-sync-blocked="true"' in html
+    assert "Синхронизация Метрики выполняется" in html
+    assert reverse("yandex:metrika-sync-status", args=[project.id, run.id]) in html
+
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]), {"month": "2026-07"}
+    )
+    assert response.status_code == 302
+    assert response.url == reverse("reports:report-list", args=[project.id])
+    assert not Report.objects.exists()
+
+
+@pytest.mark.django_db
+def test_completed_metrika_sync_says_report_can_be_created(client, user, project):
+    connection = YandexConnection.objects.create(
+        user=user, access_token_encrypted=b"token", active=True
+    )
+    mapping = YandexMetrikaProjectMapping.objects.create(
+        project=project,
+        connection=connection,
+        counter_id="1",
+        counter_name="Counter",
+        counter_domain=project.domain,
+    )
+    YandexMetrikaSyncRun.objects.create(
+        mapping=mapping,
+        report_month=date(2026, 7, 1),
+        status=YandexMetrikaSyncRun.Status.SUCCESS,
+        requested_by=user,
+        completed_at=datetime(2026, 7, 31, 12, 30, tzinfo=UTC),
+    )
+    client.force_login(user)
+
+    with patch("apps.yandex.client.MetrikaClient.goals", return_value=[]):
+        html = client.get(reverse("reports:report-list", args=[project.id])).content.decode()
+
+    assert 'data-sync-blocked="false"' in html
+    assert "Синхронизация Метрики завершена" in html
+    assert "Отчёт можно создавать" in html
 
 
 @pytest.mark.django_db
