@@ -757,11 +757,13 @@ def report_create(request, project_id):
         selected_source_ids = selected_metrika_ids + selected_webmaster_ids
         from apps.metrics.models import SourceSnapshot
 
-        source_rows = SourceSnapshot.objects.filter(project=project, id__in=selected_source_ids)
+        source_period_ends = SourceSnapshot.objects.filter(
+            project=project, id__in=selected_source_ids
+        ).values_list("period_end", flat=True)
         endpoint = (
             date.fromisoformat(selected_dates[-1])
             if selected_dates
-            else max((item.period_end for item in source_rows), default=timezone.localdate())
+            else max(source_period_ends, default=timezone.localdate())
         )
         month = (
             endpoint.replace(day=1)
@@ -1039,8 +1041,10 @@ def report_detail(request, report_id):
     report = get_object_or_404(Report.objects.select_related("project"), pk=report_id)
     token = secrets.token_urlsafe(24)
     request.session[f"version_token:{report.id}"] = token
-    versions = report.versions.select_related("created_by", "snapshot").prefetch_related(
-        "validation_issues"
+    versions = (
+        report.versions.select_related("created_by", "snapshot")
+        .defer("snapshot__payload")
+        .prefetch_related("validation_issues")
     )
     for version in versions:
         version.error_count = sum(
