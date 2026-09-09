@@ -754,9 +754,12 @@ def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
                 "metrika_search_segment": True,
                 "metrika_goals_humans_only": True,
             },
-            "yandex_metrika": list(
-                SourceSnapshot.objects.filter(project=mapping.project).values_list("id", flat=True)
-            ),
+            "yandex_metrika": [
+                str(snapshot_id)
+                for snapshot_id in SourceSnapshot.objects.filter(
+                    project=mapping.project
+                ).values_list("id", flat=True)
+            ],
             "yandex_webmaster": [],
         },
     )
