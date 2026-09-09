@@ -770,6 +770,7 @@ def report_create(request, project_id):
                             "include_metrika_categories",
                             "metrika_categories_combined",
                             "include_metrika_goals",
+                            "metrika_goals_humans_only",
                             "metrika_goals_quarter",
                             "include_completed_work",
                             "completed_work_text",

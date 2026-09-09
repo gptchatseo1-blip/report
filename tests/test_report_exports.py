@@ -405,17 +405,17 @@ def test_landing_hierarchy_uses_provider_aggregate_for_total_and_root():
 
     assert [cell.text.splitlines()[0] for cell in table.rows[1].cells[:5]] == [
         "Итого и среднее",
-        "120",
         "90",
-        "100",
+        "120",
         "75",
+        "100",
     ]
     assert [cell.text.splitlines()[0] for cell in table.rows[2].cells[:5]] == [
         "https://site.test/",
-        "120",
         "90",
-        "100",
+        "120",
         "75",
+        "100",
     ]
 
 
@@ -452,7 +452,8 @@ def test_landing_comparison_uses_metrika_level_aggregates_without_resumming_leav
     )
 
     about_row = next(row for row in table.rows if "https://site.test/about/" in row.cells[0].text)
-    assert about_row.cells[1].paragraphs[0].text == "4298"
+    assert about_row.cells[1].paragraphs[0].text == "0"
+    assert about_row.cells[2].paragraphs[0].text == "4298"
 
 
 def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
@@ -710,8 +711,8 @@ def test_metrika_detail_table_adds_total_and_renders_missing_numbers_as_zero():
         metrics=("visits", "users"),
     )
     assert table.rows[1].cells[0].text == "Итого и среднее"
-    assert table.rows[2].cells[1].text == "0"
-    assert table.rows[2].cells[2].text == "3"
+    assert table.rows[2].cells[1].text == "3"
+    assert table.rows[2].cells[2].text == "0"
 
 
 def test_full_docx_matches_reference_report_structure_and_styles(rich_version, settings, tmp_path):

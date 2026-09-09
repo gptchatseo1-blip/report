@@ -64,7 +64,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-07-v9"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-09-v10"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-08-v7"
 GOALS_PER_REQUEST = 6
 
@@ -261,9 +261,11 @@ def _attribution_settings(value):
     }
 
 
-def _traffic_source_report(client, mapping, start, end, *, attribution="lastsign"):
+def _traffic_source_report(client, mapping, start, end, *, attribution="lastsign", robotness="all"):
     attribution = _attribution_settings(attribution)
-    response = client.stat(
+    response = _stat_with_filter(
+        client,
+        HUMANS_FILTER if robotness == "humans" else None,
         ids=mapping.counter_id,
         date1=start.isoformat(),
         date2=end.isoformat(),
@@ -429,14 +431,52 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
             }
             for (code, value), unit in zip(values.items(), METRIC_UNITS, strict=True)
         )
-    cleaned_sources, traffic_source_total = _traffic_source_report(
-        client, mapping, month, month_end(month), attribution=attribution
-    )
-    aggregated = {}
-    for item in cleaned_sources:
+    traffic_source_variants = {}
+    for robotness in ("humans", "all"):
+        rows, total = _traffic_source_report(
+            client,
+            mapping,
+            month,
+            month_end(month),
+            attribution=attribution,
+            robotness=robotness,
+        )
+        traffic_source_variants[robotness] = {"rows": rows, "total": total}
+        aggregated = {}
+        for item in rows:
+            code = item["code"]
+            value = Decimal(item["visits"])
+            aggregated[code] = aggregated.get(code, Decimal(0)) + value
+        for code in (
+            "search",
+            "direct",
+            "referral",
+            "advertising",
+            "social",
+            "internal",
+            "recommend",
+            "messenger",
+            "saved",
+            "email",
+            "qrcode",
+            "other",
+        ):
+            points.append(
+                {
+                    "code": f"source_{robotness}_{code}_visits",
+                    "value": str(aggregated.get(code, 0)),
+                    "unit": "count",
+                    "dimensions": {"robotness": robotness},
+                }
+            )
+    # Direct aliases keep older snapshots and integrations readable. The
+    # report builder selects the explicit robotness-prefixed series below.
+    cleaned_sources = traffic_source_variants["humans"]["rows"]
+    traffic_source_total = traffic_source_variants["humans"]["total"]
+    human_aggregated = {}
+    for item in traffic_source_variants["humans"]["rows"]:
         code = item["code"]
-        value = Decimal(item["visits"])
-        aggregated[code] = aggregated.get(code, Decimal(0)) + value
+        human_aggregated[code] = human_aggregated.get(code, Decimal(0)) + Decimal(item["visits"])
     for code in (
         "search",
         "direct",
@@ -454,9 +494,9 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
         points.append(
             {
                 "code": f"source_{code}_visits",
-                "value": str(aggregated.get(code, 0)),
+                "value": str(human_aggregated.get(code, 0)),
                 "unit": "count",
-                "dimensions": {},
+                "dimensions": {"robotness": "humans"},
             }
         )
     geography = client.stat(
@@ -665,6 +705,7 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
         "traffic_sources": cleaned_sources,
         "traffic_source_details": cleaned_sources,
         "traffic_source_total": traffic_source_total,
+        "traffic_source_variants": traffic_source_variants,
         "geography": geography_rows,
         "traffic_by_segment": traffic_by_segment,
         "detail_variants": detail_variants,
@@ -717,15 +758,23 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
         ]
         for data in fetched:
             if data["period_start"] == month.isoformat():
-                quarter_rows, quarter_total = _traffic_source_report(
-                    client,
-                    mapping,
-                    months[0],
-                    month_end(month),
-                    attribution=attribution,
-                )
-                data["traffic_source_quarter_details"] = quarter_rows
-                data["traffic_source_quarter_total"] = quarter_total
+                quarter_variants = {}
+                for robotness in ("humans", "all"):
+                    quarter_rows, quarter_total = _traffic_source_report(
+                        client,
+                        mapping,
+                        months[0],
+                        month_end(month),
+                        attribution=attribution,
+                        robotness=robotness,
+                    )
+                    quarter_variants[robotness] = {
+                        "rows": quarter_rows,
+                        "total": quarter_total,
+                    }
+                data["traffic_source_quarter_variants"] = quarter_variants
+                data["traffic_source_quarter_details"] = quarter_variants["humans"]["rows"]
+                data["traffic_source_quarter_total"] = quarter_variants["humans"]["total"]
         now = timezone.now()
         with transaction.atomic():
             for data in fetched:

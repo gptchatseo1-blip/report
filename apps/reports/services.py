@@ -356,7 +356,9 @@ def build_source_facts(
         all_traffic_totals = []
         options = display_options or {}
         segment = "search" if options.get("metrika_search_segment", True) else "all"
-        robotness = options.get("metrika_robotness", "humans")
+        robotness = options.get("metrika_robotness")
+        if robotness not in {"humans", "all"}:
+            robotness = "humans"
         prefix = f"segment_{segment}_{robotness}_"
         for snapshot in snapshots:
             raw_metrics = {point.metric_code: point for point in snapshot.metrics.all()}
@@ -365,6 +367,8 @@ def build_source_facts(
                 code: point
                 for code, point in raw_metrics.items()
                 if not code.startswith("segment_")
+                and not code.startswith("source_humans_")
+                and not code.startswith("source_all_")
             }
             if source == SourceSnapshot.Source.METRIKA:
                 metrics.update(
@@ -374,6 +378,20 @@ def build_source_facts(
                         if code.startswith(prefix)
                     }
                 )
+                source_prefix = f"source_{robotness}_"
+                selected_source_metrics = {
+                    f"source_{code.removeprefix(source_prefix)}": point
+                    for code, point in raw_metrics.items()
+                    if code.startswith(source_prefix)
+                }
+                if selected_source_metrics:
+                    metrics.update(selected_source_metrics)
+                elif robotness == "all":
+                    metrics = {
+                        code: point
+                        for code, point in metrics.items()
+                        if not code.startswith("source_")
+                    }
             points.append((snapshot, metrics))
         # One point has no comparison period: do not manufacture a zero change.
         first = points[0][1] if len(points) >= 2 else {}
@@ -427,7 +445,15 @@ def build_source_facts(
         if source == SourceSnapshot.Source.METRIKA:
             source_api_total = None
             if snapshots:
-                raw_total = (snapshots[-1].payload.get("traffic_source_total") or {}).get("visits")
+                source_variant = (snapshots[-1].payload.get("traffic_source_variants") or {}).get(
+                    robotness
+                ) or {}
+                total_payload = source_variant.get("total") or (
+                    snapshots[-1].payload.get("traffic_source_total") or {}
+                    if robotness == "humans"
+                    else {}
+                )
+                raw_total = total_payload.get("visits")
                 try:
                     source_api_total = Decimal(str(raw_total)) if raw_total is not None else None
                 except (ArithmeticError, ValueError):

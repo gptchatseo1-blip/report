@@ -320,7 +320,7 @@ def apply():
             return current_monthly_renderer(doc, segment, show_visibility=False)
         return _render_monthly_table_with_visibility(exp, doc, segment)
 
-    exp.GENERATOR_VERSION = "mvp1.16-2026-09-09"
+    exp.GENERATOR_VERSION = "mvp1.17-2026-09-09"
     exp._topvisor_buckets = lambda distribution, depth: _manual_buckets_with_yandex_tail(
         current_buckets, distribution, depth
     )

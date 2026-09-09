@@ -206,6 +206,7 @@ def test_report_defaults_select_only_top_10_and_search_segment(project):
     assert form["metrika_search_segment"].value() is True
     assert form["include_metrika_sources_table"].value() is False
     assert form["metrika_goals_quarter"].value() is True
+    assert form["metrika_goals_humans_only"].value() is True
     assert form["metrika_categories_combined"].value() is False
     assert form["webmaster_date_from"].value() == form.report_month
     assert form["webmaster_date_to"].value().month == form.report_month.month

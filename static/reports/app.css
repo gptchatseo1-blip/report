@@ -32,7 +32,8 @@
 .actions { gap: .875rem; flex-wrap: wrap; align-items: center; }
 .heading-with-add { display: flex; flex-direction: row; align-items: center; gap: .7rem; white-space: nowrap; }
 .heading-with-add h1 { margin: 0; }
-.compact-add { display: inline-grid; place-items: center; width: 2.25rem; height: 2.25rem; padding: 0; border-radius: 7px; font-size: 1.45rem; line-height: 1; }
+.compact-add { display: inline-grid; place-items: center; width: 2.25rem; height: 2.25rem; padding: 0; border-radius: 7px; line-height: 1; }
+.compact-add svg { display:block; width:1.15rem; height:1.15rem; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
 .settings-links { display: flex; align-items: center; justify-content: flex-end; gap: .45rem; flex-wrap: wrap; }
 .settings-links > span { font-weight: 600; color: #526174; }
 .settings-links .button { min-height: 2.45rem; padding: .5rem .8rem; border: 1px solid #dde3ec; background: #eef2f8; }
@@ -80,6 +81,17 @@
 .option-card:last-child { grid-column: 1 / -1; width: 100%; }
 .parent-setting { margin: .5rem 0; padding: .1rem 0; }
 .nested-setting { margin: .35rem 0 .7rem 1.45rem; padding: .55rem .65rem; border-left: 3px solid #cbd7eb; border-radius: 0 7px 7px 0; background: #fff; }
+.aligned-setting > .url-option { align-items:flex-start; }
+.aligned-setting > .url-option > span { min-width:0; }
+.nested-checkbox-setting,.nested-checkbox-option { --nested-copy-color:#667085; }
+.nested-setting .nested-checkbox-option { margin:.05rem 0 .55rem; }
+.nested-setting .nested-checkbox-option:last-of-type { margin-bottom:.35rem; }
+.nested-setting .url-option input[type=checkbox] { width:1.1rem; height:1.1rem; margin:.17rem 0 0; }
+.nested-setting .url-option small { color:var(--nested-copy-color); line-height:1.35; }
+.search-engine-details { margin-left:1.45rem; }
+.search-engine-details .search-engine-options { display:grid; grid-template-columns:repeat(4,max-content); align-items:center; gap:.55rem 1rem; }
+.search-engine-details .search-engine-options > strong { grid-column:1/-1; }
+.search-engine-details .search-engine-options label { white-space:nowrap; }
 .nested-setting.disabled-setting { opacity: .55; }
 .attribution-setting { max-width: 20rem; }
 .attribution-setting label { display: grid; gap: .3rem; color: #526174; font-size: .78rem; }

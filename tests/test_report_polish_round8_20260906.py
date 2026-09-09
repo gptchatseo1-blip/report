@@ -20,7 +20,7 @@ def test_round8_export_forces_visibility_column_and_compact_distribution():
     assert "outer_width = 4.15 if columns == 2 else 4.35" in source
     assert "size=11" in source
     assert 'label="Видимость"' not in source
-    assert 'exp.GENERATOR_VERSION = "mvp1.16-2026-09-09"' in source
+    assert 'exp.GENERATOR_VERSION = "mvp1.17-2026-09-09"' in source
 
 
 def test_current_manual_editor_is_not_overwritten_by_legacy_scripts():

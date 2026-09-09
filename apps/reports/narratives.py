@@ -45,7 +45,7 @@ TOP_SECTION_RANGES = {
 def section_enabled(payload, code):
     """Apply frozen report options while keeping legacy snapshots exportable."""
     options = payload.get("display_options", {})
-    if options.get("configuration_version") not in {2, 3}:
+    if str(options.get("configuration_version")) not in {"2", "3"}:
         return code not in {"top_5", "top_20", "top_11_30", "top_30", "geography"}
     if code == "visibility":
         return options.get("include_visibility", True)

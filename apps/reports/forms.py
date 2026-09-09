@@ -54,6 +54,7 @@ PERSISTED_REPORT_FIELDS = (
     "include_metrika_categories",
     "metrika_categories_combined",
     "include_metrika_goals",
+    "metrika_goals_humans_only",
     "metrika_goals_quarter",
     "topvisor_manual_rows",
     "metrika_info_url_groups",
@@ -82,6 +83,7 @@ BOOLEAN_REPORT_FIELDS = frozenset(
         "geography_undefined",
         "geography_area_undefined",
         "metrika_categories_combined",
+        "metrika_goals_humans_only",
         "metrika_goals_quarter",
     }
 )
@@ -313,7 +315,7 @@ class ReportCreateForm(forms.Form):
             ("google", "Google"),
             ("yandex", "Яндекс"),
             ("bing", "Bing"),
-            ("yahoo", "Yahoo"),
+            ("yahoo", "Yahoo!"),
         ),
         widget=forms.CheckboxSelectMultiple,
     )
@@ -414,6 +416,9 @@ class ReportCreateForm(forms.Form):
         ),
     )
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)
+    metrika_goals_humans_only = forms.BooleanField(
+        label="Роботность: только люди", required=False, initial=True
+    )
     metrika_goals_quarter = forms.BooleanField(
         label="Выводить значения за квартал", required=False, initial=True
     )

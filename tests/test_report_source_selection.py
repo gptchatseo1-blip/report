@@ -244,6 +244,55 @@ def test_metrika_search_segment_changes_traffic_but_not_source_breakdown():
     )
 
 
+def test_metrika_robotness_selects_matching_traffic_and_source_series():
+    project = Project.objects.create(name="Robotness", domain="robotness.example")
+    snapshot = SourceSnapshot.objects.create(
+        project=project,
+        source=SourceSnapshot.Source.METRIKA,
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        checksum="robotness",
+        payload={
+            "traffic_source_variants": {
+                "humans": {"total": {"visits": "100"}},
+                "all": {"total": {"visits": "120"}},
+            }
+        },
+    )
+    for code, value in (
+        ("segment_search_humans_visits", 80),
+        ("segment_search_all_visits", 95),
+        ("source_humans_search_visits", 75),
+        ("source_all_search_visits", 90),
+    ):
+        MetricPoint.objects.create(
+            snapshot=snapshot,
+            metric_code=code,
+            numeric_value=value,
+            unit=MetricPoint.Unit.COUNT,
+        )
+
+    humans = build_source_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_snapshot_ids={SourceSnapshot.Source.METRIKA: [str(snapshot.id)]},
+        display_options={"metrika_search_segment": True, "metrika_robotness": "humans"},
+    )["sources"][SourceSnapshot.Source.METRIKA]
+    all_visits = build_source_facts(
+        project=project,
+        report_month=date(2026, 7, 1),
+        selected_snapshot_ids={SourceSnapshot.Source.METRIKA: [str(snapshot.id)]},
+        display_options={"metrika_search_segment": True, "metrika_robotness": "all"},
+    )["sources"][SourceSnapshot.Source.METRIKA]
+
+    assert humans["normalized_changes"]["visits"].current == Decimal("80")
+    assert all_visits["normalized_changes"]["visits"].current == Decimal("95")
+    assert humans["traffic_sources"].shares["search"] == Decimal("75")
+    assert all_visits["traffic_sources"].shares["search"] == Decimal("75")
+    assert humans["traffic_source_dynamics"]["search"]["change"].current == Decimal("75")
+    assert all_visits["traffic_source_dynamics"]["search"]["change"].current == Decimal("90")
+
+
 def test_single_source_period_has_no_previous_value_or_zero_change():
     project = Project.objects.create(name="Single", domain="single.example")
     snapshot = source_snapshot(
