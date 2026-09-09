@@ -734,6 +734,42 @@ def test_report_snapshot_contains_safe_source_metadata(identity, yandex_settings
     )
 
 
+def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
+    identity, yandex_settings, monkeypatch
+):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
+    report = Report.objects.create(project=mapping.project, report_month=date(2026, 3, 1))
+
+    def fail_legacy_payload_load(*_args, **_kwargs):
+        raise AssertionError("modern Metrika snapshot loaded the complete JSON payload")
+
+    monkeypatch.setattr("apps.reports.services._report_metrika_payload", fail_legacy_payload_load)
+    version = create_report_version(
+        report=report,
+        created_by=identity[0],
+        selection={
+            "display_options": {
+                "metrika_robotness": "humans",
+                "metrika_search_segment": True,
+                "metrika_goals_humans_only": True,
+            },
+            "yandex_metrika": list(
+                SourceSnapshot.objects.filter(project=mapping.project).values_list(
+                    "id", flat=True
+                )
+            ),
+            "yandex_webmaster": [],
+        },
+    )
+
+    period_payload = version.snapshot.payload["calculated"]["sources"]["sources"][
+        SourceSnapshot.Source.METRIKA
+    ]["period_details"][0]["payload"]
+    assert set(period_payload["detail_variants"]) == {"search"}
+    assert set(period_payload["detail_variants"]["search"]) == {"humans"}
+
+
 class Response:
     def __init__(self, payload):
         self.payload = payload
