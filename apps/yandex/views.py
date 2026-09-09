@@ -105,6 +105,11 @@ def _sync_json(mapping, source, run):
             {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
             status=400,
         )
+    snapshot_rows = SourceSnapshot.objects.filter(project=mapping.project, source=source)
+    if source == SourceSnapshot.Source.METRIKA:
+        # Status polling needs period labels, not the potentially huge detail
+        # payload stored for every synchronized month.
+        snapshot_rows = snapshot_rows.defer("payload")
     periods = [
         {
             "id": str(row.id),
@@ -119,9 +124,7 @@ def _sync_json(mapping, source, run):
                 + f"{row.period_start:%d.%m.%Y} — {row.period_end:%d.%m.%Y}"
             ),
         }
-        for row in SourceSnapshot.objects.filter(project=mapping.project, source=source).order_by(
-            "-period_start", "-period_end", "id"
-        )
+        for row in snapshot_rows.order_by("-period_start", "-period_end", "id")
     ]
     return JsonResponse(
         {
