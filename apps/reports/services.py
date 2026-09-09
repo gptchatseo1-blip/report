@@ -15,6 +15,7 @@ from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.db.models import Max
+from django.db.models.fields.json import KeyTransform
 from django.utils import timezone
 from PIL import Image
 
@@ -118,6 +119,98 @@ def _report_metrika_payload(payload, display_options):
         goal_robotness
     ) or []
     compact["goals_by_segment"] = {segment: {goal_robotness: goal_rows}}
+    return redact_sensitive_source_data(compact)
+
+
+def _json_path(*keys):
+    """Build a JSON key transform without selecting the complete JSON column."""
+    expression = "payload"
+    for key in keys:
+        expression = KeyTransform(key, expression)
+    return expression
+
+
+def _metrika_payload_annotations(display_options):
+    """Return only report-visible Metrika JSON branches from PostgreSQL.
+
+    A synchronized source snapshot can contain four copies of 10,000-row detail
+    reports.  Loading ``SourceSnapshot.payload`` and compacting it in Python makes
+    the web worker decode every copy first, which can consume more than 1 GB.  JSON
+    key transforms make the database return only the selected branches.
+    """
+    options = display_options or {}
+    robotness = options.get("metrika_robotness")
+    if robotness not in {"humans", "all"}:
+        robotness = "humans"
+    segment = "search" if options.get("metrika_search_segment", True) else "all"
+    goal_robotness = "humans" if options.get("metrika_goals_humans_only", True) else "all"
+    return {
+        "report_payload_schema_version": _json_path("schema_version"),
+        "report_payload_source": _json_path("source"),
+        "report_payload_retrieval_method": _json_path("retrieval_method"),
+        "report_payload_counter_id": _json_path("counter_id"),
+        "report_payload_sync_fingerprint": _json_path("sync_fingerprint"),
+        "report_payload_retrieved_at": _json_path("retrieved_at"),
+        "report_payload_contains_sensitive_data": _json_path("contains_sensitive_data"),
+        "report_payload_unavailable_goal_ids": _json_path("unavailable_goal_ids"),
+        "report_payload_sampled": _json_path("sampled"),
+        "report_payload_sample_share": _json_path("sample_share"),
+        "report_payload_search_segment": _json_path("search_segment"),
+        "report_detail_selected": _json_path("detail_variants", segment, robotness),
+        "report_detail_search": _json_path("detail_variants", "search", robotness),
+        "report_traffic_source_variant": _json_path("traffic_source_variants", robotness),
+        "report_traffic_source_quarter_variant": _json_path(
+            "traffic_source_quarter_variants", robotness
+        ),
+        "report_goal_rows": _json_path("goals_by_segment", segment, goal_robotness),
+    }
+
+
+def _report_metrika_payload_from_snapshot(snapshot, display_options):
+    """Build the compact report payload from DB-extracted JSON branches."""
+    selected_detail = getattr(snapshot, "report_detail_selected", None)
+    search_detail = getattr(snapshot, "report_detail_search", None)
+    if selected_detail is None and search_detail is None:
+        # Compatibility path for old, substantially smaller source snapshots.
+        return _report_metrika_payload(snapshot.payload, display_options)
+
+    options = display_options or {}
+    robotness = options.get("metrika_robotness")
+    if robotness not in {"humans", "all"}:
+        robotness = "humans"
+    segment = "search" if options.get("metrika_search_segment", True) else "all"
+    goal_robotness = "humans" if options.get("metrika_goals_humans_only", True) else "all"
+    compact = {}
+    for key in (
+        "schema_version",
+        "source",
+        "retrieval_method",
+        "counter_id",
+        "sync_fingerprint",
+        "retrieved_at",
+        "contains_sensitive_data",
+        "unavailable_goal_ids",
+        "sampled",
+        "sample_share",
+        "search_segment",
+    ):
+        value = getattr(snapshot, f"report_payload_{key}", None)
+        if value is not None:
+            compact[key] = value
+    compact["detail_variants"] = {
+        "search": {robotness: search_detail or {}},
+    }
+    if segment != "search":
+        compact["detail_variants"][segment] = {robotness: selected_detail or {}}
+    compact["traffic_source_variants"] = {
+        robotness: getattr(snapshot, "report_traffic_source_variant", None) or {}
+    }
+    quarter = getattr(snapshot, "report_traffic_source_quarter_variant", None) or {}
+    if quarter:
+        compact["traffic_source_quarter_variants"] = {robotness: quarter}
+    compact["goals_by_segment"] = {
+        segment: {goal_robotness: getattr(snapshot, "report_goal_rows", None) or []}
+    }
     return redact_sensitive_source_data(compact)
 
 
@@ -397,12 +490,14 @@ def build_source_facts(
             )
         else:
             rows = SourceSnapshot.objects.filter(project=project, source=source, id__in=ids)
+        options = display_options or {}
+        if source == SourceSnapshot.Source.METRIKA:
+            rows = rows.defer("payload").annotate(**_metrika_payload_annotations(options))
         snapshots = list(
             rows.prefetch_related("metrics").order_by("period_start", "period_end", "id")
         )
         points = []
         all_traffic_totals = []
-        options = display_options or {}
         segment = "search" if options.get("metrika_search_segment", True) else "all"
         robotness = options.get("metrika_robotness")
         if robotness not in {"humans", "all"}:
@@ -485,9 +580,13 @@ def build_source_facts(
                 "period_start": snapshot.period_start,
                 "period_end": snapshot.period_end,
                 "source_key": snapshot.source_key,
-                "host_url": snapshot.payload.get("host_url", ""),
+                "host_url": (
+                    ""
+                    if source == SourceSnapshot.Source.METRIKA
+                    else snapshot.payload.get("host_url", "")
+                ),
                 "payload": (
-                    _report_metrika_payload(snapshot.payload, options)
+                    _report_metrika_payload_from_snapshot(snapshot, options)
                     if source == SourceSnapshot.Source.METRIKA
                     else redact_sensitive_source_data(snapshot.payload)
                 ),
@@ -497,12 +596,16 @@ def build_source_facts(
         if source == SourceSnapshot.Source.METRIKA:
             source_api_total = None
             if snapshots:
-                source_variant = (snapshots[-1].payload.get("traffic_source_variants") or {}).get(
-                    robotness
-                ) or {}
+                source_variant = (
+                    getattr(snapshots[-1], "report_traffic_source_variant", None) or {}
+                )
                 total_payload = source_variant.get("total") or (
+                    # Legacy snapshots do not have extracted variants and are
+                    # small enough for the compatibility path above.
                     snapshots[-1].payload.get("traffic_source_total") or {}
-                    if robotness == "humans"
+                    if source_variant == {}
+                    and getattr(snapshots[-1], "report_detail_selected", None) is None
+                    and robotness == "humans"
                     else {}
                 )
                 raw_total = total_payload.get("visits")
