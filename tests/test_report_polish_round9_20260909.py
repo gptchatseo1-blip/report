@@ -2,6 +2,7 @@ from datetime import date
 from pathlib import Path
 
 from docx import Document
+from matplotlib.colors import to_rgba
 from PIL import Image
 
 from apps.reports import exporting
@@ -221,6 +222,40 @@ def test_zero_metrika_series_are_omitted_from_chart_and_legend(monkeypatch):
     legend_labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
     assert len(figure.axes[0].lines) == 1
     assert all("рекламе" not in label for label in legend_labels)
+
+
+def test_metrika_source_lines_and_legend_use_unique_matching_colors(monkeypatch):
+    monkeypatch.setattr(exporting, "_save_figure", lambda figure: figure)
+    facts = {
+        name: {
+            "series": [{"month": "2026-08-01", "value": index + 1}],
+            "change": {"current": index + 1},
+        }
+        for index, name in enumerate(exporting.METRIKA_SOURCE_COLORS)
+    }
+
+    figure = exporting._metrika_sources_chart(facts)
+    line_colors = [line.get_color() for line in figure.axes[0].lines]
+    legend_colors = [
+        handle.get_facecolor() for handle in figure.axes[0].get_legend().legend_handles
+    ]
+
+    assert len(line_colors) == len(set(line_colors))
+    assert [to_rgba(color) for color in line_colors] == legend_colors
+
+
+def test_reference_period_controls_are_at_most_30_logical_pixels_high():
+    images = (
+        exporting._webmaster_period_image("01 август 2026 — 31 август 2026"),
+        exporting._webmaster_period_image("01 август 2026 — 31 август 2026", detail="по дням"),
+        exporting._metrika_period_image("1 июня — 31 августа", detail="месяцам"),
+        exporting._period_pills_image([("1—30 июня ⌄", "A"), ("⇄", "swap"), ("1—31 июля ⌄", "B")]),
+    )
+
+    for image in images:
+        with Image.open(image) as rendered:
+            logical_height = rendered.height / rendered.info["dpi"][1] * 96
+            assert logical_height <= 30.1
 
 
 def test_generated_images_are_print_quality_and_docx_disables_compression():

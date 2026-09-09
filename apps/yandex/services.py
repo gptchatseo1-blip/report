@@ -1,6 +1,9 @@
+import gc
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from calendar import monthrange
 from collections import Counter
 from datetime import date, datetime, time, timedelta
@@ -64,7 +67,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-09-v10"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-09-09-v11"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-08-v7"
 GOALS_PER_REQUEST = 6
 
@@ -324,15 +327,15 @@ def _geography_totals(rows):
 def _geography_code(item):
     area = _dimension_name(item, 0)
     city = _dimension_name(item, 1)
+    undefined = {"", "не определено", "undefined", "not defined"}
+    if area in {"область не определена", "area not defined"}:
+        return "area_undefined"
+    if area in undefined:
+        return "undefined"
     if city in {"москва", "moscow"}:
         return "moscow"
     if city in {"санкт-петербург", "saint petersburg", "st. petersburg"}:
         return "saint_petersburg"
-    undefined = {"", "не определено", "undefined", "not defined"}
-    if area in undefined | {"область не определена", "area not defined"}:
-        return "area_undefined"
-    if city in undefined:
-        return "undefined"
     return None
 
 
@@ -729,10 +732,97 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
     }
 
 
-def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh=False):
+def enqueue_metrika_sync(*, mapping, report_month, user=None, force_refresh=False):
+    """Queue a Metrika import without occupying the HTTP worker."""
     month = report_month.replace(day=1)
-    run = YandexMetrikaSyncRun.objects.create(mapping=mapping, report_month=month)
+    with transaction.atomic():
+        locked_mapping = type(mapping).objects.select_for_update().get(pk=mapping.pk)
+        active = (
+            locked_mapping.sync_runs.filter(
+                status__in=(
+                    YandexMetrikaSyncRun.Status.QUEUED,
+                    YandexMetrikaSyncRun.Status.RUNNING,
+                )
+            )
+            .order_by("started_at")
+            .first()
+        )
+        if active:
+            active.already_active = True
+            return active
+        run = YandexMetrikaSyncRun.objects.create(
+            mapping=locked_mapping,
+            report_month=month,
+            status=YandexMetrikaSyncRun.Status.QUEUED,
+            force_refresh=force_refresh,
+            requested_by=user,
+        )
+    run.already_active = False
+    return run
+
+
+def _store_metrika_month(*, mapping, data, user, fingerprint, retrieved_at):
+    payload = {
+        "schema_version": 2,
+        "source": "yandex_metrika",
+        "retrieval_method": "yandex_api",
+        "counter_id": mapping.counter_id,
+        "sync_fingerprint": fingerprint,
+        **data,
+        "retrieved_at": retrieved_at.isoformat(),
+        "contains_sensitive_data": False,
+    }
+    checksum = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    snapshot, _ = SourceSnapshot.objects.update_or_create(
+        project=mapping.project,
+        source=SourceSnapshot.Source.METRIKA,
+        period_start=date.fromisoformat(data["period_start"]),
+        period_end=date.fromisoformat(data["period_end"]),
+        defaults={
+            "retrieval_method": SourceSnapshot.RetrievalMethod.YANDEX_API,
+            "payload": payload,
+            "checksum": checksum,
+            "generated_by": user,
+            "retrieved_at": retrieved_at,
+            "provenance": {
+                "method": "yandex_api",
+                "counter_id": mapping.counter_id,
+                "collector_version": METRIKA_COLLECTOR_VERSION,
+                "sync_fingerprint": fingerprint,
+                "period": f"{data['period_start']}/{data['period_end']}",
+                "retrieved_at": retrieved_at.isoformat(),
+            },
+            "sampling": {"sampled": data["sampled"], "share": data["sample_share"]},
+            "contains_sensitive_data": False,
+        },
+    )
+    snapshot.metrics.all().delete()
+    MetricPoint.objects.bulk_create(
+        [
+            MetricPoint(
+                snapshot=snapshot,
+                metric_code=point["code"],
+                numeric_value=Decimal(point["value"]),
+                unit=point["unit"],
+                dimensions=point["dimensions"],
+            )
+            for point in data["metrics"]
+        ]
+    )
+
+
+def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh=False, run=None):
+    month = report_month.replace(day=1)
+    run = run or YandexMetrikaSyncRun.objects.create(
+        mapping=mapping,
+        report_month=month,
+        force_refresh=force_refresh,
+        requested_by=user,
+    )
     client = client or MetrikaClient(mapping.connection)
+    staged_paths = []
     try:
         prune_sync_runs(mapping.project)
         months = tuple(shift_month(month, offset) for offset in (-2, -1, 0))
@@ -751,12 +841,11 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
         # A manual sync must refresh the report month: Metrika can revise recent
         # attribution data after the first collection. Older months remain reusable.
         reusable.pop(month, None)
-        fetched = [
-            _fetch_month(client, mapping, period, attribution=attribution)
-            for period in months
-            if period not in reusable
-        ]
-        for data in fetched:
+        unavailable_goal_ids = set()
+        for period in months:
+            if period in reusable:
+                continue
+            data = _fetch_month(client, mapping, period, attribution=attribution)
             if data["period_start"] == month.isoformat():
                 quarter_variants = {}
                 for robotness in ("humans", "all"):
@@ -775,70 +864,44 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
                 data["traffic_source_quarter_variants"] = quarter_variants
                 data["traffic_source_quarter_details"] = quarter_variants["humans"]["rows"]
                 data["traffic_source_quarter_total"] = quarter_variants["humans"]["total"]
+            unavailable_goal_ids.update(data.get("unavailable_goal_ids", []))
+            handle, path = tempfile.mkstemp(prefix="metrika-sync-", suffix=".json")
+            with os.fdopen(handle, "w", encoding="utf-8") as output:
+                json.dump(data, output, ensure_ascii=False, separators=(",", ":"))
+            staged_paths.append(path)
+            del data
+            gc.collect()
         now = timezone.now()
         with transaction.atomic():
-            for data in fetched:
-                payload = {
-                    "schema_version": 2,
-                    "source": "yandex_metrika",
-                    "retrieval_method": "yandex_api",
-                    "counter_id": mapping.counter_id,
-                    "sync_fingerprint": fingerprint,
-                    **data,
-                    "retrieved_at": now.isoformat(),
-                    "contains_sensitive_data": False,
-                }
-                checksum = hashlib.sha256(
-                    json.dumps(
-                        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-                    ).encode()
-                ).hexdigest()
-                snapshot, _ = SourceSnapshot.objects.update_or_create(
-                    project=mapping.project,
-                    source=SourceSnapshot.Source.METRIKA,
-                    period_start=date.fromisoformat(data["period_start"]),
-                    period_end=date.fromisoformat(data["period_end"]),
-                    defaults={
-                        "retrieval_method": SourceSnapshot.RetrievalMethod.YANDEX_API,
-                        "payload": payload,
-                        "checksum": checksum,
-                        "generated_by": user,
-                        "retrieved_at": now,
-                        "provenance": {
-                            "method": "yandex_api",
-                            "counter_id": mapping.counter_id,
-                            "collector_version": METRIKA_COLLECTOR_VERSION,
-                            "sync_fingerprint": fingerprint,
-                            "period": f"{data['period_start']}/{data['period_end']}",
-                            "retrieved_at": now.isoformat(),
-                        },
-                        "sampling": {"sampled": data["sampled"], "share": data["sample_share"]},
-                        "contains_sensitive_data": False,
-                    },
+            for path in staged_paths:
+                with open(path, encoding="utf-8") as source:
+                    data = json.load(source)
+                _store_metrika_month(
+                    mapping=mapping,
+                    data=data,
+                    user=user,
+                    fingerprint=fingerprint,
+                    retrieved_at=now,
                 )
-                snapshot.metrics.all().delete()
-                MetricPoint.objects.bulk_create(
-                    [
-                        MetricPoint(
-                            snapshot=snapshot,
-                            metric_code=p["code"],
-                            numeric_value=Decimal(p["value"]),
-                            unit=p["unit"],
-                            dimensions=p["dimensions"],
-                        )
-                        for p in data["metrics"]
-                    ]
-                )
+                del data
+                gc.collect()
             mapping.last_successful_sync_at = now
             mapping.save(update_fields=["last_successful_sync_at", "updated_at"])
             run.status = run.Status.SUCCESS
             run.completed_at = now
-            run.save(update_fields=["status", "completed_at"])
-        run.fetched_period_count = len(fetched)
+            run.fetched_period_count = len(staged_paths)
+            run.reused_period_count = len(reusable)
+            run.unavailable_goal_ids = sorted(unavailable_goal_ids)
+            run.save(
+                update_fields=[
+                    "status",
+                    "completed_at",
+                    "fetched_period_count",
+                    "reused_period_count",
+                    "unavailable_goal_ids",
+                ]
+            )
         run.reused_period_count = len(reusable)
-        run.unavailable_goal_ids = sorted(
-            {goal_id for data in fetched for goal_id in data.get("unavailable_goal_ids", [])}
-        )
         return run
     except YandexUnauthorized:
         logger.warning(
@@ -875,6 +938,30 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
         run.error_message = "Не удалось синхронизировать данные Метрики. Повторите позже."
         run.save(update_fields=["status", "completed_at", "error_message"])
         return run
+    finally:
+        for path in staged_paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+
+def execute_queued_metrika_sync(run_id):
+    run = YandexMetrikaSyncRun.objects.select_related(
+        "mapping__project", "mapping__connection", "requested_by"
+    ).get(pk=run_id)
+    if run.status == run.Status.QUEUED:
+        run.status = run.Status.RUNNING
+        run.save(update_fields=["status"])
+    if run.status != run.Status.RUNNING:
+        return run
+    return sync_metrika(
+        mapping=run.mapping,
+        report_month=run.report_month,
+        user=run.requested_by,
+        force_refresh=run.force_refresh,
+        run=run,
+    )
 
 
 def _dated_rows(response):

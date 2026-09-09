@@ -23,7 +23,12 @@ from apps.yandex.models import (
     YandexMetrikaSyncRun,
     YandexOAuthState,
 )
-from apps.yandex.services import prune_sync_runs, sync_metrika
+from apps.yandex.services import (
+    enqueue_metrika_sync,
+    execute_queued_metrika_sync,
+    prune_sync_runs,
+    sync_metrika,
+)
 from apps.yandex.views import consume_oauth_state
 
 pytestmark = pytest.mark.django_db
@@ -422,6 +427,13 @@ class FakeMetrika:
                         ],
                         "metrics": [3],
                     },
+                    {
+                        "dimensions": [
+                            {"id": "0", "name": "Не определено"},
+                            {"id": "0", "name": "Не определено"},
+                        ],
+                        "metrics": [3],
+                    },
                 ]
             }
         if params.get("dimensions"):
@@ -492,6 +504,37 @@ def test_sync_three_months_goals_sources_sampling_and_idempotency(identity, yand
     assert (cached.fetched_period_count, cached.reused_period_count) == (1, 2)
     assert SourceSnapshot.objects.filter(project=mapping.project).count() == 3
     assert MetricPoint.objects.filter(snapshot__project=mapping.project).count() == len(points) * 3
+
+
+def test_metrika_sync_is_queued_deduplicated_and_executed_outside_request(
+    client, identity, yandex_settings, monkeypatch
+):
+    mapping = mapping_with_goal(identity, yandex_settings)
+    user, project = identity
+    client.force_login(user)
+
+    response = client.post(
+        reverse("yandex:sync", args=[project.id]),
+        {"month": "2026-03"},
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+    assert response.status_code == 202
+    run = YandexMetrikaSyncRun.objects.get(pk=response.json()["run_id"])
+    assert run.status == run.Status.QUEUED
+    duplicate = enqueue_metrika_sync(mapping=mapping, report_month=date(2026, 4, 1), user=user)
+    assert duplicate.pk == run.pk
+    assert duplicate.already_active is True
+
+    monkeypatch.setattr("apps.yandex.services.MetrikaClient", lambda _connection: FakeMetrika())
+    executed = execute_queued_metrika_sync(run.pk)
+
+    assert executed.status == executed.Status.SUCCESS
+    assert executed.fetched_period_count == 3
+    assert SourceSnapshot.objects.filter(project=project).count() == 3
+    status = client.get(response.json()["status_url"])
+    assert status.status_code == 200
+    assert status.json()["ok"] is True
 
 
 def test_default_search_segment_uses_last_significant_attribution(identity, yandex_settings):

@@ -19,6 +19,10 @@ docker compose exec web python manage.py createsuperuser
 <http://localhost:8000/health/> (`{"status": "ok"}`). При старте web-контейнера
 миграции применяются автоматически.
 
+Синхронизация Яндекс.Метрики выполняется сервисом `metrika-worker`, чтобы долгий
+ответ API не занимал web-worker. При выборочном обновлении контейнеров запускайте
+оба сервиса: `docker compose up -d web metrika-worker`.
+
 Импорт позиций: <http://localhost:8000/imports/upload/>.
 
 Синтетические источники: <http://localhost:8000/metrics/synthetic/>. Для выбранного

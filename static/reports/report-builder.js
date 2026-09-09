@@ -6,6 +6,18 @@
   const csrf = form.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
   let saveTimer;
 
+  const waitForQueuedSync = async data => {
+    while (data.queued && data.status_url) {
+      await new Promise(resolve => window.setTimeout(resolve, 2000));
+      const response = await fetch(data.status_url, {credentials: 'same-origin'});
+      data = await response.json();
+      if (!response.ok && response.status !== 202) {
+        throw new Error(data.message || 'Синхронизация не выполнена.');
+      }
+    }
+    return data;
+  };
+
   const manualField = form.querySelector('[name=topvisor_manual_rows]');
   const useCurrentManualEditor = form.dataset.manualEditorVersion === '2';
   const manualContainer = useCurrentManualEditor
@@ -355,8 +367,10 @@
           headers: {'X-Requested-With': 'XMLHttpRequest'},
           body: new FormData(syncForm),
         });
-        const data = await response.json();
+        let data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || 'Синхронизация не выполнена.');
+        if (data.queued && status) status.textContent = data.message;
+        data = await waitForQueuedSync(data);
         replacePeriods(card, data.periods || [], sourceName);
         const lastSynced = card?.querySelector('[data-last-synced]');
         if (lastSynced) lastSynced.textContent = data.last_synced_at;
@@ -399,10 +413,12 @@
         try {
           const response = await fetch(source.action, {method: 'POST', credentials: 'same-origin', headers: {'X-Requested-With': 'XMLHttpRequest'}, body: new FormData(source)});
           const contentType = response.headers.get('content-type') || '';
-          const data = contentType.includes('application/json')
+          let data = contentType.includes('application/json')
             ? await response.json()
             : {ok: false, message: `Сервер вернул некорректный ответ (${response.status}).`};
           if (!response.ok || !data.ok) throw new Error(data.message || 'ошибка синхронизации');
+          if (data.queued && status) status.textContent = data.message;
+          data = await waitForQueuedSync(data);
           if (source.dataset.sourceName && data.periods) {
             const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
             replacePeriods(card, data.periods, source.dataset.sourceName);

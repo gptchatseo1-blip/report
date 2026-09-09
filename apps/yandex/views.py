@@ -32,7 +32,8 @@ from .models import (
     YandexWebmasterProjectMapping,
     YandexWebmasterSyncRun,
 )
-from .services import sync_metrika, sync_webmaster
+from .services import enqueue_metrika_sync as sync_metrika
+from .services import sync_webmaster
 
 METRIKA_SCOPE = "metrika:read"
 WEBMASTER_SCOPES = ("webmaster:hostinfo", "webmaster:verify")
@@ -76,6 +77,29 @@ def _sync_message(run):
 
 
 def _sync_json(mapping, source, run):
+    if run.status in {
+        YandexMetrikaSyncRun.Status.QUEUED,
+        YandexMetrikaSyncRun.Status.RUNNING,
+    }:
+        message = (
+            "Синхронизация Метрики уже выполняется."
+            if getattr(run, "already_active", False)
+            or run.status == YandexMetrikaSyncRun.Status.RUNNING
+            else "Синхронизация Метрики поставлена в очередь. Страницу можно закрыть."
+        )
+        return JsonResponse(
+            {
+                "ok": True,
+                "queued": True,
+                "status": run.status,
+                "run_id": run.id,
+                "status_url": reverse(
+                    "yandex:metrika-sync-status", args=[mapping.project_id, run.id]
+                ),
+                "message": message,
+            },
+            status=202,
+        )
     if run.status != run.Status.SUCCESS:
         return JsonResponse(
             {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
@@ -109,6 +133,20 @@ def _sync_json(mapping, source, run):
             "periods": periods,
         }
     )
+
+
+@login_required
+def metrika_sync_status(request, project_id, run_id):
+    if request.method != "GET":
+        return HttpResponseNotAllowed(["GET"])
+    run = get_object_or_404(
+        YandexMetrikaSyncRun.objects.select_related("mapping__project"),
+        pk=run_id,
+        mapping__project_id=project_id,
+        mapping__connection__user=request.user,
+    )
+    run.mapping.refresh_from_db(fields=["last_successful_sync_at"])
+    return _sync_json(run.mapping, SourceSnapshot.Source.METRIKA, run)
 
 
 def _is_other_domain(project, value):
@@ -557,7 +595,15 @@ def select_goals(request, project_id):
                 user=request.user,
                 force_refresh=True,
             )
-            if run.status == run.Status.SUCCESS:
+            if run.status in {
+                YandexMetrikaSyncRun.Status.QUEUED,
+                YandexMetrikaSyncRun.Status.RUNNING,
+            }:
+                messages.success(
+                    request,
+                    "Цели Метрики сохранены. Синхронизация поставлена в очередь.",
+                )
+            elif run.status == run.Status.SUCCESS:
                 messages.success(request, "Цели Метрики сохранены и импортированы в отчёт.")
             else:
                 messages.error(request, run.error_message)
@@ -661,6 +707,14 @@ def sync(request, project_id):
     mapping.refresh_from_db(fields=["last_successful_sync_at"])
     if _is_ajax(request):
         return _sync_json(mapping, SourceSnapshot.Source.METRIKA, run)
+    if run.status in {
+        YandexMetrikaSyncRun.Status.QUEUED,
+        YandexMetrikaSyncRun.Status.RUNNING,
+    }:
+        messages.success(request, "Синхронизация Метрики поставлена в очередь.")
+        if request.POST.get("return_to_reports") == "1":
+            return redirect("reports:report-list", project_id=mapping.project_id)
+        return redirect("yandex:connection", project_id=project_id)
     if run.status == run.Status.SUCCESS:
         messages.success(request, _sync_message(run))
         if request.POST.get("return_to_reports") == "1":

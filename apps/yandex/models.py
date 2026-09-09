@@ -97,6 +97,7 @@ class YandexMetrikaProjectMapping(models.Model):
 
 class YandexMetrikaSyncRun(models.Model):
     class Status(models.TextChoices):
+        QUEUED = "queued", "В очереди"
         RUNNING = "running", "Выполняется"
         SUCCESS = "success", "Завершена"
         FAILED = "failed", "Ошибка"
@@ -106,6 +107,17 @@ class YandexMetrikaSyncRun(models.Model):
     )
     report_month = models.DateField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    force_refresh = models.BooleanField(default=False)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="yandex_metrika_sync_runs",
+    )
+    fetched_period_count = models.PositiveSmallIntegerField(default=0)
+    reused_period_count = models.PositiveSmallIntegerField(default=0)
+    unavailable_goal_ids = models.JSONField(default=list, blank=True)
     error_message = models.CharField(max_length=500, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)

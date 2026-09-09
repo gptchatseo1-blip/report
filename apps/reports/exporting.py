@@ -45,7 +45,7 @@ from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, Va
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.9-2026-09-07"
+GENERATOR_VERSION = "mvp1.10-2026-09-09"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -140,6 +140,20 @@ INDEXING_GROUP_COLORS = (
     "#38A3A5",
 )
 METRIKA_COLORS = ("#7A45E5", "#FF3399", "#0FBDA0", "#3388FF", "#FFB851")
+METRIKA_SOURCE_COLORS = {
+    "search": "#7A45E5",
+    "direct": "#FF3399",
+    "referral": "#0FBDA0",
+    "advertising": "#3388FF",
+    "social": "#FFB851",
+    "internal": "#E88920",
+    "recommend": "#D92772",
+    "messenger": "#2D9CDB",
+    "saved": "#8B98A7",
+    "email": "#00A4A6",
+    "qrcode": "#9B51E0",
+    "other": "#5C6F82",
+}
 CHART_FONT = "sans-serif"
 
 
@@ -333,13 +347,13 @@ def _table(doc, headers, rows, widths=None, *, header_fill=None, cell_fills=None
     return table
 
 
-def _save_figure(figure):
+def _save_figure(figure, *, dpi=450):
     """Save report graphics at print quality for both DOCX and PDF export."""
     output = io.BytesIO()
     figure.savefig(
         output,
         format="png",
-        dpi=450,
+        dpi=dpi,
         facecolor="white",
         metadata={"Software": GENERATOR_VERSION},
     )
@@ -349,70 +363,74 @@ def _save_figure(figure):
 
 
 def _period_pills_image(items):
-    """Render Metrika-like period controls as a sharp, layout-stable image."""
-    widths = [0.9 if marker == "swap" else max(2.4, len(label) * 0.105) for label, marker in items]
-    total = sum(widths) + 0.18 * (len(widths) - 1)
-    with plt.rc_context({"font.family": CHART_FONT, "font.size": 10}):
-        figure, axis = plt.subplots(figsize=(total, 0.55), dpi=300, facecolor="white")
+    """Render the three compact Metrika comparison controls from the reference page."""
+    widths = [
+        0.57 if marker == "swap" else max(1.42, len(label) * 0.076) for label, marker in items
+    ]
+    gap = 0.067
+    total = sum(widths) + gap * (len(widths) - 1)
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 8.5}):
+        figure, axis = plt.subplots(figsize=(total, 0.30), dpi=300, facecolor="white")
         axis.set_xlim(0, total)
-        axis.set_ylim(0, 1)
+        axis.set_ylim(0, 0.30)
         axis.axis("off")
         x = 0
         for (label, marker), width in zip(items, widths, strict=True):
             fill = "#F1F3F6" if marker != "swap" else "#FFFFFF"
             axis.add_patch(
                 FancyBboxPatch(
-                    (x, 0.16),
+                    (x, 0.005),
                     width,
-                    0.68,
-                    boxstyle="round,pad=0.02,rounding_size=0.18",
+                    0.29,
+                    boxstyle="round,pad=0.004,rounding_size=0.10",
                     facecolor=fill,
                     edgecolor="#E1E5EA",
-                    linewidth=0.8,
+                    linewidth=0.65,
                 )
             )
             if marker and marker != "swap":
-                axis.add_patch(plt.Circle((x + 0.3, 0.5), 0.12, color="#FFFFFF"))
+                axis.add_patch(plt.Circle((x + 0.145, 0.15), 0.067, color="#FFFFFF"))
                 axis.text(
-                    x + 0.3, 0.5, marker, ha="center", va="center", fontsize=7, color="#526174"
+                    x + 0.145, 0.15, marker, ha="center", va="center", fontsize=5.8, color="#526174"
                 )
-                text_x = x + 0.52
+                text_x = x + 0.255
             else:
                 text_x = x + width / 2
             axis.text(
                 text_x,
-                0.5,
+                0.15,
                 label,
                 ha="center" if marker == "swap" else "left",
                 va="center",
-                fontsize=9,
+                fontsize=7.4,
                 color="#27303F",
                 fontweight="bold" if marker == "swap" else "normal",
             )
-            x += width + 0.18
+            x += width + gap
         figure.subplots_adjust(0, 0, 1, 1)
-        return _save_figure(figure)
+        return _save_figure(figure, dpi=720)
 
 
 def _webmaster_period_image(period, *, detail=None):
     """Render the date controls used by Yandex Webmaster report pages."""
-    date_width = max(3.7, len(period) * 0.088)
-    detail_width = 2.55 if detail else 0
-    gap = 0.18 if detail else 0
+    date_width = max(2.50 if detail else 3.65, len(period) * (0.060 if detail else 0.076))
+    detail_width = 1.58 if detail else 0
+    gap = 0.17 if detail else 0
     total = date_width + detail_width + gap
-    with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(total, 0.56), dpi=300, facecolor="white")
+    height = 0.30 if detail else 0.28
+    with plt.rc_context({"font.family": CHART_FONT, "font.size": 8}):
+        figure, axis = plt.subplots(figsize=(total, height), dpi=300, facecolor="white")
         axis.set_xlim(0, total)
-        axis.set_ylim(0, 1)
+        axis.set_ylim(0, height)
         axis.axis("off")
 
         def field(x, width):
             axis.add_patch(
                 FancyBboxPatch(
-                    (x, 0.12),
+                    (x, 0.005),
                     width,
-                    0.76,
-                    boxstyle="round,pad=0.015,rounding_size=0.24",
+                    height - 0.01,
+                    boxstyle="round,pad=0.003,rounding_size=0.10",
                     facecolor="#FFFFFF",
                     edgecolor="#DDE2E8",
                     linewidth=0.9,
@@ -420,83 +438,95 @@ def _webmaster_period_image(period, *, detail=None):
             )
 
         field(0, date_width)
-        axis.text(0.18, 0.5, period, ha="left", va="center", fontsize=8.6, color="#252B33")
+        axis.text(0.13, height / 2, period, ha="left", va="center", fontsize=6.8, color="#252B33")
         # Calendar icon from the same control family, reduced to its essential strokes.
-        icon_x = date_width - 0.28
+        icon_x = date_width - 0.16
         axis.add_patch(
             FancyBboxPatch(
-                (icon_x - 0.095, 0.34),
-                0.16,
-                0.27,
-                boxstyle="round,pad=0.008,rounding_size=0.025",
+                (icon_x - 0.066, height / 2 - 0.065),
+                0.12,
+                0.13,
+                boxstyle="round,pad=0.004,rounding_size=0.018",
                 fill=False,
                 edgecolor="#7A838D",
                 linewidth=0.8,
             )
         )
-        axis.plot((icon_x - 0.09, icon_x + 0.06), (0.52, 0.52), color="#7A838D", lw=0.7)
-        axis.plot((icon_x - 0.05, icon_x - 0.05), (0.59, 0.65), color="#7A838D", lw=0.8)
-        axis.plot((icon_x + 0.02, icon_x + 0.02), (0.59, 0.65), color="#7A838D", lw=0.8)
+        axis.plot(
+            (icon_x - 0.06, icon_x + 0.05), (height / 2 + 0.02,) * 2, color="#7A838D", lw=0.65
+        )
+        axis.plot(
+            (icon_x - 0.035, icon_x - 0.035),
+            (height / 2 + 0.05, height / 2 + 0.085),
+            color="#7A838D",
+            lw=0.7,
+        )
+        axis.plot(
+            (icon_x + 0.02, icon_x + 0.02),
+            (height / 2 + 0.05, height / 2 + 0.085),
+            color="#7A838D",
+            lw=0.7,
+        )
         if detail:
             x = date_width + gap
             field(x, detail_width)
             axis.text(
-                x + 0.18,
-                0.5,
+                x + 0.13,
+                height / 2,
                 f"Детализация: {detail}",
                 ha="left",
                 va="center",
-                fontsize=8.6,
+                fontsize=6.8,
                 color="#252B33",
             )
             axis.plot(
-                (x + detail_width - 0.32, x + detail_width - 0.24, x + detail_width - 0.16),
-                (0.55, 0.43, 0.55),
+                (x + detail_width - 0.20, x + detail_width - 0.15, x + detail_width - 0.10),
+                (height / 2 + 0.025, height / 2 - 0.025, height / 2 + 0.025),
                 color="#7A838D",
                 lw=0.8,
             )
         figure.subplots_adjust(0, 0, 1, 1)
-        return _save_figure(figure)
+        return _save_figure(figure, dpi=720)
 
 
 def _metrika_period_image(period, *, detail):
     """Render compact shade buttons used by Yandex Metrika."""
-    date_width = max(2.45, len(period) * 0.076)
+    date_width = max(1.33, len(period) * 0.058)
     detail_label = f"По {detail}"
-    detail_width = max(1.55, len(detail_label) * 0.075)
-    gap = 0.12
+    detail_width = max(0.88, len(detail_label) * 0.055)
+    gap = 0.067
     total = date_width + gap + detail_width
     with plt.rc_context({"font.family": CHART_FONT, "font.size": 9}):
-        figure, axis = plt.subplots(figsize=(total, 0.48), dpi=300, facecolor="white")
+        figure, axis = plt.subplots(figsize=(total, 0.30), dpi=300, facecolor="white")
         axis.set_xlim(0, total)
-        axis.set_ylim(0, 1)
+        axis.set_ylim(0, 0.30)
         axis.axis("off")
         for x, width in ((0, date_width), (date_width + gap, detail_width)):
             axis.add_patch(
                 FancyBboxPatch(
-                    (x, 0.14),
+                    (x, 0.005),
                     width,
-                    0.72,
-                    boxstyle="round,pad=0.015,rounding_size=0.18",
+                    0.29,
+                    boxstyle="round,pad=0.004,rounding_size=0.10",
                     facecolor="#F1F3F5",
                     edgecolor="#F1F3F5",
                     linewidth=0.8,
                 )
             )
-        axis.text(0.17, 0.5, period, ha="left", va="center", fontsize=8.2, color="#252B33")
+        axis.text(0.11, 0.15, period, ha="left", va="center", fontsize=7.0, color="#252B33")
         axis.text(
-            date_width + gap + 0.17,
-            0.5,
+            date_width + gap + 0.11,
+            0.15,
             detail_label,
             ha="left",
             va="center",
-            fontsize=8.2,
+            fontsize=7.0,
             color="#252B33",
         )
-        for x in (date_width - 0.2, total - 0.2):
-            axis.plot((x - 0.05, x, x + 0.05), (0.54, 0.44, 0.54), color="#66717D", lw=0.75)
+        for x in (date_width - 0.12, total - 0.12):
+            axis.plot((x - 0.035, x, x + 0.035), (0.165, 0.125, 0.165), color="#66717D", lw=0.7)
         figure.subplots_adjust(0, 0, 1, 1)
-        return _save_figure(figure)
+        return _save_figure(figure, dpi=720)
 
 
 def _style_axis(axis, *, grid_axis="both"):
@@ -1494,14 +1524,14 @@ def _period_caption(doc, rows, *, detail="дням", provider="metrika", show_de
             f"{end_date:%d} {MONTHS[end_date.month - 1]} {end_date.year}"
         )
         image = _webmaster_period_image(period, detail=detail if show_detail else None)
-        width = 11.5 if show_detail else 7.0
+        width = 10.8 if show_detail else 9.25
     else:
         period = (
             f"{start_date.day} {MONTHS_GENITIVE[start_date.month - 1]} — "
             f"{end_date.day} {MONTHS_GENITIVE[end_date.month - 1]}"
         )
         image = _metrika_period_image(period, detail=detail)
-        width = 7.1
+        width = 5.75
     _add_report_picture(doc, image, width=width)
 
 
@@ -2420,20 +2450,6 @@ def _metrika_sources_chart(facts):
         "qrcode",
         "other",
     )
-    color_map = {
-        "search": "#7A45E5",
-        "direct": "#FF3399",
-        "referral": "#0FBDA0",
-        "ad": "#3388FF",
-        "ads": "#3388FF",
-        "advertising": "#3388FF",
-        "social": "#FFB851",
-        "internal": "#FFB851",
-        "recommend": "#FF3399",
-        "messenger": "#2D9CDB",
-        "saved": "#8B98A7",
-        "other": "#8B98A7",
-    }
     names = [name for name in order if name in facts]
     names.extend(name for name in facts if name not in names)
     useful = [
@@ -2462,7 +2478,7 @@ def _metrika_sources_chart(facts):
                 if current is not None
                 else _metrika_source_label(name)
             )
-            color = color_map.get(name, METRIKA_COLORS[index % len(METRIKA_COLORS)])
+            color = METRIKA_SOURCE_COLORS.get(name, METRIKA_COLORS[index % len(METRIKA_COLORS)])
             axis.plot(
                 labels,
                 values,
@@ -3054,21 +3070,21 @@ def _comparison_period_pills(doc, periods):
     _add_report_picture(
         doc,
         _period_pills_image([(labels[0], "A"), ("⇄", "swap"), (labels[1], "B")]),
-        width=11.2,
+        width=8.95,
     )
 
 
 def _region_key(row):
     area = str(_row_dimension(row, 0).get("name") or "").casefold()
     city = str(_row_dimension(row, 1).get("name") or "").casefold()
+    if area in {"область не определена", "area not defined"}:
+        return "area_undefined"
+    if area in {"", "не определено", "undefined", "not defined"}:
+        return "undefined"
     if city in {"москва", "moscow"}:
         return "moscow"
     if city in {"санкт-петербург", "saint petersburg", "st. petersburg"}:
         return "saint_petersburg"
-    if "область не определена" in area or area in {"area not defined"}:
-        return "area_undefined"
-    if city in {"", "не определено", "undefined", "not defined"}:
-        return "undefined"
     return city or area
 
 
