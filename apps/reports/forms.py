@@ -647,11 +647,13 @@ class ReportCreateForm(forms.Form):
             ("metrika_snapshots", SourceSnapshot.Source.METRIKA),
             ("webmaster_snapshots", SourceSnapshot.Source.WEBMASTER),
         ):
-            rows = list(
-                SourceSnapshot.objects.filter(project=project, source=source).order_by(
-                    "-period_start", "-period_end", "id"
-                )
-            )
+            source_rows = SourceSnapshot.objects.filter(project=project, source=source)
+            if source == SourceSnapshot.Source.METRIKA:
+                # Metrika payloads can contain hundreds of thousands of detail
+                # rows.  The form needs only period metadata and must not keep
+                # those JSON trees alive for the whole report-creation request.
+                source_rows = source_rows.defer("payload")
+            rows = list(source_rows.order_by("-period_start", "-period_end", "id"))
             self.fields[field].choices = [
                 (
                     str(row.id),
