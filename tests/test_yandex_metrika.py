@@ -7,6 +7,8 @@ from datetime import date, timedelta
 import pytest
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -532,9 +534,20 @@ def test_metrika_sync_is_queued_deduplicated_and_executed_outside_request(
     assert executed.status == executed.Status.SUCCESS
     assert executed.fetched_period_count == 3
     assert SourceSnapshot.objects.filter(project=project).count() == 3
-    status = client.get(response.json()["status_url"])
+    with CaptureQueriesContext(connection) as queries:
+        status = client.get(response.json()["status_url"])
     assert status.status_code == 200
     assert status.json()["ok"] is True
+    source_queries = [
+        query["sql"]
+        for query in queries.captured_queries
+        if 'FROM "metrics_sourcesnapshot"' in query["sql"]
+    ]
+    assert source_queries
+    assert all(
+        '"metrics_sourcesnapshot"."payload"' not in sql.partition(" FROM ")[0]
+        for sql in source_queries
+    )
 
 
 def test_default_search_segment_uses_last_significant_attribution(identity, yandex_settings):
