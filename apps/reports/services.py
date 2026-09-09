@@ -192,11 +192,7 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options, *, include_
     """Build the compact report payload from DB-extracted JSON branches."""
     selected_landing_total = getattr(snapshot, "report_detail_selected_landing_total", None)
     search_landing_total = getattr(snapshot, "report_detail_search_landing_total", None)
-    if (
-        getattr(snapshot, "report_payload_schema_version", None) is None
-        and selected_landing_total is None
-        and search_landing_total is None
-    ):
+    if selected_landing_total is None and search_landing_total is None:
         # Compatibility path for old, substantially smaller source snapshots.
         return _report_metrika_payload(snapshot.payload, display_options)
 
