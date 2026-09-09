@@ -156,8 +156,21 @@ def _metrika_payload_annotations(display_options):
         "report_payload_sampled": _json_path("sampled"),
         "report_payload_sample_share": _json_path("sample_share"),
         "report_payload_search_segment": _json_path("search_segment"),
-        "report_detail_selected": _json_path("detail_variants", segment, robotness),
-        "report_detail_search": _json_path("detail_variants", "search", robotness),
+        "report_detail_selected_landing_total": _json_path(
+            "detail_variants", segment, robotness, "landing_pages_total"
+        ),
+        "report_detail_selected_geography_total": _json_path(
+            "detail_variants", segment, robotness, "search_geography_total"
+        ),
+        "report_detail_search_engines": _json_path(
+            "detail_variants", "search", robotness, "search_engines"
+        ),
+        "report_detail_search_engines_total": _json_path(
+            "detail_variants", "search", robotness, "search_engines_total"
+        ),
+        "report_detail_search_landing_total": _json_path(
+            "detail_variants", "search", robotness, "landing_pages_total"
+        ),
         "report_traffic_source_variant": _json_path("traffic_source_variants", robotness),
         "report_traffic_source_quarter_variant": _json_path(
             "traffic_source_quarter_variants", robotness
@@ -166,11 +179,20 @@ def _metrika_payload_annotations(display_options):
     }
 
 
-def _report_metrika_payload_from_snapshot(snapshot, display_options):
+def _snapshot_json_branch(snapshot, *keys):
+    """Read one JSON branch without decoding the complete source snapshot."""
+    return (
+        SourceSnapshot.objects.filter(pk=snapshot.pk)
+        .values_list(_json_path(*keys), flat=True)
+        .get()
+    )
+
+
+def _report_metrika_payload_from_snapshot(snapshot, display_options, *, include_large_details=True):
     """Build the compact report payload from DB-extracted JSON branches."""
-    selected_detail = getattr(snapshot, "report_detail_selected", None)
-    search_detail = getattr(snapshot, "report_detail_search", None)
-    if selected_detail is None and search_detail is None:
+    selected_landing_total = getattr(snapshot, "report_detail_selected_landing_total", None)
+    search_landing_total = getattr(snapshot, "report_detail_search_landing_total", None)
+    if selected_landing_total is None and search_landing_total is None:
         # Compatibility path for old, substantially smaller source snapshots.
         return _report_metrika_payload(snapshot.payload, display_options)
 
@@ -180,6 +202,29 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options):
         robotness = "humans"
     segment = "search" if options.get("metrika_search_segment", True) else "all"
     goal_robotness = "humans" if options.get("metrika_goals_humans_only", True) else "all"
+    configured = str(options.get("configuration_version")) in {"2", "3"}
+    include_geography = configured and options.get("include_metrika_geography", False)
+    include_landing = not configured or any(
+        options.get(name, False)
+        for name in (
+            "include_metrika_landing_pages",
+            "include_metrika_landing_page_comparison",
+            "include_metrika_url_groups",
+            "include_metrika_sections",
+            "include_metrika_categories",
+        )
+    )
+    include_landing_history = not configured or any(
+        options.get(name, False)
+        for name in (
+            "include_metrika_url_groups",
+            "include_metrika_sections",
+            "include_metrika_categories",
+        )
+    )
+    include_search_landing = not configured or options.get(
+        "include_metrika_landing_page_comparison", False
+    )
     compact = {}
     for key in (
         "schema_version",
@@ -197,11 +242,44 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options):
         value = getattr(snapshot, f"report_payload_{key}", None)
         if value is not None:
             compact[key] = value
-    compact["detail_variants"] = {
-        "search": {robotness: search_detail or {}},
+    selected_detail = {
+        "landing_pages_total": selected_landing_total or {},
+        "search_geography_total": (
+            getattr(snapshot, "report_detail_selected_geography_total", None) or {}
+        ),
     }
+    if include_large_details and include_geography:
+        selected_detail["search_geography"] = (
+            _snapshot_json_branch(
+                snapshot, "detail_variants", segment, robotness, "search_geography"
+            )
+            or []
+        )
+    if (include_large_details or include_landing_history) and include_landing:
+        selected_detail["landing_pages"] = (
+            _snapshot_json_branch(snapshot, "detail_variants", segment, robotness, "landing_pages")
+            or []
+        )
+
+    search_detail = {
+        "search_engines": getattr(snapshot, "report_detail_search_engines", None) or [],
+        "search_engines_total": (
+            getattr(snapshot, "report_detail_search_engines_total", None) or {}
+        ),
+        "landing_pages_total": search_landing_total or {},
+    }
+    if segment == "search":
+        search_detail.update(selected_detail)
+    elif include_large_details and include_search_landing:
+        search_detail["landing_pages"] = (
+            _snapshot_json_branch(snapshot, "detail_variants", "search", robotness, "landing_pages")
+            or []
+        )
+    # The provider hierarchy repeats up to 30,000 URL rows per month. The
+    # exporter derives the same two-level hierarchy from landing pages.
+    compact["detail_variants"] = {"search": {robotness: search_detail}}
     if segment != "search":
-        compact["detail_variants"][segment] = {robotness: selected_detail or {}}
+        compact["detail_variants"][segment] = {robotness: selected_detail}
     compact["traffic_source_variants"] = {
         robotness: getattr(snapshot, "report_traffic_source_variant", None) or {}
     }
@@ -211,7 +289,9 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options):
     compact["goals_by_segment"] = {
         segment: {goal_robotness: getattr(snapshot, "report_goal_rows", None) or []}
     }
-    return redact_sensitive_source_data(compact)
+    # Every copied key is an allow-listed metric branch produced by our own
+    # synchronizer, so no second full object-tree copy is needed here.
+    return compact
 
 
 def _project_favicon(domain):
@@ -575,24 +655,31 @@ def build_source_facts(
                 kind=kind,
             )
         extra = {}
-        extra["period_details"] = [
-            {
-                "period_start": snapshot.period_start,
-                "period_end": snapshot.period_end,
-                "source_key": snapshot.source_key,
-                "host_url": (
-                    ""
-                    if source == SourceSnapshot.Source.METRIKA
-                    else snapshot.payload.get("host_url", "")
-                ),
-                "payload": (
-                    _report_metrika_payload_from_snapshot(snapshot, options)
-                    if source == SourceSnapshot.Source.METRIKA
-                    else redact_sensitive_source_data(snapshot.payload)
-                ),
-            }
-            for snapshot, _metrics in points
-        ]
+        period_details = []
+        large_detail_start = max(0, len(points) - 2)
+        for index, (snapshot, _metrics) in enumerate(points):
+            period_details.append(
+                {
+                    "period_start": snapshot.period_start,
+                    "period_end": snapshot.period_end,
+                    "source_key": snapshot.source_key,
+                    "host_url": (
+                        ""
+                        if source == SourceSnapshot.Source.METRIKA
+                        else snapshot.payload.get("host_url", "")
+                    ),
+                    "payload": (
+                        _report_metrika_payload_from_snapshot(
+                            snapshot,
+                            options,
+                            include_large_details=index >= large_detail_start,
+                        )
+                        if source == SourceSnapshot.Source.METRIKA
+                        else redact_sensitive_source_data(snapshot.payload)
+                    ),
+                }
+            )
+        extra["period_details"] = period_details
         if source == SourceSnapshot.Source.METRIKA:
             source_api_total = None
             if snapshots:
@@ -602,7 +689,7 @@ def build_source_facts(
                     # small enough for the compatibility path above.
                     snapshots[-1].payload.get("traffic_source_total") or {}
                     if source_variant == {}
-                    and getattr(snapshots[-1], "report_detail_selected", None) is None
+                    and getattr(snapshots[-1], "report_payload_schema_version", None) is None
                     and robotness == "humans"
                     else {}
                 )

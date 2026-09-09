@@ -750,9 +750,12 @@ def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
         created_by=identity[0],
         selection={
             "display_options": {
+                "configuration_version": 3,
                 "metrika_robotness": "humans",
                 "metrika_search_segment": True,
                 "metrika_goals_humans_only": True,
+                "include_metrika_landing_pages": True,
+                "include_metrika_geography": True,
             },
             "yandex_metrika": [
                 str(snapshot_id)
@@ -769,6 +772,19 @@ def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
     ]["period_details"][0]["payload"]
     assert set(period_payload["detail_variants"]) == {"search"}
     assert set(period_payload["detail_variants"]["search"]) == {"humans"}
+    periods = version.snapshot.payload["calculated"]["sources"]["sources"][
+        SourceSnapshot.Source.METRIKA
+    ]["period_details"]
+    assert "landing_pages" not in periods[0]["payload"]["detail_variants"]["search"]["humans"]
+    assert "search_geography" not in periods[0]["payload"]["detail_variants"]["search"]["humans"]
+    assert all(
+        "landing_hierarchy" not in period["payload"]["detail_variants"]["search"]["humans"]
+        for period in periods
+    )
+    assert all(
+        period["payload"]["detail_variants"]["search"]["humans"].get("landing_pages")
+        for period in periods[-2:]
+    )
 
 
 class Response:
