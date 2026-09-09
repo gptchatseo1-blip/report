@@ -596,9 +596,7 @@ def build_source_facts(
         if source == SourceSnapshot.Source.METRIKA:
             source_api_total = None
             if snapshots:
-                source_variant = (
-                    getattr(snapshots[-1], "report_traffic_source_variant", None) or {}
-                )
+                source_variant = getattr(snapshots[-1], "report_traffic_source_variant", None) or {}
                 total_payload = source_variant.get("total") or (
                     # Legacy snapshots do not have extracted variants and are
                     # small enough for the compatibility path above.
