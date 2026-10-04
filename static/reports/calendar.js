@@ -6,16 +6,29 @@
   const fromIndex = index => new Date(Math.floor(index / 12), index % 12, 1);
 
   document.querySelectorAll('[data-calendar]').forEach(root => {
-    const inputs = [...root.querySelectorAll('.calendar-source input[type=checkbox]')];
-    if (!inputs.length) return;
-    const allowed = new Map(inputs.map(input => [input.value, input]));
-    const latest = new Date([...allowed.keys()].sort().at(-1) + 'T12:00:00');
-    let endMonth = monthIndex(latest);
+    let inputs = [];
+    let allowed = new Map();
+    let endMonth = monthIndex(new Date());
     const monthsRoot = root.querySelector('[data-months]');
     const summary = root.querySelector('[data-summary]');
     const period = root.querySelector('[data-period]');
+    const toolbar = root.querySelector('[data-calendar-toolbar]');
+    const legend = root.querySelector('[data-calendar-legend]');
+    const empty = root.querySelector('[data-calendar-empty]');
     const label = root.dataset.label;
     const mobile = () => matchMedia('(max-width: 700px)').matches;
+
+    function readAvailableDates(focusLatest = false) {
+      inputs = [...root.querySelectorAll('.calendar-source input[type=checkbox]')];
+      allowed = new Map(inputs.map(input => [input.value, input]));
+      if (allowed.size && focusLatest) {
+        const latest = new Date([...allowed.keys()].sort().at(-1) + 'T12:00:00');
+        endMonth = monthIndex(latest);
+      }
+      if (toolbar) toolbar.hidden = !allowed.size;
+      if (legend) legend.hidden = !allowed.size;
+      if (empty) empty.hidden = allowed.size > 0;
+    }
 
     function updateSummary() {
       const chosen = inputs.filter(input => input.checked).map(input => input.value).sort();
@@ -25,6 +38,11 @@
     }
 
     function render() {
+      if (!allowed.size) {
+        monthsRoot.replaceChildren();
+        period.textContent = '';
+        return;
+      }
       const count = mobile() ? 1 : Number(root.dataset.monthCount || 3);
       const start = endMonth - count + 1;
       monthsRoot.replaceChildren();
@@ -67,8 +85,15 @@
     const step = () => mobile() ? 1 : Number(root.dataset.monthCount || 3);
     root.querySelector('[data-prev]').addEventListener('click', () => { endMonth -= step(); render(); });
     root.querySelector('[data-next]').addEventListener('click', () => { endMonth += step(); render(); });
+    root.addEventListener('calendar-dates-updated', () => {
+      readAvailableDates(true);
+      render();
+      updateSummary();
+      root.dispatchEvent(new Event('change'));
+    });
     let wasMobile = mobile();
     addEventListener('resize', () => { if (mobile() !== wasMobile) { wasMobile = mobile(); render(); } });
+    readAvailableDates(true);
     render();
     updateSummary();
   });
