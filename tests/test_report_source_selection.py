@@ -9,6 +9,7 @@ from django.db import connection
 from django.http import QueryDict
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.metrics.models import MetricPoint, RankingSnapshot, SourceSnapshot
 from apps.projects.models import Project
@@ -513,15 +514,21 @@ def test_report_page_ajax_sync_returns_periods_without_reload(client, monkeypatc
 
 def test_webmaster_defaults_select_three_periods_for_each_site():
     project = Project.objects.create(name="Many sites", domain="many-sites.example")
+    current_month = timezone.localdate().replace(day=1)
+    current_index = current_month.year * 12 + current_month.month - 1
+    completed_months = [
+        date((current_index - offset) // 12, (current_index - offset) % 12 + 1, 1)
+        for offset in (3, 2, 1)
+    ]
     for host in ("host-b", "host-a"):
-        for month in (6, 7, 8):
+        for month in completed_months:
             SourceSnapshot.objects.create(
                 project=project,
                 source=SourceSnapshot.Source.WEBMASTER,
                 source_key=host,
-                period_start=date(2026, month, 1),
-                period_end=date(2026, month, 28),
-                checksum=f"{host}-{month}",
+                period_start=month,
+                period_end=month.replace(day=28),
+                checksum=f"{host}-{month:%Y-%m}",
                 payload={"host_url": f"https://{host}.example/"},
             )
 
