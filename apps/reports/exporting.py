@@ -3397,6 +3397,221 @@ def _group_dynamics_text(periods, groups, *, prefix="Раздел", subsections=
     return "\n".join(f"{part}." for part in parts)
 
 
+def _landing_conclusion_percent(value):
+    number = _decimal_or_none(value)
+    if number is None:
+        return None
+    rounded = number.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return _number(rounded, "%")
+
+
+def _landing_conclusion_list(values):
+    values = [str(value).strip() for value in values if str(value).strip()]
+    if len(values) < 2:
+        return "".join(values)
+    return ", ".join(values[:-1]) + " и " + values[-1]
+
+
+def _landing_conclusion_page_name(url, groups):
+    url_depth = len([part for part in urlsplit(url).path.split("/") if part])
+
+    def names_page(group):
+        for pattern in group.get("patterns") or []:
+            if not _url_matches_pattern(url, pattern):
+                continue
+            pattern_url = _url_pattern_label(pattern).replace("*", "").replace("?", "")
+            pattern_depth = len([part for part in urlsplit(pattern_url).path.split("/") if part])
+            if pattern_depth >= url_depth:
+                return True
+        return False
+
+    matches = [group for group in groups if names_page(group)]
+    if matches:
+        matches.sort(
+            key=lambda group: max(
+                (len(_url_pattern_label(pattern)) for pattern in group.get("patterns") or []),
+                default=0,
+            ),
+            reverse=True,
+        )
+        return matches[0]["name"]
+    parts = [part for part in urlsplit(url).path.split("/") if part]
+    return (parts[-1] if parts else url).replace("-", " ").replace("_", " ").capitalize()
+
+
+def _landing_conclusion_hierarchy(rows, engine, *, provider_hierarchy):
+    matching = [row for row in rows if _search_engine_name(row) == engine]
+    if provider_hierarchy:
+        exact_levels = []
+        for row in matching:
+            url = _landing_url(row)
+            depth = len([part for part in urlsplit(url).path.split("/") if part])
+            expected_level = max(1, min(depth + 1, 3))
+            try:
+                actual_level = int(row.get("hierarchy_level") or 0)
+            except (TypeError, ValueError):
+                actual_level = 0
+            if actual_level in {0, expected_level}:
+                exact_levels.append(row)
+        return _aggregate_detail_rows(exact_levels, _landing_url)
+    pages = _aggregate_detail_rows(matching, _landing_url)
+    return _landing_hierarchy(pages)
+
+
+def _landing_comparison_conclusions(
+    *,
+    engine,
+    current_rows,
+    previous_rows,
+    current_hierarchy_rows,
+    previous_hierarchy_rows,
+    total_values,
+    commercial_groups,
+    information_groups=(),
+    subsection_groups=(),
+    provider_hierarchy=False,
+):
+    """Build conclusions only for the per-engine landing-page comparison block."""
+    if not commercial_groups:
+        return []
+
+    current_engine_rows = [row for row in current_rows if _search_engine_name(row) == engine]
+    previous_engine_rows = [row for row in previous_rows if _search_engine_name(row) == engine]
+    current_groups = _aggregate_configured_groups(current_engine_rows, commercial_groups)
+    previous_groups = _aggregate_configured_groups(previous_engine_rows, commercial_groups)
+
+    current_hierarchy = _landing_conclusion_hierarchy(
+        current_hierarchy_rows,
+        engine,
+        provider_hierarchy=provider_hierarchy,
+    )
+    previous_hierarchy = _landing_conclusion_hierarchy(
+        previous_hierarchy_rows,
+        engine,
+        provider_hierarchy=provider_hierarchy,
+    )
+    current_total = _decimal_or_none((total_values[0] or {}).get("visits"))
+    if current_total is None:
+        current_total = next(
+            (
+                _decimal_or_none(values.get("visits"))
+                for url, values in current_hierarchy.items()
+                if urlsplit(url).path in {"", "/"}
+            ),
+            None,
+        )
+
+    information_current = _aggregate_configured_groups(current_engine_rows, information_groups)
+    information_previous = _aggregate_configured_groups(previous_engine_rows, information_groups)
+    editorial_current = editorial_previous = None
+    if information_groups:
+        editorial_group = max(
+            information_groups,
+            key=lambda group: information_current.get(group["name"], {}).get("visits", 0),
+        )
+        editorial_current = information_current.get(editorial_group["name"], {}).get("visits")
+        editorial_previous = information_previous.get(editorial_group["name"], {}).get("visits")
+    else:
+        candidates = [
+            (url, values)
+            for url, values in current_hierarchy.items()
+            if len([part for part in urlsplit(url).path.split("/") if part]) == 1
+            and not any(
+                _url_matches_pattern(url, pattern)
+                for group in commercial_groups
+                for pattern in group.get("patterns") or []
+            )
+        ]
+        if candidates:
+            editorial_url, editorial_values = max(
+                candidates,
+                key=lambda item: item[1].get("visits", 0),
+            )
+            editorial_current = editorial_values.get("visits")
+            editorial_previous = previous_hierarchy.get(editorial_url, {}).get("visits")
+
+    paragraphs = []
+    if current_total and editorial_current is not None:
+        share = Decimal(editorial_current) * Decimal(100) / current_total
+        remaining_share = max(Decimal(0), Decimal(100) - share)
+        change = _relative_delta(editorial_current, editorial_previous)
+        change_sentence = ""
+        if change is not None:
+            if change > 0:
+                change_sentence = (
+                    " По сравнению с прошлым месяцем количество визитов увеличилось на "
+                    f"{_landing_conclusion_percent(abs(change))}."
+                )
+            elif change < 0:
+                change_sentence = (
+                    " По сравнению с прошлым месяцем количество визитов снизилось на "
+                    f"{_landing_conclusion_percent(abs(change))}."
+                )
+            else:
+                change_sentence = (
+                    " По сравнению с прошлым месяцем количество визитов не изменилось."
+                )
+        engine_genitive = "Яндекса" if engine == "Яндекс" else engine
+        paragraphs.append(
+            f"Самыми популярными страницами входа из поиска {engine} являются страницы "
+            "статейного раздела. На него приходится "
+            f"{_landing_conclusion_percent(share)} поискового трафика из {engine_genitive}."
+            f"{change_sentence} Остальной трафик — "
+            f"{_landing_conclusion_percent(remaining_share)} — можно считать коммерческим."
+        )
+
+    commercial_lines = []
+    for group in commercial_groups:
+        name = group["name"]
+        change = _relative_delta(
+            current_groups.get(name, {}).get("visits"),
+            previous_groups.get(name, {}).get("visits"),
+        )
+        if change is None:
+            change_text = "нет базы сравнения"
+        else:
+            sign = "+" if change > 0 else "−" if change < 0 else ""
+            change_text = f"{sign}{_landing_conclusion_percent(abs(change))}"
+
+        matching_pages = []
+        for row in current_engine_rows:
+            url = _landing_url(row)
+            if not any(
+                _url_matches_pattern(url, pattern) for pattern in group.get("patterns") or []
+            ):
+                continue
+            normalized_url = url.rstrip("/").casefold()
+            configured_roots = {
+                _url_pattern_label(pattern).rstrip("*?").rstrip("/").casefold()
+                for pattern in group.get("patterns") or []
+            }
+            if normalized_url in configured_roots:
+                continue
+            matching_pages.append(
+                (
+                    _decimal_or_none(row.get("visits")) or Decimal(0),
+                    _landing_conclusion_page_name(url, subsection_groups),
+                )
+            )
+        matching_pages.sort(key=lambda item: (-item[0], item[1].casefold()))
+        popular = []
+        for _visits, label in matching_pages:
+            if label not in popular:
+                popular.append(label)
+            if len(popular) == 3:
+                break
+
+        line = f"{name} — {change_text} по сравнению с прошлым месяцем."
+        if popular:
+            lead = "Самый популярный раздел" if len(popular) == 1 else "Самые популярные разделы"
+            line += f" {lead} — {_landing_conclusion_list(popular)}."
+        commercial_lines.append(line)
+
+    if commercial_lines:
+        paragraphs.extend(("По коммерческим разделам:", "\n".join(commercial_lines)))
+    return paragraphs
+
+
 def _group_overview_text(periods, groups, *, commercial=False):
     grouped = _group_period_values(periods, groups)
     if not grouped or not groups:
@@ -4379,12 +4594,28 @@ def _render_metrika(doc, payload, blocks):
                 else {}
             )
             commercial_groups = _configured_url_groups(payload, "commercial")
-            named_conclusion_groups = [
+            legacy_conclusion_groups = [
                 group
                 for expected in ("лечение", "диагностика", "реабилитация")
                 for group in commercial_groups
                 if group["name"].casefold() == expected
             ] or commercial_groups
+            configured_conclusion_groups = comparison_subsection_groups or legacy_conclusion_groups
+            conclusion_groups = [
+                group
+                for expected in ("лечение", "диагностика", "реабилитация")
+                for group in configured_conclusion_groups
+                if group["name"].casefold() == expected
+            ] + [
+                group
+                for group in configured_conclusion_groups
+                if group["name"].casefold() not in {"лечение", "диагностика", "реабилитация"}
+            ]
+            conclusion_subsections = [
+                *_configured_url_groups(payload, "subsections"),
+                *_configured_url_groups(payload, "categories"),
+            ]
+            information_groups = _configured_url_groups(payload, "information")
             for engine in ("Яндекс", "Google"):
                 doc.add_paragraph(
                     "Страницы входа",
@@ -4408,26 +4639,24 @@ def _render_metrika(doc, payload, blocks):
                     ),
                     provider_hierarchy=has_provider_hierarchy,
                 )
-                if named_conclusion_groups:
-                    engine_periods = [
-                        {
-                            **period,
-                            "rows": [
-                                row
-                                for row in period.get("rows") or []
-                                if _search_engine_name(row) == engine
-                            ],
-                        }
-                        for period in comparison_periods
-                    ]
-                    doc.add_paragraph(
-                        _group_dynamics_text(
-                            engine_periods,
-                            named_conclusion_groups,
-                            prefix=f"{engine}, раздел",
-                            subsections=comparison_subsection_groups,
-                        )
+                if conclusion_groups:
+                    conclusion_paragraphs = _landing_comparison_conclusions(
+                        engine=engine,
+                        current_rows=comparison_current,
+                        previous_rows=comparison_previous,
+                        current_hierarchy_rows=hierarchy_current,
+                        previous_hierarchy_rows=hierarchy_previous,
+                        total_values=(
+                            current_engine_totals.get(engine, {}),
+                            previous_engine_totals.get(engine, {}),
+                        ),
+                        commercial_groups=conclusion_groups,
+                        information_groups=information_groups,
+                        subsection_groups=conclusion_subsections,
+                        provider_hierarchy=has_provider_hierarchy,
                     )
+                    for conclusion in conclusion_paragraphs:
+                        doc.add_paragraph(conclusion)
         information_groups = _configured_url_groups(payload, "information")
         commercial_groups = _configured_url_groups(payload, "commercial")
         if section_enabled(payload, "metrika_url_groups"):
