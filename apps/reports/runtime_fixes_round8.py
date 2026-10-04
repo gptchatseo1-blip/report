@@ -42,7 +42,7 @@ def _merge_yandex_tail_buckets(base_buckets, source_segment, rendered):
     def merge_point(point):
         month_key = str(point.get("month") or "")[:7]
         source = source_by_month.get(month_key)
-        if not source or not point.get("manual_override"):
+        if not source or not (point.get("editor_distribution") or point.get("manual_override")):
             return point
         distribution = dict(point.get("distribution") or {})
         manual = dict(distribution.get("manual_buckets") or {})
@@ -84,6 +84,11 @@ def _calendar_chart_segment(base_manual_segment, base_buckets, payload, source_s
         for point in source_segment.get("chart_series") or []
         if point.get("month")
     }
+    rendered_by_month = {
+        str(point.get("month") or "")[:7]: point
+        for point in rendered.get("three_month_series") or []
+        if point.get("month")
+    }
     chart_series = []
     for selected_date in selected_dates:
         source = source_by_day.get(selected_date)
@@ -91,37 +96,32 @@ def _calendar_chart_segment(base_manual_segment, base_buckets, payload, source_s
             continue
         point = dict(source)
         point["month"] = selected_date
+        editor_point = rendered_by_month.get(selected_date[:7])
+        if editor_point and (
+            editor_point.get("editor_distribution") or editor_point.get("manual_override")
+        ):
+            distribution = dict(editor_point.get("distribution") or {})
+            manual_buckets = dict(distribution.get("manual_buckets") or {})
+            point_depth = point.get("ranking_depth") or rendered.get("ranking_depth") or 0
+            automatic_buckets = {
+                bucket["label"]: bucket
+                for bucket in base_buckets(point.get("distribution") or {}, point_depth)
+            }
+            for label in ("31-50", "51-100", "101+"):
+                if label in automatic_buckets:
+                    manual_buckets[label] = {
+                        "count": automatic_buckets[label].get("count", 0),
+                        "share": automatic_buckets[label].get("share"),
+                    }
+            distribution["manual_buckets"] = manual_buckets
+            point["distribution"] = distribution
+            point["editor_distribution"] = True
         chart_series.append(point)
     if not chart_series:
         return {**rendered, "chart_series": chart_series}
 
     endpoint = chart_series[-1]
-    endpoint_month = str(endpoint.get("month") or "")[:7]
     endpoint_distribution = endpoint.get("distribution") or {}
-    manual_endpoint = next(
-        (
-            point
-            for point in reversed(rendered.get("three_month_series") or [])
-            if str(point.get("month") or "")[:7] == endpoint_month and point.get("manual_override")
-        ),
-        None,
-    )
-    if manual_endpoint:
-        manual_distribution = dict(manual_endpoint.get("distribution") or {})
-        manual_buckets = dict(manual_distribution.get("manual_buckets") or {})
-        endpoint_depth = endpoint.get("ranking_depth") or rendered.get("ranking_depth") or 0
-        automatic_buckets = {
-            bucket["label"]: bucket
-            for bucket in base_buckets(endpoint_distribution, endpoint_depth)
-        }
-        for label in ("31-50", "51-100", "101+"):
-            if label in automatic_buckets:
-                manual_buckets[label] = {
-                    "count": automatic_buckets[label].get("count", 0),
-                    "share": automatic_buckets[label].get("share"),
-                }
-        manual_distribution["manual_buckets"] = manual_buckets
-        endpoint_distribution = manual_distribution
     return {
         **rendered,
         "chart_series": chart_series,
