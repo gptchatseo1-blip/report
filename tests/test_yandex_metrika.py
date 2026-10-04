@@ -565,11 +565,16 @@ def test_default_search_segment_uses_last_significant_attribution(identity, yand
         for call in api.calls
     )
     for level in range(1, 4):
-        assert any(
-            call.get("dimensions")
-            == f"ym:s:<attribution>SearchEngineRoot,ym:s:startURLPathLevel{level}"
+        call = next(
+            call
             for call in api.calls
+            if call.get("dimensions")
+            == f"ym:s:<attribution>SearchEngineRoot,ym:s:startURLPathLevel{level}"
+            and call.get("filters")
+            == "ym:s:<attribution>TrafficSource=='organic' AND ym:s:isRobot=='No'"
         )
+        assert call["attribution"] == "cross_device_last_significant"
+        assert call["metrics"] == "ym:s:visits,ym:s:users,ym:s:bounceRate"
     assert any(
         call.get("dimensions") == "ym:s:<attribution>SearchEngineRoot,ym:s:startURL"
         and call.get("filters")
@@ -768,6 +773,7 @@ def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
                 "metrika_search_segment": True,
                 "metrika_goals_humans_only": True,
                 "include_metrika_landing_pages": True,
+                "include_metrika_landing_page_comparison": True,
                 "include_metrika_geography": True,
             },
             "yandex_metrika": [
@@ -790,10 +796,11 @@ def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
     ]["period_details"]
     assert "landing_pages" not in periods[0]["payload"]["detail_variants"]["search"]["humans"]
     assert "search_geography" not in periods[0]["payload"]["detail_variants"]["search"]["humans"]
-    assert all(
-        "landing_hierarchy" not in period["payload"]["detail_variants"]["search"]["humans"]
-        for period in periods
-    )
+    assert "landing_hierarchy" not in periods[0]["payload"]["detail_variants"]["search"]["humans"]
+    for period in periods[-2:]:
+        hierarchy = period["payload"]["detail_variants"]["search"]["humans"]["landing_hierarchy"]
+        assert hierarchy
+        assert {row["hierarchy_level"] for row in hierarchy} == {1, 2}
     assert all(
         period["payload"]["detail_variants"]["search"]["humans"].get("landing_pages")
         for period in periods[-2:]
