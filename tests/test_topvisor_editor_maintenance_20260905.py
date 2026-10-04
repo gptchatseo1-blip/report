@@ -122,6 +122,8 @@ def test_refresh_preserves_every_checked_row_and_updates_unchecked_rows():
         include=True,
     )
     checked["top3"] = 777
+    checked["top3_percent"] = 12.34
+    checked["top10_percent"] = 56.78
     unchecked = _row(
         "2026-08-01",
         visibility=8,
@@ -140,9 +142,9 @@ def test_refresh_preserves_every_checked_row_and_updates_unchecked_rows():
     assert by_month["2026-08"]["top3"] == 253
     assert by_month["2026-08"]["top10"] == 754
     assert by_month["2026-08"]["top11_30"] == 826
-    assert by_month["2026-08"]["top3_percent"] == 8.51
-    assert by_month["2026-08"]["top10_percent"] == 25.35
-    assert by_month["2026-08"]["top11_30_percent"] == 27.77
+    assert by_month["2026-08"]["top3_percent"] == 9
+    assert by_month["2026-08"]["top10_percent"] == 25
+    assert by_month["2026-08"]["top11_30_percent"] == 28
     assert by_month["2026-08"]["manual_override"] is False
 
 
