@@ -87,6 +87,7 @@ def test_refresh_reloads_automatic_values_but_keeps_real_manual_corrections():
         visibility=15,
         automatic_visibility=16,
         manual_override=True,
+        include=False,
     )
     september_manual = _row(
         "2026-09-01",
@@ -110,6 +111,9 @@ def test_refresh_reloads_automatic_values_but_keeps_real_manual_corrections():
 
 def test_refresh_preserves_every_checked_row_and_updates_unchecked_rows():
     project = _project_with_snapshots()
+    august = RankingSnapshot.objects.get(snapshot_date=date(2026, 8, 31))
+    august.provenance = {"tops": {"1_3": 253, "1_10": 754, "11_30": 826, "all": 2974}}
+    august.save(update_fields=["provenance"])
     checked = _row(
         "2026-07-01",
         visibility=12.5,
@@ -131,9 +135,14 @@ def test_refresh_preserves_every_checked_row_and_updates_unchecked_rows():
     refreshed = refresh_editor_rows(project)
     by_month = {row["month"][:7]: row for row in refreshed}
 
-    assert by_month["2026-07"]["top3"] == 777
-    assert by_month["2026-07"]["visibility"] == 12.5
-    assert by_month["2026-08"]["top3"] == 0
+    assert by_month["2026-07"] == checked
+    assert by_month["2026-08"]["total"] == 2974
+    assert by_month["2026-08"]["top3"] == 253
+    assert by_month["2026-08"]["top10"] == 754
+    assert by_month["2026-08"]["top11_30"] == 826
+    assert by_month["2026-08"]["top3_percent"] == 8.51
+    assert by_month["2026-08"]["top10_percent"] == 25.35
+    assert by_month["2026-08"]["top11_30_percent"] == 27.77
     assert by_month["2026-08"]["manual_override"] is False
 
 
@@ -190,6 +199,7 @@ def test_refresh_and_clear_endpoints_persist_changes(client):
                 visibility=15,
                 automatic_visibility=16,
                 manual_override=True,
+                include=False,
             )
         ],
     )
