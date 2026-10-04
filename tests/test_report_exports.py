@@ -24,6 +24,7 @@ from apps.reports.exporting import (
     _configure_document,
     _configured_groups_table,
     _goal_card,
+    _landing_comparison_conclusions,
     _landing_comparison_table,
     _landing_hierarchy_order,
     _landing_hierarchy_table,
@@ -1025,6 +1026,125 @@ def test_configured_url_segments_render_three_level_tables_and_separate_charts(
         len([part for part in urlsplit(url.lstrip("›⌄ ")).path.split("/") if part]) <= 2
         for url in landing_urls
     )
+
+
+def test_landing_comparison_conclusions_use_its_own_configured_groups():
+    def row(engine, url, visits, *, level=None):
+        value = {
+            "dimensions": [
+                {"id": engine.casefold(), "name": engine},
+                {"id": url, "name": url},
+            ],
+            "visits": str(visits),
+            "users": str(visits),
+            "bounce_rate": "10",
+        }
+        if level is not None:
+            value["hierarchy_level"] = level
+        return value
+
+    domain = "https://demo.example"
+    current = [
+        row("Яндекс", f"{domain}/articles/post/", 600),
+        row("Яндекс", f"{domain}/treatment/trauma/", 150),
+        row("Яндекс", f"{domain}/treatment/neuro/", 100),
+        row("Яндекс", f"{domain}/diagnostics/uzi/", 50),
+    ]
+    previous = [
+        row("Яндекс", f"{domain}/articles/post/", 500),
+        row("Яндекс", f"{domain}/treatment/trauma/", 120),
+        row("Яндекс", f"{domain}/treatment/neuro/", 80),
+        row("Яндекс", f"{domain}/diagnostics/uzi/", 100),
+    ]
+    current_hierarchy = [
+        row("Яндекс", f"{domain}/", 1000, level=1),
+        row("Яндекс", f"{domain}/articles/", 600, level=2),
+        row("Яндекс", f"{domain}/treatment/", 250, level=2),
+        row("Яндекс", f"{domain}/diagnostics/", 50, level=2),
+    ]
+    previous_hierarchy = [
+        row("Яндекс", f"{domain}/", 900, level=1),
+        row("Яндекс", f"{domain}/articles/", 500, level=2),
+        row("Яндекс", f"{domain}/treatment/", 200, level=2),
+        row("Яндекс", f"{domain}/diagnostics/", 100, level=2),
+    ]
+
+    paragraphs = _landing_comparison_conclusions(
+        engine="Яндекс",
+        current_rows=current,
+        previous_rows=previous,
+        current_hierarchy_rows=current_hierarchy,
+        previous_hierarchy_rows=previous_hierarchy,
+        total_values=({"visits": 1000}, {"visits": 900}),
+        commercial_groups=[
+            {"name": "Лечение", "patterns": [f"{domain}/treatment/"]},
+            {"name": "Диагностика", "patterns": [f"{domain}/diagnostics/"]},
+        ],
+        information_groups=[{"name": "Статьи", "patterns": [f"{domain}/articles/"]}],
+        subsection_groups=[
+            {"name": "Травматология", "patterns": [f"{domain}/treatment/trauma/"]},
+            {"name": "Неврология", "patterns": [f"{domain}/treatment/neuro/"]},
+            {"name": "УЗИ", "patterns": [f"{domain}/diagnostics/uzi/"]},
+        ],
+        provider_hierarchy=True,
+    )
+
+    assert paragraphs[0] == (
+        "Самыми популярными страницами входа из поиска Яндекс являются страницы статейного "
+        "раздела. На него приходится 60% поискового трафика из Яндекса. По сравнению с "
+        "прошлым месяцем количество визитов увеличилось на 20%. Остальной трафик — 40% — "
+        "можно считать коммерческим."
+    )
+    assert paragraphs[1] == "По коммерческим разделам:"
+    assert paragraphs[2].splitlines() == [
+        "Лечение — +25% по сравнению с прошлым месяцем. Самые популярные разделы — "
+        "Травматология и Неврология.",
+        "Диагностика — −50% по сравнению с прошлым месяцем. Самый популярный раздел — УЗИ.",
+    ]
+
+
+def test_landing_comparison_export_restores_conclusions_for_both_engines(
+    rich_version, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    payload = rich_version.snapshot.payload
+    payload["display_options"] = {
+        "configuration_version": 3,
+        "include_metrika": True,
+        "metrika_search_segment": True,
+        "include_metrika_landing_page_comparison": True,
+        "metrika_url_segments": {
+            "landing_comparison_subsections": [
+                {"name": "Лечение", "patterns": ["https://demo.example/services/"]},
+                {
+                    "name": "Диагностика",
+                    "patterns": ["https://demo.example/catalog/diagnostics/"],
+                },
+            ],
+            "subsections": [
+                {
+                    "name": "Приоритетная услуга",
+                    "patterns": ["https://demo.example/services/priority/"],
+                }
+            ],
+        },
+    }
+    ReportDatasetSnapshot.objects.filter(pk=rich_version.snapshot.pk).update(payload=payload)
+    rich_version.snapshot.refresh_from_db()
+
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(
+                generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
+            )
+        )
+    )
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert "Самыми популярными страницами входа из поиска Яндекс" in text
+    assert "Самыми популярными страницами входа из поиска Google" in text
+    assert text.count("По коммерческим разделам:") == 2
+    assert text.count("Лечение —") == 2
 
 
 def test_modern_report_options_control_sections_and_top_tables(rich_version, settings, tmp_path):
