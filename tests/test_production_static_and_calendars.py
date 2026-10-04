@@ -84,6 +84,8 @@ def test_server_html_contains_three_months_dates_and_disabled_days(client):
     assert 'type="checkbox"' in checkbox and "checked" not in checkbox
     assert "Яндекс.Метрика и Вебмастер" in html
     assert html.count('href="/yandex/projects/') == 1
+    assert "data-position-calendars-url=" in html
+    assert 'data-field-name="google_dates"' in html
     calendars_end = html.rindex("</section>", 0, html.index("Параметры отчёта"))
     options = html.index("Параметры отчёта")
     metrika = html.index("Яндекс.Метрика", options)
@@ -106,6 +108,18 @@ def test_javascript_updates_period_during_every_render():
     render_body = javascript.split("function render()", 1)[1].split("root.querySelector", 1)[0]
     assert "period.textContent" in render_body
     assert "render();" in javascript
+
+
+def test_position_sync_refreshes_calendar_dates_without_page_reload():
+    static_root = Path(__file__).resolve().parents[1] / "static" / "reports"
+    builder = (static_root / "report-builder.js").read_text()
+    calendar = (static_root / "calendar.js").read_text()
+
+    assert "refreshPositionCalendars" in builder
+    assert "if (!source.dataset.sourceName)" in builder
+    assert "selected.has(value)" in builder
+    assert "calendar-dates-updated" in builder
+    assert "calendar-dates-updated" in calendar
 
 
 def test_source_picker_only_requires_confirmation_for_another_domain():
