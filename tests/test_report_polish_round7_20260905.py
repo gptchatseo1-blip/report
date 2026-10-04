@@ -69,8 +69,9 @@ def _snapshot(project, day, stored, raw):
 
 
 class _SummaryClient:
-    def __init__(self, values):
+    def __init__(self, values, tops=None):
         self.values = values
+        self.tops = tops or {}
         self.calls = []
 
     def get_summary_chart(self, project_id, *, region_index, dates):
@@ -80,6 +81,10 @@ class _SummaryClient:
             "seriesByProjectsId": {
                 str(project_id): {
                     "visibility": [self.values.get(day) for day in dates],
+                    "tops": {
+                        label: [values.get(day) for day in dates]
+                        for label, values in self.tops.items()
+                    },
                 }
             },
         }
@@ -119,6 +124,39 @@ def test_live_refresh_replaces_stale_provider_snapshot_before_clear():
     assert snapshot.visibility_raw["value"] == "15.65"
     assert snapshot.provenance["visibility"]["value"] == "15.65"
     assert client.calls == [("42", 1, ("2026-08-31",))]
+
+
+def test_live_refresh_stores_exact_provider_top_counts_and_editor_percentages():
+    project = _project()
+    snapshot = _snapshot(project, date(2026, 8, 17), "15.0000", "15")
+    client = _SummaryClient(
+        {"2026-08-17": "15.65"},
+        tops={
+            "1-3": {"2026-08-17": 253},
+            "1-10": {"2026-08-17": 754},
+            "11-30": {"2026-08-17": 826},
+            "all": {"2026-08-17": 2974},
+        },
+    )
+
+    updated = refresh_provider_visibility(project, client=client)
+
+    snapshot.refresh_from_db()
+    rows, _segments = views._topvisor_editor_data(project)
+    assert updated == 1
+    assert snapshot.provenance["tops"] == {
+        "1_3": 253,
+        "1_10": 754,
+        "11_30": 826,
+        "all": 2974,
+    }
+    assert rows[-1]["total"] == 2974
+    assert rows[-1]["top3"] == 253
+    assert rows[-1]["top10"] == 754
+    assert rows[-1]["top11_30"] == 826
+    assert rows[-1]["top3_percent"] == 8.51
+    assert rows[-1]["top10_percent"] == 25.35
+    assert rows[-1]["top11_30_percent"] == 27.77
 
 
 def test_clear_after_live_refresh_returns_current_topvisor_display_value():
