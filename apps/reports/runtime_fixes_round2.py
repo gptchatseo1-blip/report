@@ -225,7 +225,8 @@ def _manual_topvisor_segment(payload, segment):
         existing = history_by_month.get(month_key)
         include = row.get("include_in_report", True)
         should_apply = not explicit_selection or include
-        if should_apply and (row.get("manual_override", True) or existing is None):
+        if should_apply:
+            manual_override = bool(row.get("manual_override", True))
             manual_visibility = row.get("visibility")
             fallback_visibility = (
                 existing.get("visibility") if existing else row.get("automatic_visibility")
@@ -234,11 +235,14 @@ def _manual_topvisor_segment(payload, segment):
                 **(existing or {}),
                 "month": row["month"],
                 "visibility": (
-                    manual_visibility if manual_visibility is not None else fallback_visibility
+                    manual_visibility
+                    if manual_override and manual_visibility is not None
+                    else fallback_visibility
                 ),
                 "distribution": _row_distribution(row, depth),
                 "ranking_depth": (existing or {}).get("ranking_depth", depth),
-                "manual_override": bool(row.get("manual_override", True)),
+                "manual_override": manual_override,
+                "editor_distribution": True,
             }
         point = history_by_month.get(month_key)
         if include and point is not None:
