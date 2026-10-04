@@ -456,6 +456,59 @@ def test_landing_comparison_uses_metrika_level_aggregates_without_resumming_leav
     assert about_row.cells[2].paragraphs[0].text == "4298"
 
 
+@pytest.mark.parametrize(
+    ("engine", "engine_id", "expected"),
+    [("Яндекс", "yandex", "4298"), ("Google", "google", "6355")],
+)
+def test_landing_comparison_uses_the_matching_metrika_level_for_each_engine(
+    engine, engine_id, expected
+):
+    document = Document()
+    _configure_document(document, "site.test", date(2026, 9, 1))
+    rows = [
+        {
+            "dimensions": [
+                {"id": engine_id, "name": engine},
+                {"name": "https://site.test/about/"},
+            ],
+            "hierarchy_level": 1,
+            "visits": expected,
+            "users": "3907",
+        },
+        {
+            "dimensions": [
+                {"id": engine_id, "name": engine},
+                {"name": "https://site.test/about/"},
+            ],
+            "hierarchy_level": 2,
+            "visits": "4116",
+            "users": "3742",
+        },
+        {
+            "dimensions": [
+                {"id": engine_id, "name": engine},
+                {"name": "https://site.test/about/team/"},
+            ],
+            "hierarchy_level": 2,
+            "visits": "182",
+            "users": "165",
+        },
+    ]
+
+    table = _landing_comparison_table(
+        document,
+        {"project": {"normalized_domain": "site.test"}},
+        rows,
+        [],
+        engine,
+        total_values=({"visits": "7207", "users": "6417"}, {}),
+        provider_hierarchy=True,
+    )
+
+    about_row = next(row for row in table.rows if row.cells[0].text.endswith("/about/"))
+    assert about_row.cells[2].paragraphs[0].text == expected
+
+
 def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
     document = Document()
     _configure_document(document, "site.test", date(2026, 7, 1))
