@@ -241,6 +241,7 @@ class TopvisorClient:
                 "region_index": int(region_index),
                 "dates": list(dates),
                 "type_range": 100,
+                "show_tops": 1,
                 "show_visibility": 1,
             },
         )
