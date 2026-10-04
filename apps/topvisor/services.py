@@ -3,7 +3,7 @@ import json
 import re
 from calendar import monthrange
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import transaction
@@ -173,6 +173,7 @@ def store_snapshot(*, mapping: TopvisorProjectMapping, configuration, snapshot_d
             "report_depth": depth,
             "retrieved_at": retrieved_at.isoformat(),
             "visibility": raw_visibility,
+            "tops": payload.get("tops") or {},
         },
     }
     existing = RankingSnapshot.objects.filter(
@@ -335,6 +336,71 @@ def _summary_visibility(payload, project_id):
     return result
 
 
+def _normalized_top_counts(value):
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for label, raw in value.items():
+        if isinstance(raw, dict):
+            raw = raw.get("value", raw.get("count"))
+        try:
+            count = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if not count.is_finite() or count < 0:
+            continue
+        result[str(label).strip().replace("-", "_")] = int(count)
+    return result
+
+
+def _summary_tops(payload, project_id):
+    """Normalize Topvisor's exact TOP counters for every requested date."""
+    if not isinstance(payload, dict):
+        return {}
+    dates = [
+        str(item.get("date", item)) if isinstance(item, dict) else str(item)
+        for item in payload.get("dates", [])
+    ]
+    projects = payload.get("seriesByProjectsId") or payload.get("series_by_projects_id") or {}
+    series = projects.get(str(project_id)) or {}
+    if not series:
+        try:
+            series = projects.get(int(project_id)) or {}
+        except (TypeError, ValueError):
+            pass
+    tops = series.get("tops") or {}
+    result = {}
+    if isinstance(tops, list):
+        for day, values in zip(dates, tops, strict=False):
+            normalized = _normalized_top_counts(values)
+            if normalized:
+                result[day] = normalized
+        return result
+    if not isinstance(tops, dict):
+        return result
+
+    by_date = {day: {} for day in dates}
+    for label, values in tops.items():
+        if isinstance(values, dict):
+            if any(day in values for day in dates):
+                values = [values.get(day) for day in dates]
+            else:
+                values = values.get("values") or values.get("series") or values.get("data") or []
+        if not isinstance(values, list | tuple):
+            values = [values]
+        for day, raw in zip(dates, values, strict=False):
+            normalized = _normalized_top_counts({label: raw})
+            if normalized:
+                by_date[day].update(normalized)
+    return {day: values for day, values in by_date.items() if values}
+
+
+def provider_tops(snapshot):
+    """Return exact TOP counters saved from Topvisor's summary chart."""
+    provenance = getattr(snapshot, "provenance", None) or {}
+    return _normalized_top_counts(provenance.get("tops") or {})
+
+
 def sync_positions(*, mapping, report_month=None, client=None):
     """Download existing checks only; this never starts a provider position check."""
     explicit_report_month = report_month is not None
@@ -393,6 +459,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                         )
                     )
                 visibility_by_date = {}
+                tops_by_date = {}
                 if hasattr(client, "get_summary_chart"):
                     for start in range(0, len(existing_dates), 31):
                         summary = client.get_summary_chart(
@@ -401,6 +468,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                             dates=existing_dates[start : start + 31],
                         )
                         visibility_by_date.update(_summary_visibility(summary, provider_project_id))
+                        tops_by_date.update(_summary_tops(summary, provider_project_id))
                 downloaded.append(
                     (
                         configuration,
@@ -408,6 +476,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                         tuple(existing_dates),
                         pages,
                         visibility_by_date,
+                        tops_by_date,
                     )
                 )
 
@@ -419,6 +488,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 _dates,
                 pages,
                 _visibility_by_date,
+                _tops_by_date,
             ) in downloaded:
                 frequency_map = frequency_maps.setdefault(provider_project_id, {})
                 all_queries = queries_by_project.setdefault(provider_project_id, set())
@@ -453,6 +523,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                 existing_dates,
                 pages,
                 visibility_by_date,
+                tops_by_date,
             ) in downloaded:
                 frequency_map = frequency_maps[provider_project_id]
                 combined = {}
@@ -484,6 +555,7 @@ def sync_positions(*, mapping, report_month=None, client=None):
                                     if hasattr(client, "get_summary_chart")
                                     else {}
                                 ),
+                                "tops": tops_by_date.get(snapshot_date, {}),
                             },
                         )
                     )

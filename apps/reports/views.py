@@ -26,7 +26,7 @@ from django.views.decorators.http import require_POST
 from apps.projects.forms import ProjectQuickCreateForm
 from apps.projects.models import Project
 from apps.topvisor.models import TopvisorProjectMapping
-from apps.topvisor.services import configuration_id, configuration_segment
+from apps.topvisor.services import configuration_id, configuration_segment, provider_tops
 
 from .exporting import (
     ExportBlocked,
@@ -139,6 +139,13 @@ def _validated_manual_rows(value):
     return validate_topvisor_manual_rows(value)
 
 
+def _top_percent(value, total, *, precise=False):
+    if not total:
+        return 0
+    percentage = value * 100 / total
+    return round(percentage, 2) if precise else round(percentage)
+
+
 def _topvisor_editor_data(project):
     """Latest editable rows and every configured search-engine/region pair."""
     from apps.metrics.models import RankingSnapshot
@@ -219,6 +226,15 @@ def _topvisor_editor_data(project):
         )
         positions = list(snapshot.positions.all())
         ranked = [row.position_value for row in positions if row.position_value is not None]
+        local_top3 = sum(value <= 3 for value in ranked)
+        local_top10 = sum(value <= 10 for value in ranked)
+        local_top11_30 = sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked)
+        exact_tops = provider_tops(snapshot)
+        total = exact_tops.get("all", len(positions))
+        top3 = exact_tops.get("1_3", local_top3)
+        top10 = exact_tops.get("1_10", local_top10)
+        top11_30 = exact_tops.get("11_30", local_top11_30)
+
         rows.append(
             {
                 "configuration_id": configuration,
@@ -226,23 +242,13 @@ def _topvisor_editor_data(project):
                 "region": region,
                 "month": month.isoformat(),
                 "visibility": float(snapshot.visibility) if snapshot.visibility is not None else 0,
-                "total": len(positions),
-                "top3": sum(value <= 3 for value in ranked),
-                "top10": sum(value <= 10 for value in ranked),
-                "top11_30": sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked),
-                "top3_percent": round(sum(value <= 3 for value in ranked) * 100 / len(positions))
-                if positions
-                else 0,
-                "top10_percent": round(sum(value <= 10 for value in ranked) * 100 / len(positions))
-                if positions
-                else 0,
-                "top11_30_percent": round(
-                    sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked)
-                    * 100
-                    / len(positions)
-                )
-                if positions
-                else 0,
+                "total": total,
+                "top3": top3,
+                "top10": top10,
+                "top11_30": top11_30,
+                "top3_percent": _top_percent(top3, total, precise="all" in exact_tops),
+                "top10_percent": _top_percent(top10, total, precise="all" in exact_tops),
+                "top11_30_percent": _top_percent(top11_30, total, precise="all" in exact_tops),
             }
         )
     engine_order = {"yandex": 0, "google": 1}
