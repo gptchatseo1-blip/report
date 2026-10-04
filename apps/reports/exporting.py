@@ -3861,12 +3861,25 @@ def _landing_comparison_table(
     total_values=None,
     provider_hierarchy=False,
 ):
-    current = _aggregate_detail_rows(
-        [row for row in current_rows if _search_engine_name(row) == engine], _landing_url
-    )
-    previous = _aggregate_detail_rows(
-        [row for row in previous_rows if _search_engine_name(row) == engine], _landing_url
-    )
+    def hierarchy_rows(rows):
+        matching = [row for row in rows if _search_engine_name(row) == engine]
+        if not provider_hierarchy:
+            return matching
+        exact_levels = []
+        for row in matching:
+            url = _landing_url(row)
+            depth = len([part for part in urlsplit(url).path.split("/") if part])
+            expected_level = max(1, min(depth, 2))
+            try:
+                actual_level = int(row.get("hierarchy_level") or 0)
+            except (TypeError, ValueError):
+                actual_level = 0
+            if actual_level in {0, expected_level}:
+                exact_levels.append(row)
+        return exact_levels
+
+    current = _aggregate_detail_rows(hierarchy_rows(current_rows), _landing_url)
+    previous = _aggregate_detail_rows(hierarchy_rows(previous_rows), _landing_url)
     return _landing_hierarchy_table(
         doc,
         payload,

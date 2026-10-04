@@ -12,6 +12,11 @@ urlpatterns = [
     path("projects/create/", views.project_create, name="project-create"),
     path("projects/<uuid:project_id>/delete/", views.project_delete, name="project-delete"),
     path("projects/<uuid:project_id>/reports/", views.report_list, name="report-list"),
+    path(
+        "projects/<uuid:project_id>/reports/position-calendars/",
+        views.position_calendar_data,
+        name="position-calendar-data",
+    ),
     path("projects/<uuid:project_id>/reports/create/", views.report_create, name="report-create"),
     path(
         "projects/<uuid:project_id>/reports/settings/",

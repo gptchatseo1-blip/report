@@ -73,6 +73,49 @@ def test_report_form_offers_only_dates_complete_for_active_configurations():
     assert list(form.fields["google_dates"].choices) == [("2026-07-02", "02.07.2026")]
 
 
+def test_position_calendar_endpoint_returns_dates_added_after_page_load(client):
+    user = get_user_model().objects.create_user("calendar-refresh")
+    project = Project.objects.create(name="Calendar refresh", domain="calendar-refresh.example")
+    TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="1",
+        selected_configurations=[{"id": "google-main", "search_engine": "google"}],
+    )
+    RankingSnapshot.objects.create(
+        project=project,
+        snapshot_date=date(2026, 9, 7),
+        search_engine="google",
+        region="Москва",
+        ranking_depth=20,
+        topvisor_configuration_id="google-main",
+    )
+    client.force_login(user)
+    url = reverse("reports:position-calendar-data", args=[project.id])
+
+    first = client.get(url, HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    assert first.status_code == 200
+    assert first.json() == {
+        "ok": True,
+        "calendars": [{"field_name": "google_dates", "dates": ["2026-09-07"]}],
+    }
+
+    RankingSnapshot.objects.create(
+        project=project,
+        snapshot_date=date(2026, 10, 5),
+        search_engine="google",
+        region="Москва",
+        ranking_depth=20,
+        topvisor_configuration_id="google-main",
+    )
+    refreshed = client.get(url, HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    assert refreshed.json()["calendars"] == [
+        {
+            "field_name": "google_dates",
+            "dates": ["2026-10-05", "2026-09-07"],
+        }
+    ]
+
+
 def test_selected_metrika_and_webmaster_periods_are_independent():
     project = Project.objects.create(name="Sources", domain="sources.example")
     m1 = source_snapshot(project, SourceSnapshot.Source.METRIKA, date(2026, 1, 1), 10, "visits")

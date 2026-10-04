@@ -8,6 +8,41 @@
   const globalSyncStatus = form.querySelector('[data-global-sync-status]');
   let saveTimer;
 
+  const refreshPositionCalendars = async () => {
+    if (!form.dataset.positionCalendarsUrl) return 0;
+    const response = await fetch(form.dataset.positionCalendarsUrl, {
+      credentials: 'same-origin',
+      headers: {'X-Requested-With': 'XMLHttpRequest'},
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || 'Не удалось обновить календарь проверок.');
+    }
+    let updated = 0;
+    (data.calendars || []).forEach(calendar => {
+      const root = [...form.querySelectorAll('[data-calendar]')].find(
+        item => item.dataset.fieldName === calendar.field_name,
+      );
+      const source = root?.querySelector('.calendar-source');
+      if (!root || !source) return;
+      const selected = new Set(
+        [...source.querySelectorAll('input[type=checkbox]:checked')].map(input => input.value),
+      );
+      source.replaceChildren();
+      (calendar.dates || []).forEach(value => {
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.name = calendar.field_name;
+        input.value = value;
+        input.checked = selected.has(value);
+        source.append(input);
+      });
+      root.dispatchEvent(new CustomEvent('calendar-dates-updated'));
+      updated += 1;
+    });
+    return updated;
+  };
+
   const setMetrikaCreateBlocked = (blocked, message = '') => {
     if (!createButton) return;
     createButton.dataset.syncBlocked = blocked ? 'true' : 'false';
@@ -478,6 +513,9 @@
           if (source.dataset.sourceName && data.periods) {
             const card = document.querySelector(`[data-source-period-picker][data-source-name="${source.dataset.sourceName}"]`);
             replacePeriods(card, data.periods, source.dataset.sourceName);
+          }
+          if (!source.dataset.sourceName) {
+            await refreshPositionCalendars();
           }
           if (source.dataset.sourceName === 'metrika_snapshots') {
             setMetrikaCreateBlocked(
