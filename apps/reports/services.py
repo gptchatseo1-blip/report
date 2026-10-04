@@ -132,10 +132,10 @@ def _json_path(*keys):
 
 
 def _search_landing_hierarchy_expression(robotness):
-    """Return only URL levels rendered by the two search-engine comparison tables."""
+    """Return root, category and nested-page levels rendered by the comparison tables."""
     if connection.vendor == "postgresql":
         path = (
-            f"$.detail_variants.search.{robotness}.landing_hierarchy[*] ? (@.hierarchy_level <= 2)"
+            f"$.detail_variants.search.{robotness}.landing_hierarchy[*] ? (@.hierarchy_level <= 3)"
         )
         return RawSQL(
             "jsonb_path_query_array(payload, %s::jsonpath)",
@@ -211,7 +211,7 @@ def _visible_landing_hierarchy_rows(rows):
             level = int(row.get("hierarchy_level") or 0)
         except (AttributeError, TypeError, ValueError):
             level = 0
-        if level in {0, 1, 2}:
+        if level in {0, 1, 2, 3}:
             result.append(row)
     return result
 
