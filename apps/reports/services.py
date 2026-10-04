@@ -13,8 +13,9 @@ from functools import partial
 
 from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import transaction
-from django.db.models import Max
+from django.db import connection, transaction
+from django.db.models import JSONField, Max
+from django.db.models.expressions import RawSQL
 from django.db.models.fields.json import KeyTransform
 from django.utils import timezone
 from PIL import Image
@@ -130,6 +131,20 @@ def _json_path(*keys):
     return expression
 
 
+def _search_landing_hierarchy_expression(robotness):
+    """Return only URL levels rendered by the two search-engine comparison tables."""
+    if connection.vendor == "postgresql":
+        path = (
+            f"$.detail_variants.search.{robotness}.landing_hierarchy[*] ? (@.hierarchy_level <= 2)"
+        )
+        return RawSQL(
+            "jsonb_path_query_array(payload, %s::jsonpath)",
+            (path,),
+            output_field=JSONField(),
+        )
+    return _json_path("detail_variants", "search", robotness, "landing_hierarchy")
+
+
 def _metrika_payload_annotations(display_options):
     """Return only report-visible Metrika JSON branches from PostgreSQL.
 
@@ -171,6 +186,7 @@ def _metrika_payload_annotations(display_options):
         "report_detail_search_landing_total": _json_path(
             "detail_variants", "search", robotness, "landing_pages_total"
         ),
+        "report_detail_search_landing_hierarchy": _search_landing_hierarchy_expression(robotness),
         "report_traffic_source_variant": _json_path("traffic_source_variants", robotness),
         "report_traffic_source_quarter_variant": _json_path(
             "traffic_source_quarter_variants", robotness
@@ -186,6 +202,18 @@ def _snapshot_json_branch(snapshot, *keys):
         .values_list(_json_path(*keys), flat=True)
         .get()
     )
+
+
+def _visible_landing_hierarchy_rows(rows):
+    result = []
+    for row in rows or []:
+        try:
+            level = int(row.get("hierarchy_level") or 0)
+        except (AttributeError, TypeError, ValueError):
+            level = 0
+        if level in {0, 1, 2}:
+            result.append(row)
+    return result
 
 
 def _report_metrika_payload_from_snapshot(snapshot, display_options, *, include_large_details=True):
@@ -275,8 +303,10 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options, *, include_
             _snapshot_json_branch(snapshot, "detail_variants", "search", robotness, "landing_pages")
             or []
         )
-    # The provider hierarchy repeats up to 30,000 URL rows per month. The
-    # exporter derives the same two-level hierarchy from landing pages.
+    if include_large_details and include_search_landing:
+        search_detail["landing_hierarchy"] = _visible_landing_hierarchy_rows(
+            getattr(snapshot, "report_detail_search_landing_hierarchy", None)
+        )
     compact["detail_variants"] = {"search": {robotness: search_detail}}
     if segment != "search":
         compact["detail_variants"][segment] = {robotness: selected_detail}
