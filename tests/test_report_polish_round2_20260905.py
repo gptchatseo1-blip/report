@@ -134,6 +134,35 @@ def test_active_manual_visibility_overrides_automatic_value():
     assert result["monthly_table_series"][-1]["visibility"] == 13.5
 
 
+def test_active_automatic_row_uses_editor_distribution_without_overriding_visibility():
+    row = _row("2026-08-01", include=True, manual_override=False)
+    row.update(
+        {
+            "top3": 253,
+            "top10": 754,
+            "top11_30": 826,
+            "top3_percent": 9,
+            "top10_percent": 25,
+            "top11_30_percent": 28,
+        }
+    )
+
+    result = _manual_topvisor_segment(
+        {"display_options": {"topvisor_manual_rows": validate_manual_rows([row])}},
+        _segment(),
+    )
+    august = result["monthly_table_series"][-1]
+
+    assert august["visibility"] == 15.65
+    assert august["manual_override"] is False
+    assert august["editor_distribution"] is True
+    assert august["distribution"]["manual_buckets"] == {
+        "1-3": {"count": 253, "share": 9.0},
+        "1-10": {"count": 754, "share": 25.0},
+        "11-30": {"count": 826, "share": 28.0},
+    }
+
+
 def test_deleted_row_is_not_exposed_to_monthly_report_table():
     source = _row("2026-08-01", include=True)
     source["deleted"] = True
