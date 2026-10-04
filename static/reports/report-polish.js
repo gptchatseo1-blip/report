@@ -198,13 +198,13 @@
     const percent = Number(numbers[0].replace(',', '.'));
     const count = Number((numbers[1] || numbers[0]).replace(',', '.'));
     if (!Number.isFinite(percent) || !Number.isFinite(count) || percent < 0 || percent > 100 || count < 0) return false;
-    row[`${name}_percent`] = Math.max(0, Math.min(100, percent));
+    row[`${name}_percent`] = Math.max(0, Math.min(100, Math.round(percent)));
     row[name] = Math.max(0, Math.round(count));
     return true;
   };
   const topValue = (row, name) => {
     const percent = row[`${name}_percent`] ?? (row.total ? Number(row[name] || 0) * 100 / Number(row.total) : 0);
-    return `${formatNumber(percent)}% (${Math.max(0, Math.round(Number(row[name] || 0)))})`;
+    return `${Math.round(percent)}% (${Math.max(0, Math.round(Number(row[name] || 0)))})`;
   };
 
   function renderRows(focusUid = null) {
