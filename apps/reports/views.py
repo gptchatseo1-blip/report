@@ -21,7 +21,7 @@ from django.http import (
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from apps.projects.forms import ProjectQuickCreateForm
 from apps.projects.models import Project
@@ -725,6 +725,22 @@ def report_list(request, project_id):
         "reports/report_list.html",
         context,
     )
+
+
+@login_required
+@require_GET
+def position_calendar_data(request, project_id):
+    """Return current position-check dates without reloading the report builder."""
+    project = get_object_or_404(Project, pk=project_id)
+    form = ReportCreateForm(project=project)
+    calendars = [
+        {
+            "field_name": item["field"].name,
+            "dates": [str(value) for value, _label in item["field"].field.choices],
+        }
+        for item in _calendar_fields(form)
+    ]
+    return JsonResponse({"ok": True, "calendars": calendars})
 
 
 @login_required
