@@ -333,7 +333,7 @@ def test_graph_uses_only_dates_checked_in_calendar():
     ]
 
 
-def test_calendar_graph_keeps_provider_yandex_buckets_instead_of_manual_three_buckets():
+def test_calendar_graph_uses_selected_editor_buckets_and_keeps_provider_tail():
     automatic_distribution = {
         "total": 100,
         "top_10": 40,
@@ -363,7 +363,8 @@ def test_calendar_graph_keeps_provider_yandex_buckets_instead_of_manual_three_bu
             "three_month_series": [
                 {
                     "month": "2026-08-01",
-                    "manual_override": True,
+                    "manual_override": False,
+                    "editor_distribution": True,
                     "distribution": {
                         "manual_buckets": {
                             "1-3": {"count": 20, "share": 20},
@@ -374,12 +375,17 @@ def test_calendar_graph_keeps_provider_yandex_buckets_instead_of_manual_three_bu
                 }
             ],
         },
-        lambda _distribution, _depth: [],
+        exporting._topvisor_buckets,
         payload,
         segment,
     )
 
-    assert rendered["chart_series"][0]["distribution"] == automatic_distribution
+    buckets = rendered["chart_series"][0]["distribution"]["manual_buckets"]
+    assert buckets["1-3"] == {"count": 20, "share": 20}
+    assert buckets["1-10"] == {"count": 50, "share": 50}
+    assert buckets["11-30"] == {"count": 30, "share": 30}
+    assert buckets["31-50"] == {"count": 15, "share": 15.0}
+    assert buckets["51-100"] == {"count": 12, "share": 12.0}
 
 
 def test_distribution_uses_last_calendar_day_instead_of_latest_provider_snapshot():
