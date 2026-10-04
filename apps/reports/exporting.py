@@ -3869,7 +3869,9 @@ def _landing_comparison_table(
         for row in matching:
             url = _landing_url(row)
             depth = len([part for part in urlsplit(url).path.split("/") if part])
-            expected_level = max(1, min(depth, 2))
+            # Metrika counts the site root as URL level 1, so path depth N
+            # belongs to provider hierarchy level N + 1.
+            expected_level = max(1, min(depth + 1, 3))
             try:
                 actual_level = int(row.get("hierarchy_level") or 0)
             except (TypeError, ValueError):
