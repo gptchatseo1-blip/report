@@ -471,7 +471,7 @@ def test_landing_comparison_uses_the_matching_metrika_level_for_each_engine(
                 {"id": engine_id, "name": engine},
                 {"name": "https://site.test/about/"},
             ],
-            "hierarchy_level": 1,
+            "hierarchy_level": 2,
             "visits": expected,
             "users": "3907",
         },
@@ -480,7 +480,7 @@ def test_landing_comparison_uses_the_matching_metrika_level_for_each_engine(
                 {"id": engine_id, "name": engine},
                 {"name": "https://site.test/about/"},
             ],
-            "hierarchy_level": 2,
+            "hierarchy_level": 3,
             "visits": "4116",
             "users": "3742",
         },
@@ -489,7 +489,7 @@ def test_landing_comparison_uses_the_matching_metrika_level_for_each_engine(
                 {"id": engine_id, "name": engine},
                 {"name": "https://site.test/about/team/"},
             ],
-            "hierarchy_level": 2,
+            "hierarchy_level": 3,
             "visits": "182",
             "users": "165",
         },
@@ -501,12 +501,15 @@ def test_landing_comparison_uses_the_matching_metrika_level_for_each_engine(
         rows,
         [],
         engine,
+        expanded_groups=[{"patterns": ["https://site.test/about/"]}],
         total_values=({"visits": "7207", "users": "6417"}, {}),
         provider_hierarchy=True,
     )
 
     about_row = next(row for row in table.rows if row.cells[0].text.endswith("/about/"))
+    child_row = next(row for row in table.rows if row.cells[0].text.endswith("/about/team/"))
     assert about_row.cells[2].paragraphs[0].text == expected
+    assert child_row.cells[2].paragraphs[0].text == "182"
 
 
 def test_info_comparison_contains_only_aggregated_sections_sorted_by_visits():
