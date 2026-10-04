@@ -139,11 +139,10 @@ def _validated_manual_rows(value):
     return validate_topvisor_manual_rows(value)
 
 
-def _top_percent(value, total, *, precise=False):
+def _top_percent(value, total):
     if not total:
         return 0
-    percentage = value * 100 / total
-    return round(percentage, 2) if precise else round(percentage)
+    return int(value * 100 / total + 0.5)
 
 
 def _topvisor_editor_data(project):
@@ -212,6 +211,13 @@ def _topvisor_editor_data(project):
             snapshot.snapshot_date.replace(day=1),
         )
         latest[key] = snapshot
+    latest_totals = {}
+    for (engine, region, configuration, _month), snapshot in sorted(latest.items()):
+        provider_total = provider_tops(snapshot).get("all")
+        if provider_total:
+            # Topvisor uses the keyword total from the newest check as the
+            # denominator for every point of the selected TOP-% chart.
+            latest_totals[(engine, region, configuration)] = provider_total
     rows = []
     for (engine, region, configuration, month), snapshot in sorted(latest.items()):
         segment_key = (engine.casefold(), " ".join(region.split()).casefold())
@@ -230,7 +236,10 @@ def _topvisor_editor_data(project):
         local_top10 = sum(value <= 10 for value in ranked)
         local_top11_30 = sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked)
         exact_tops = provider_tops(snapshot)
-        total = exact_tops.get("all", len(positions))
+        total = latest_totals.get(
+            (engine, region, configuration),
+            exact_tops.get("all", len(positions)),
+        )
         top3 = exact_tops.get("1_3", local_top3)
         top10 = exact_tops.get("1_10", local_top10)
         top11_30 = exact_tops.get("11_30", local_top11_30)
@@ -246,9 +255,9 @@ def _topvisor_editor_data(project):
                 "top3": top3,
                 "top10": top10,
                 "top11_30": top11_30,
-                "top3_percent": _top_percent(top3, total, precise="all" in exact_tops),
-                "top10_percent": _top_percent(top10, total, precise="all" in exact_tops),
-                "top11_30_percent": _top_percent(top11_30, total, precise="all" in exact_tops),
+                "top3_percent": _top_percent(top3, total),
+                "top10_percent": _top_percent(top10, total),
+                "top11_30_percent": _top_percent(top11_30, total),
             }
         )
     engine_order = {"yandex": 0, "google": 1}

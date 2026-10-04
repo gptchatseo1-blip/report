@@ -183,8 +183,8 @@
         if (type === 'month') input.value = String(value).slice(0, 7);
         else {
           const percentName = `${name}_percent`;
-          const percent = row[percentName] ?? (row.total ? Math.round(Number(value || 0) * 100 / Number(row.total)) : 0);
-          input.value = `${percent}% (${value})`;
+          const percent = row[percentName] ?? (row.total ? Number(value || 0) * 100 / Number(row.total) : 0);
+          input.value = `${Math.round(percent)}% (${value})`;
           input.inputMode = 'decimal';
           input.setAttribute('aria-label', 'Процент и количество');
         }
@@ -193,7 +193,7 @@
           if (type === 'month') row[name] = input.value ? `${input.value}-01` : '';
           else {
             const numbers = input.value.match(/-?\d+(?:[.,]\d+)?/g) || [];
-            row[`${name}_percent`] = Math.max(0, Math.min(100, Number((numbers[0] || '0').replace(',', '.'))));
+            row[`${name}_percent`] = Math.max(0, Math.min(100, Math.round(Number((numbers[0] || '0').replace(',', '.')))));
             row[name] = Math.max(0, Math.round(Number(numbers[1] || numbers[0] || 0)));
           }
           changeManualRows(700);

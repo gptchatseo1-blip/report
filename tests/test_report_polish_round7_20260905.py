@@ -154,9 +154,41 @@ def test_live_refresh_stores_exact_provider_top_counts_and_editor_percentages():
     assert rows[-1]["top3"] == 253
     assert rows[-1]["top10"] == 754
     assert rows[-1]["top11_30"] == 826
-    assert rows[-1]["top3_percent"] == 8.51
-    assert rows[-1]["top10_percent"] == 25.35
-    assert rows[-1]["top11_30_percent"] == 27.77
+    assert rows[-1]["top3_percent"] == 9
+    assert rows[-1]["top10_percent"] == 25
+    assert rows[-1]["top11_30_percent"] == 28
+
+
+def test_editor_uses_newest_keyword_total_for_every_month_and_whole_percentages():
+    project = _project()
+    august = _snapshot(project, date(2026, 8, 17), "15.0000", "15")
+    september = _snapshot(project, date(2026, 9, 21), "16.0000", "16")
+    august.provenance["tops"] = {
+        "1_3": 253,
+        "1_10": 754,
+        "11_30": 826,
+        "all": 2396,
+    }
+    september.provenance["tops"] = {
+        "1_3": 290,
+        "1_10": 884,
+        "11_30": 1066,
+        "all": 2974,
+    }
+    august.save(update_fields=["provenance"])
+    september.save(update_fields=["provenance"])
+
+    rows, _segments = views._topvisor_editor_data(project)
+    by_month = {row["month"][:7]: row for row in rows}
+
+    assert by_month["2026-08"]["total"] == 2974
+    assert by_month["2026-08"]["top3_percent"] == 9
+    assert by_month["2026-08"]["top10_percent"] == 25
+    assert by_month["2026-08"]["top11_30_percent"] == 28
+    assert by_month["2026-09"]["total"] == 2974
+    assert by_month["2026-09"]["top3_percent"] == 10
+    assert by_month["2026-09"]["top10_percent"] == 30
+    assert by_month["2026-09"]["top11_30_percent"] == 36
 
 
 def test_clear_after_live_refresh_returns_current_topvisor_display_value():

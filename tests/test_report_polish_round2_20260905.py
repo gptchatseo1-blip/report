@@ -200,6 +200,8 @@ def test_round2_ui_contract_contains_dashed_trigger_and_row_actions():
     assert "manual-row-delete-round2" in js
     assert "other._deleted" in js
     assert "rows.splice(rows.indexOf(deletedMatch), 1)" in js
+    assert "Math.min(100, Number(row.top3_percent || 0))" in js
+    assert "`${Math.round(percent)}% (" in js
     assert "border-bottom:1px dashed currentColor" in css
     assert "Скорректировать таблицы динамики" in js
 
