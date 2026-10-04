@@ -55,11 +55,12 @@ def _decimal(value):
         return None
 
 
-def _read_saved_rows(project):
+def _read_saved_rows(project, *, sanitize=True):
     settings = ProjectReportSettings.objects.filter(project=project).first()
     values = (settings.values if settings else {}) or {}
     raw = values.get("topvisor_manual_rows") or "[]"
-    raw = sanitize_stale_topvisor_visibility(project, raw)
+    if sanitize:
+        raw = sanitize_stale_topvisor_visibility(project, raw)
     try:
         rows = json.loads(raw or "[]") if isinstance(raw, str) else raw
     except json.JSONDecodeError:
@@ -133,7 +134,12 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
 
     from apps.topvisor.client import client_for_project
     from apps.topvisor.models import TopvisorProjectMapping
-    from apps.topvisor.services import _summary_visibility, configuration_id, configuration_segment
+    from apps.topvisor.services import (
+        _summary_tops,
+        _summary_visibility,
+        configuration_id,
+        configuration_segment,
+    )
 
     mapping = TopvisorProjectMapping.objects.filter(project=project).first()
     if mapping is None:
@@ -181,21 +187,26 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
                 dates=dates,
             )
             values = _summary_visibility(payload, provider_project_id)
+            tops_by_date = _summary_tops(payload, provider_project_id)
             changed = []
             for snapshot in batch:
                 day = snapshot.snapshot_date.isoformat()
                 exact = _decimal(values.get(day))
-                if exact is None:
+                exact_tops = tops_by_date.get(day) or {}
+                if exact is None and not exact_tops:
                     continue
-                raw = {
-                    "value": str(exact),
-                    "source": "topvisor_api_summary_chart",
-                    "retrieved_at": retrieved_at.isoformat(),
-                }
                 provenance = dict(snapshot.provenance or {})
-                provenance["visibility"] = raw
-                snapshot.visibility = exact
-                snapshot.visibility_raw = raw
+                if exact is not None:
+                    raw = {
+                        "value": str(exact),
+                        "source": "topvisor_api_summary_chart",
+                        "retrieved_at": retrieved_at.isoformat(),
+                    }
+                    provenance["visibility"] = raw
+                    snapshot.visibility = exact
+                    snapshot.visibility_raw = raw
+                if exact_tops:
+                    provenance["tops"] = exact_tops
                 snapshot.provenance = provenance
                 snapshot.retrieved_at = retrieved_at
                 changed.append(snapshot)
@@ -212,7 +223,9 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
 
 def refresh_editor_rows(project):
     """Refresh only unchecked rows; checked rows are frozen for the report."""
-    settings, values, saved_rows = _read_saved_rows(project)
+    # Do not sanitize here: checked rows are an explicit user snapshot and must
+    # survive an update byte-for-byte, including any intentionally edited value.
+    settings, values, saved_rows = _read_saved_rows(project, sanitize=False)
     automatic_by_key = {_row_key(row): row for row in _automatic_rows(project)}
     refreshed = []
 
