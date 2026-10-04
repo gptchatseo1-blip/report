@@ -27,6 +27,7 @@ from apps.topvisor.models import TopvisorProjectMapping
 from apps.topvisor.services import (
     VISIBILITY_FORMULA_URL,
     VISIBILITY_FORMULA_VERSION,
+    _summary_tops,
     calculate_visibility,
     sync_positions,
 )
@@ -1007,10 +1008,32 @@ def test_summary_chart_client_requests_provider_visibility(monkeypatch):
                 "region_index": 2,
                 "dates": ["2026-07-31"],
                 "type_range": 100,
+                "show_tops": 1,
                 "show_visibility": 1,
             },
         )
     ]
+
+
+def test_summary_tops_normalizes_exact_provider_counts_by_date():
+    payload = {
+        "dates": ["2026-08-17", "2026-09-21"],
+        "seriesByProjectsId": {
+            "42": {
+                "tops": {
+                    "1-3": [253, 290],
+                    "1-10": [754, 884],
+                    "11-30": [826, 1066],
+                    "all": [2974, 2940],
+                }
+            }
+        },
+    }
+
+    assert _summary_tops(payload, 42) == {
+        "2026-08-17": {"1_3": 253, "1_10": 754, "11_30": 826, "all": 2974},
+        "2026-09-21": {"1_3": 290, "1_10": 884, "11_30": 1066, "all": 2940},
+    }
 
 
 def test_history_sync_stores_exact_topvisor_visibility():
