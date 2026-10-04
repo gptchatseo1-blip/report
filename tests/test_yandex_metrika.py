@@ -800,7 +800,7 @@ def test_report_snapshot_uses_selected_json_branches_for_modern_metrika(
     for period in periods[-2:]:
         hierarchy = period["payload"]["detail_variants"]["search"]["humans"]["landing_hierarchy"]
         assert hierarchy
-        assert {row["hierarchy_level"] for row in hierarchy} == {1, 2}
+        assert {row["hierarchy_level"] for row in hierarchy} == {1, 2, 3}
     assert all(
         period["payload"]["detail_variants"]["search"]["humans"].get("landing_pages")
         for period in periods[-2:]
