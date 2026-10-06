@@ -402,17 +402,21 @@ class ReportCreateForm(forms.Form):
         help_text="Название и URL подраздела. Эти URL раскрываются вторым уровнем в таблицах.",
     )
     metrika_landing_comparison_subsection_url_groups = forms.CharField(
-        label="Подразделы для страниц входа: Яндекс и Google",
+        label="Категории внутри коммерческих разделов",
         required=False,
         widget=forms.Textarea(
             attrs={
                 "rows": 7,
-                "placeholder": "УЗИ | https://site.ru/diagnostika/uzi/*\nМРТ | https://site.ru/diagnostika/mrt/*",
+                "placeholder": (
+                    "Травматология | https://site.ru/lechenie/travmatologiya/*\n"
+                    "Неврология | https://site.ru/lechenie/nevrologiya/*\n"
+                    "УЗИ | https://site.ru/diagnostika/uzi/*"
+                ),
             }
         ),
         help_text=(
-            "URL-группы, используемые для детализации таблиц и текстовых выводов блока "
-            "«Страницы входа: Яндекс и Google»."
+            "Название категории и её URL/маска. В выводах будут показаны три категории "
+            "с наибольшим числом визитов внутри каждого коммерческого раздела."
         ),
     )
     include_metrika_goals = forms.BooleanField(label="Цели Метрики", required=False, initial=True)

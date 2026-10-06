@@ -131,6 +131,7 @@ class FakeWebmasterQueryAnalytics(FakeWebmaster):
     def __init__(self):
         super().__init__()
         self.analytics_calls = []
+        self.popular_calls = []
 
     def query_analytics(self, *args, **kwargs):
         self.analytics_calls.append(kwargs)
@@ -158,7 +159,29 @@ class FakeWebmasterQueryAnalytics(FakeWebmaster):
         }
 
     def popular_search_queries(self, *args, **kwargs):
-        raise AssertionError("Query Analytics already supplied the popular rows")
+        self.popular_calls.append(kwargs)
+        return {
+            "queries": [
+                {
+                    "query_id": "clinic",
+                    "query_text": "clinic",
+                    "indicators": {
+                        "TOTAL_SHOWS": 125,
+                        "TOTAL_CLICKS": 11,
+                        "AVG_SHOW_POSITION": 4.25,
+                    },
+                },
+                {
+                    "query_id": "doctor",
+                    "query_text": "doctor",
+                    "indicators": {
+                        "TOTAL_SHOWS": 21,
+                        "TOTAL_CLICKS": 2,
+                        "AVG_SHOW_POSITION": 8.5,
+                    },
+                },
+            ]
+        }
 
 
 def webmaster_http_error(code, error_code):
@@ -262,26 +285,27 @@ def test_sync_calculates_ctr_periods_and_is_idempotent(context):
     assert (refreshed.fetched_period_count, refreshed.reused_period_count) == (3, 0)
 
 
-def test_current_webmaster_totals_and_rows_use_same_all_locations_dataset(context):
+def test_current_webmaster_uses_provider_aggregate_totals_and_query_rows(context):
     item = mapping(context)
     api = FakeWebmasterQueryAnalytics()
 
     run = sync_webmaster(mapping=item, report_month=date(2026, 3, 1), user=context[0], client=api)
 
     assert run.status == run.Status.SUCCESS
-    assert len(api.analytics_calls) == 2
-    assert all(call["search_location"] == "ALL_LOCATIONS" for call in api.analytics_calls)
+    assert len(api.popular_calls) == 2
+    assert api.analytics_calls == []
     march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
     points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
-    assert points["search_impressions"] == 120
-    assert points["search_clicks"] == 12
-    assert float(points["average_position"]) == pytest.approx(4.833333, abs=0.0001)
-    assert march.payload["query_summary"]["shows"] == "120"
-    assert march.payload["query_data_source"] == "query_analytics_all_locations"
+    assert points["search_impressions"] == 400
+    assert points["search_clicks"] == 20
+    assert float(points["average_position"]) == pytest.approx(4, abs=0.0001)
+    assert march.payload["query_summary"]["shows"] == "400"
+    assert march.payload["query_data_source"] == "aggregate_search_queries"
     assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
+    assert march.payload["popular_queries"][0]["shows"] == "125"
 
 
-def test_empty_query_analytics_falls_back_to_legacy_totals_and_popular_rows(context):
+def test_aggregate_popular_rows_are_used_without_recalculating_values(context):
     class EmptyAnalytics(FakeWebmasterQueryAnalytics):
         def query_analytics(self, *args, **kwargs):
             self.analytics_calls.append(kwargs)
@@ -312,11 +336,11 @@ def test_empty_query_analytics_falls_back_to_legacy_totals_and_popular_rows(cont
     march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
     assert march.payload["query_summary"]["shows"] == "400"
     assert march.payload["query_summary"]["clicks"] == "20"
-    assert march.payload["query_data_source"] == "legacy_search_queries_fallback"
+    assert march.payload["query_data_source"] == "aggregate_search_queries"
     assert [row["query"] for row in march.payload["popular_queries"]] == ["legacy query"]
 
 
-def test_current_query_analytics_period_never_extends_beyond_today(context, monkeypatch):
+def test_current_aggregate_query_period_never_extends_beyond_today(context, monkeypatch):
     api = FakeWebmasterQueryAnalytics()
     monkeypatch.setattr("apps.yandex.services.timezone.localdate", lambda: date(2026, 9, 8))
 
@@ -327,8 +351,8 @@ def test_current_query_analytics_period_never_extends_beyond_today(context, monk
         client=api,
     )
 
-    assert api.analytics_calls[0]["date_from"] == "2026-09-01"
-    assert api.analytics_calls[0]["date_to"] == "2026-09-08"
+    assert api.popular_calls[0]["date_from"] == "2026-09-01"
+    assert api.popular_calls[0]["date_to"] == "2026-09-08"
 
 
 def test_empty_refresh_keeps_previously_saved_webmaster_query_data(context):
@@ -360,13 +384,13 @@ def test_empty_refresh_keeps_previously_saved_webmaster_query_data(context):
 
     march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
     points = {point.metric_code: point.numeric_value for point in march.metrics.all()}
-    assert march.payload["query_summary"]["shows"] == "120"
+    assert march.payload["query_summary"]["shows"] == "400"
     assert [row["query"] for row in march.payload["popular_queries"]] == ["clinic", "doctor"]
-    assert points["search_impressions"] == 120
-    assert points["search_clicks"] == 12
+    assert points["search_impressions"] == 400
+    assert points["search_clicks"] == 20
 
 
-def test_query_analytics_rows_are_not_mixed_with_legacy_popular_history(context):
+def test_aggregate_query_rows_are_used_without_query_analytics_mix(context):
     class PartialPrevious(FakeWebmasterQueryAnalytics):
         def query_analytics(self, *args, **kwargs):
             response = super().query_analytics(*args, **kwargs)
@@ -401,7 +425,7 @@ def test_query_analytics_rows_are_not_mixed_with_legacy_popular_history(context)
     assert run.status == run.Status.SUCCESS
     march = SourceSnapshot.objects.get(period_start=date(2026, 3, 1))
     previous = {row["query"]: row for row in march.payload["comparison_popular_queries"]}
-    assert "doctor" not in previous
+    assert previous["doctor"]["shows"] == "30"
 
 
 def test_zero_impressions_does_not_invent_ctr(context):
@@ -759,7 +783,7 @@ def test_search_url_samples_are_not_truncated_at_five_thousand(context):
     assert api.offsets[-1] == 5000
 
 
-def test_query_analytics_keeps_all_previous_rows_for_dynamics(context):
+def test_aggregate_query_resource_keeps_all_previous_rows_for_dynamics(context):
     class ManyQueries(FakeWebmasterQueryAnalytics):
         def query_analytics(self, *args, **kwargs):
             start = kwargs["date_from"]
@@ -779,7 +803,20 @@ def test_query_analytics_keeps_all_previous_rows_for_dynamics(context):
             }
 
         def popular_search_queries(self, *args, **kwargs):
-            raise AssertionError("Query Analytics supplied every row")
+            return {
+                "queries": [
+                    {
+                        "query_id": f"query-{index}",
+                        "query_text": f"query-{index}",
+                        "indicators": {
+                            "TOTAL_SHOWS": 100 - index,
+                            "TOTAL_CLICKS": 80 - index,
+                            "AVG_SHOW_POSITION": index + 1,
+                        },
+                    }
+                    for index in range(80)
+                ]
+            }
 
     sync_webmaster(
         mapping=mapping(context),
