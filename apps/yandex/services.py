@@ -1377,6 +1377,8 @@ def _webmaster_month(
     previous_query_summary = None
     popular = []
     previous_popular = []
+    aggregate_current = None
+    aggregate_previous = None
     path_distribution = None
     if include_current:
         analytics_end = min(end, timezone.localdate())
@@ -1399,33 +1401,87 @@ def _webmaster_month(
             ),
         )
         previous_query_summary = _query_summary(previous_queries, comparison_start, comparison_end)
-        analytics_current = None
-        analytics_previous = None
-        analytics_attempted = hasattr(client, "query_analytics") and analytics_end >= start
-        if analytics_attempted:
-            try:
-                analytics_current = _query_analytics_data(
-                    client.query_analytics(
+        query_indicators = [
+            "TOTAL_SHOWS",
+            "TOTAL_CLICKS",
+            "AVG_SHOW_POSITION",
+            "AVG_CLICK_POSITION",
+        ]
+        if hasattr(client, "popular_search_queries") and analytics_end >= start:
+            aggregate_current = _popular_queries(
+                _optional_webmaster_resource(
+                    mapping,
+                    "popular_search_queries",
+                    lambda: client.popular_search_queries(
                         user_id,
                         mapping.host_id,
                         date_from=start.isoformat(),
                         date_to=analytics_end.isoformat(),
-                        search_location="ALL_LOCATIONS",
+                        order_by="TOTAL_CLICKS",
+                        query_indicator=query_indicators,
+                        device_type_indicator="ALL",
+                        offset=0,
+                        limit=500,
                     ),
-                    start,
-                    analytics_end,
                 )
-                analytics_previous = _query_analytics_data(
-                    client.query_analytics(
+            )
+            aggregate_previous = _popular_queries(
+                _optional_webmaster_resource(
+                    mapping,
+                    "popular_search_queries_comparison",
+                    lambda: client.popular_search_queries(
                         user_id,
                         mapping.host_id,
-                        date_from=comparison_start.isoformat(),
-                        date_to=comparison_end.isoformat(),
-                        search_location="ALL_LOCATIONS",
+                        **comparison_params,
+                        order_by="TOTAL_CLICKS",
+                        query_indicator=query_indicators,
+                        device_type_indicator="ALL",
+                        offset=0,
+                        limit=500,
                     ),
-                    comparison_start,
-                    comparison_end,
                 )
+            )
+        if aggregate_current:
+            popular = aggregate_current
+        if aggregate_previous:
+            previous_popular = aggregate_previous
+
+        # Query Analytics supplies daily values rather than the provider's
+        # ready period aggregates.  Keep it only as a compatibility fallback
+        # when the aggregate popular-query resource is unavailable or empty.
+        analytics_current = None
+        analytics_previous = None
+        analytics_attempted = (
+            hasattr(client, "query_analytics")
+            and analytics_end >= start
+            and (not popular or not previous_popular)
+        )
+        if analytics_attempted:
+            try:
+                if not popular:
+                    analytics_current = _query_analytics_data(
+                        client.query_analytics(
+                            user_id,
+                            mapping.host_id,
+                            date_from=start.isoformat(),
+                            date_to=analytics_end.isoformat(),
+                            search_location="ALL_LOCATIONS",
+                        ),
+                        start,
+                        analytics_end,
+                    )
+                if not previous_popular:
+                    analytics_previous = _query_analytics_data(
+                        client.query_analytics(
+                            user_id,
+                            mapping.host_id,
+                            date_from=comparison_start.isoformat(),
+                            date_to=comparison_end.isoformat(),
+                            search_location="ALL_LOCATIONS",
+                        ),
+                        comparison_start,
+                        comparison_end,
+                    )
             except YandexAPIError as exc:
                 # Older accounts can lack Query Analytics access.  Keep the
                 # documented history endpoint as a safe compatibility fallback.
@@ -1436,55 +1492,9 @@ def _webmaster_month(
                     exc.error_code or "unknown",
                 )
         if analytics_current is not None:
-            analytics_queries, popular = analytics_current
-            query_summary = _query_summary(analytics_queries, start, end)
+            _analytics_queries, popular = analytics_current
         if analytics_previous is not None:
-            analytics_previous_queries, previous_popular = analytics_previous
-            previous_query_summary = _query_summary(
-                analytics_previous_queries, comparison_start, comparison_end
-            )
-        if hasattr(client, "popular_search_queries"):
-            query_indicators = [
-                "TOTAL_SHOWS",
-                "TOTAL_CLICKS",
-                "AVG_SHOW_POSITION",
-                "AVG_CLICK_POSITION",
-            ]
-            if analytics_current is None:
-                popular = _popular_queries(
-                    _optional_webmaster_resource(
-                        mapping,
-                        "popular_search_queries",
-                        lambda: client.popular_search_queries(
-                            user_id,
-                            mapping.host_id,
-                            **params,
-                            order_by="TOTAL_CLICKS",
-                            query_indicator=query_indicators,
-                            device_type_indicator="ALL",
-                            offset=0,
-                            limit=500,
-                        ),
-                    )
-                )
-            if analytics_previous is None:
-                fallback_previous = _popular_queries(
-                    _optional_webmaster_resource(
-                        mapping,
-                        "popular_search_queries_comparison",
-                        lambda: client.popular_search_queries(
-                            user_id,
-                            mapping.host_id,
-                            **comparison_params,
-                            order_by="TOTAL_CLICKS",
-                            query_indicator=query_indicators,
-                            device_type_indicator="ALL",
-                            offset=0,
-                            limit=500,
-                        ),
-                    )
-                )
-                previous_popular = fallback_previous
+            _analytics_previous_queries, previous_popular = analytics_previous
         if hasattr(client, "search_urls_samples"):
             path_distribution = _path_distribution(
                 _optional_webmaster_resource(
@@ -1570,10 +1580,10 @@ def _webmaster_month(
         "path_distribution": path_distribution,
         "host": host or {},
         "query_data_source": (
-            "query_analytics_all_locations"
+            "aggregate_search_queries"
+            if include_current and aggregate_current
+            else "query_analytics_all_locations_fallback"
             if include_current and analytics_current is not None
-            else "legacy_search_queries_fallback"
-            if include_current and analytics_attempted
             else "legacy_search_queries"
         ),
         "includes_current_details": include_current,

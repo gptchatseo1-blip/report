@@ -3412,33 +3412,6 @@ def _landing_conclusion_list(values):
     return ", ".join(values[:-1]) + " и " + values[-1]
 
 
-def _landing_conclusion_page_name(url, groups):
-    url_depth = len([part for part in urlsplit(url).path.split("/") if part])
-
-    def names_page(group):
-        for pattern in group.get("patterns") or []:
-            if not _url_matches_pattern(url, pattern):
-                continue
-            pattern_url = _url_pattern_label(pattern).replace("*", "").replace("?", "")
-            pattern_depth = len([part for part in urlsplit(pattern_url).path.split("/") if part])
-            if pattern_depth >= url_depth:
-                return True
-        return False
-
-    matches = [group for group in groups if names_page(group)]
-    if matches:
-        matches.sort(
-            key=lambda group: max(
-                (len(_url_pattern_label(pattern)) for pattern in group.get("patterns") or []),
-                default=0,
-            ),
-            reverse=True,
-        )
-        return matches[0]["name"]
-    parts = [part for part in urlsplit(url).path.split("/") if part]
-    return (parts[-1] if parts else url).replace("-", " ").replace("_", " ").capitalize()
-
-
 def _landing_conclusion_hierarchy(rows, engine, *, provider_hierarchy):
     matching = [row for row in rows if _search_engine_name(row) == engine]
     if provider_hierarchy:
@@ -3573,37 +3546,47 @@ def _landing_comparison_conclusions(
             sign = "+" if change > 0 else "−" if change < 0 else ""
             change_text = f"{sign}{_landing_conclusion_percent(abs(change))}"
 
-        matching_pages = []
-        for row in current_engine_rows:
-            url = _landing_url(row)
-            if not any(
-                _url_matches_pattern(url, pattern) for pattern in group.get("patterns") or []
-            ):
+        named_subsections = {}
+        for subsection in subsection_groups:
+            subsection_name = str(subsection.get("name") or "").strip()
+            if not subsection_name or subsection_name.casefold() == str(name).casefold():
                 continue
-            normalized_url = url.rstrip("/").casefold()
-            configured_roots = {
-                _url_pattern_label(pattern).rstrip("*?").rstrip("/").casefold()
-                for pattern in group.get("patterns") or []
-            }
-            if normalized_url in configured_roots:
-                continue
-            matching_pages.append(
-                (
-                    _decimal_or_none(row.get("visits")) or Decimal(0),
-                    _landing_conclusion_page_name(url, subsection_groups),
-                )
+            target = named_subsections.setdefault(
+                subsection_name.casefold(), {"name": subsection_name, "patterns": []}
             )
-        matching_pages.sort(key=lambda item: (-item[0], item[1].casefold()))
-        popular = []
-        for _visits, label in matching_pages:
-            if label not in popular:
-                popular.append(label)
-            if len(popular) == 3:
-                break
+            for pattern in subsection.get("patterns") or []:
+                if pattern not in target["patterns"]:
+                    target["patterns"].append(pattern)
+
+        subsection_visits = []
+        for subsection in named_subsections.values():
+            visits = sum(
+                (
+                    _decimal_or_none(row.get("visits")) or Decimal(0)
+                    for row in current_engine_rows
+                    if any(
+                        _url_matches_pattern(_landing_url(row), pattern)
+                        for pattern in group.get("patterns") or []
+                    )
+                    and any(
+                        _url_matches_pattern(_landing_url(row), pattern)
+                        for pattern in subsection.get("patterns") or []
+                    )
+                ),
+                Decimal(0),
+            )
+            if visits > 0:
+                subsection_visits.append((visits, subsection["name"]))
+        subsection_visits.sort(key=lambda item: (-item[0], item[1].casefold()))
+        popular = [label for _visits, label in subsection_visits[:3]]
 
         line = f"{name} — {change_text} по сравнению с прошлым месяцем."
         if popular:
-            lead = "Самый популярный раздел" if len(popular) == 1 else "Самые популярные разделы"
+            lead = (
+                "Самый популярный здесь раздел"
+                if len(popular) == 1
+                else "Самые популярные здесь разделы"
+            )
             line += f" {lead} — {_landing_conclusion_list(popular)}."
         commercial_lines.append(line)
 
@@ -4594,24 +4577,14 @@ def _render_metrika(doc, payload, blocks):
                 else {}
             )
             commercial_groups = _configured_url_groups(payload, "commercial")
-            legacy_conclusion_groups = [
+            conclusion_groups = [
                 group
                 for expected in ("лечение", "диагностика", "реабилитация")
                 for group in commercial_groups
                 if group["name"].casefold() == expected
             ] or commercial_groups
-            configured_conclusion_groups = comparison_subsection_groups or legacy_conclusion_groups
-            conclusion_groups = [
-                group
-                for expected in ("лечение", "диагностика", "реабилитация")
-                for group in configured_conclusion_groups
-                if group["name"].casefold() == expected
-            ] + [
-                group
-                for group in configured_conclusion_groups
-                if group["name"].casefold() not in {"лечение", "диагностика", "реабилитация"}
-            ]
             conclusion_subsections = [
+                *comparison_subsection_groups,
                 *_configured_url_groups(payload, "subsections"),
                 *_configured_url_groups(payload, "categories"),
             ]

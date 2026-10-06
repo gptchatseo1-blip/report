@@ -1097,10 +1097,54 @@ def test_landing_comparison_conclusions_use_its_own_configured_groups():
     )
     assert paragraphs[1] == "По коммерческим разделам:"
     assert paragraphs[2].splitlines() == [
-        "Лечение — +25% по сравнению с прошлым месяцем. Самые популярные разделы — "
+        "Лечение — +25% по сравнению с прошлым месяцем. Самые популярные здесь разделы — "
         "Травматология и Неврология.",
-        "Диагностика — −50% по сравнению с прошлым месяцем. Самый популярный раздел — УЗИ.",
+        "Диагностика — −50% по сравнению с прошлым месяцем. "
+        "Самый популярный здесь раздел — УЗИ.",
     ]
+
+
+def test_landing_comparison_conclusions_ignore_unconfigured_service_page_slugs():
+    def row(url, visits):
+        return {
+            "dimensions": [
+                {"id": "yandex", "name": "Яндекс"},
+                {"id": url, "name": url},
+            ],
+            "visits": str(visits),
+            "users": str(visits),
+            "bounce_rate": "10",
+        }
+
+    domain = "https://demo.example"
+    current = [
+        row(f"{domain}/treatment/blokada-poyasnichnogo-otdela-pozvonochnika/", 500),
+        row(f"{domain}/treatment/trauma/doctor-one/", 150),
+        row(f"{domain}/treatment/trauma/doctor-two/", 100),
+        row(f"{domain}/treatment/neuro/service/", 200),
+    ]
+    previous = [row(f"{domain}/treatment/trauma/doctor-one/", 100)]
+
+    paragraphs = _landing_comparison_conclusions(
+        engine="Яндекс",
+        current_rows=current,
+        previous_rows=previous,
+        current_hierarchy_rows=current,
+        previous_hierarchy_rows=previous,
+        total_values=({}, {}),
+        commercial_groups=[{"name": "Лечение", "patterns": [f"{domain}/treatment/"]}],
+        subsection_groups=[
+            {"name": "Травматология", "patterns": [f"{domain}/treatment/trauma/"]},
+            {"name": "Неврология", "patterns": [f"{domain}/treatment/neuro/"]},
+        ],
+    )
+
+    assert paragraphs == [
+        "По коммерческим разделам:",
+        "Лечение — +850% по сравнению с прошлым месяцем. "
+        "Самые популярные здесь разделы — Травматология и Неврология.",
+    ]
+    assert "Blokada" not in " ".join(paragraphs)
 
 
 def test_landing_comparison_export_restores_conclusions_for_both_engines(
@@ -1114,14 +1158,14 @@ def test_landing_comparison_export_restores_conclusions_for_both_engines(
         "metrika_search_segment": True,
         "include_metrika_landing_page_comparison": True,
         "metrika_url_segments": {
-            "landing_comparison_subsections": [
+            "commercial": [
                 {"name": "Лечение", "patterns": ["https://demo.example/services/"]},
                 {
                     "name": "Диагностика",
                     "patterns": ["https://demo.example/catalog/diagnostics/"],
                 },
             ],
-            "subsections": [
+            "landing_comparison_subsections": [
                 {
                     "name": "Приоритетная услуга",
                     "patterns": ["https://demo.example/services/priority/"],
