@@ -743,7 +743,7 @@ def test_global_credentials_are_encrypted_replaced_retained_and_deleted(
         url, {"action": "credentials", "user_id": "123", "api_key": "first-api-secret"}
     )
     assert response.status_code == 302
-    connection = TopvisorCredential.objects.get(pk=1)
+    connection = TopvisorCredential.objects.get(user_id="123")
     assert b"first-api-secret" not in bytes(connection.api_key_encrypted)
     assert bytes(connection.api_key_encrypted) != b"pending"
     assert connection.get_api_key() == "first-api-secret"
