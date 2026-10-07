@@ -363,6 +363,7 @@ def test_calendar_graph_uses_selected_editor_buckets_and_keeps_provider_tail():
             "three_month_series": [
                 {
                     "month": "2026-08-01",
+                    "editor_snapshot_date": "2026-08-25",
                     "manual_override": False,
                     "editor_distribution": True,
                     "distribution": {
@@ -386,6 +387,48 @@ def test_calendar_graph_uses_selected_editor_buckets_and_keeps_provider_tail():
     assert buckets["11-30"] == {"count": 30, "share": 30}
     assert buckets["31-50"] == {"count": 15, "share": 15.0}
     assert buckets["51-100"] == {"count": 12, "share": 12.0}
+
+
+def test_calendar_graph_does_not_apply_automatic_editor_buckets_from_another_day():
+    selected_distribution = {
+        "total": 5111,
+        "top_10": 2426,
+        "ranges": {"1-3": 1042, "4-10": 1384},
+    }
+    segment = {
+        "search_engine": "yandex",
+        "region": "Москва",
+        "ranking_depth": 100,
+        "chart_series": [
+            {
+                "month": "2026-09-20",
+                "visibility": 29.85,
+                "distribution": selected_distribution,
+            }
+        ],
+        "three_month_series": [],
+    }
+    payload = {"source_selection": {"topvisor": {"yandex": {"selected_dates": ["2026-09-20"]}}}}
+
+    rendered = _calendar_chart_segment(
+        lambda _payload, item: {
+            **item,
+            "three_month_series": [
+                {
+                    "month": "2026-09-01",
+                    "editor_snapshot_date": "2026-09-24",
+                    "manual_override": False,
+                    "editor_distribution": True,
+                    "distribution": {"total": 75, "manual_buckets": {}},
+                }
+            ],
+        },
+        exporting._topvisor_buckets,
+        payload,
+        segment,
+    )
+
+    assert rendered["distribution"] == selected_distribution
 
 
 def test_distribution_uses_last_calendar_day_instead_of_latest_provider_snapshot():
