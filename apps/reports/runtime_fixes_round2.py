@@ -56,6 +56,14 @@ def validate_manual_rows(value):
             month = date.fromisoformat(f"{month}-01").isoformat() if month else ""
         except ValueError:
             raise ValidationError("Укажите корректный месяц в ручной строке.") from None
+        snapshot_date = str(row.get("snapshot_date") or "")[:10]
+        if snapshot_date:
+            try:
+                snapshot_date = date.fromisoformat(snapshot_date).isoformat()
+            except ValueError:
+                raise ValidationError("Укажите корректную дату снимка Topvisor.") from None
+            if snapshot_date[:7] != month[:7]:
+                raise ValidationError("Дата снимка Topvisor должна относиться к месяцу строки.")
         if not month:
             raise ValidationError("Месяц в ручной строке обязателен.")
         if not engine:
@@ -74,6 +82,7 @@ def validate_manual_rows(value):
                 "engine": engine,
                 "region": region,
                 "month": month,
+                "snapshot_date": snapshot_date,
                 "include_in_report": _bool(row.get("include_in_report"), True),
                 "include_explicit": include_explicit,
                 "deleted": _bool(row.get("deleted"), False),
@@ -243,6 +252,7 @@ def _manual_topvisor_segment(payload, segment):
                 "ranking_depth": (existing or {}).get("ranking_depth", depth),
                 "manual_override": manual_override,
                 "editor_distribution": True,
+                "editor_snapshot_date": row.get("snapshot_date") or "",
             }
         point = history_by_month.get(month_key)
         if include and point is not None:

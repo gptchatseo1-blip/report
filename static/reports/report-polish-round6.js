@@ -48,8 +48,16 @@
     if (!response.ok || !data.ok) throw new Error(data.message || 'Не удалось сохранить текущие правки.');
   }
 
-  const reloadAndReopen = message => {
-    sessionStorage.setItem(reopenKey, JSON.stringify({message}));
+  const selectedDatesByField = () => Object.fromEntries(
+    [...form.querySelectorAll('[data-calendar]')].map(calendar => [
+      calendar.dataset.fieldName,
+      [...calendar.querySelectorAll('.calendar-source input[type=checkbox]:checked')]
+        .map(input => input.value),
+    ]),
+  );
+
+  const reloadAndReopen = (message, selectedDates) => {
+    sessionStorage.setItem(reopenKey, JSON.stringify({message, selectedDates}));
     window.location.reload();
   };
 
@@ -58,8 +66,9 @@
     setLocalStatus('Обновление…', 'progress');
     try {
       await persistCurrentRows();
-      const data = await postJson(refreshUrl);
-      reloadAndReopen(data.message || 'Данные обновлены.');
+      const selectedDates = selectedDatesByField();
+      const data = await postJson(refreshUrl, {selected_dates_by_field: selectedDates});
+      reloadAndReopen(data.message || 'Данные обновлены.', selectedDates);
     } catch (error) {
       button.disabled = false;
       setLocalStatus(error.message || 'Ошибка обновления', 'error');
@@ -92,11 +101,23 @@
   if (reopen) {
     sessionStorage.removeItem(reopenKey);
     let message = 'Данные обновлены.';
+    let selectedDates = {};
     try {
-      message = JSON.parse(reopen).message || message;
+      const state = JSON.parse(reopen);
+      message = state.message || message;
+      selectedDates = state.selectedDates || {};
     } catch (_error) {
       // Keep the default message.
     }
+    Object.entries(selectedDates).forEach(([fieldName, dates]) => {
+      const calendar = form.querySelector(`[data-calendar][data-field-name="${CSS.escape(fieldName)}"]`);
+      if (!calendar) return;
+      const selected = new Set(dates || []);
+      calendar.querySelectorAll('.calendar-source input[type=checkbox]').forEach(input => {
+        input.checked = selected.has(input.value);
+      });
+      calendar.dispatchEvent(new Event('calendar-dates-updated'));
+    });
     trigger.click();
     requestAnimationFrame(() => setLocalStatus(message, 'success'));
   }

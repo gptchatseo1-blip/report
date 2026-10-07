@@ -55,8 +55,8 @@ def apply():
 
     original_editor_data = views._topvisor_editor_data
 
-    def topvisor_editor_data(project):
-        rows, segments = original_editor_data(project)
+    def topvisor_editor_data(project, *args, **kwargs):
+        rows, segments = original_editor_data(project, *args, **kwargs)
         if project.position_provider == Project.PositionProvider.TOPVISOR:
             for row in rows:
                 if row.get("visibility") is not None:

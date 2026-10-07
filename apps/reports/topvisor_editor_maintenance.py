@@ -68,10 +68,19 @@ def _read_saved_rows(project, *, sanitize=True):
     return settings, values, [dict(row) for row in rows if isinstance(row, dict)]
 
 
-def _automatic_rows(project):
+def _automatic_rows(
+    project,
+    *,
+    selected_dates_by_engine=None,
+    selected_dates_by_configuration=None,
+):
     from . import views
 
-    rows, _segments = views._topvisor_editor_data(project)
+    rows, _segments = views._topvisor_editor_data(
+        project,
+        selected_dates_by_engine=selected_dates_by_engine,
+        selected_dates_by_configuration=selected_dates_by_configuration,
+    )
     return [dict(row) for row in rows]
 
 
@@ -82,6 +91,7 @@ def _automatic_saved_row(automatic, existing=None, *, reset=False):
         "engine": str(automatic.get("engine") or "").casefold(),
         "region": str(automatic.get("region") or "").strip(),
         "month": str(automatic.get("month") or ""),
+        "snapshot_date": str(automatic.get("snapshot_date") or ""),
         "include_in_report": bool(existing.get("include_in_report", True)),
         "deleted": False if reset else bool(existing.get("deleted", False)),
         "manual_override": False,
@@ -221,12 +231,24 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
     return updated
 
 
-def refresh_editor_rows(project):
+def refresh_editor_rows(
+    project,
+    *,
+    selected_dates_by_engine=None,
+    selected_dates_by_configuration=None,
+):
     """Refresh only unchecked rows; checked rows are frozen for the report."""
     # Do not sanitize here: checked rows are an explicit user snapshot and must
     # survive an update byte-for-byte, including any intentionally edited value.
     settings, values, saved_rows = _read_saved_rows(project, sanitize=False)
-    automatic_by_key = {_row_key(row): row for row in _automatic_rows(project)}
+    automatic_by_key = {
+        _row_key(row): row
+        for row in _automatic_rows(
+            project,
+            selected_dates_by_engine=selected_dates_by_engine,
+            selected_dates_by_configuration=selected_dates_by_configuration,
+        )
+    }
     refreshed = []
 
     for existing in saved_rows:
@@ -279,6 +301,28 @@ def clear_editor_segment(project, engine, region):
 def topvisor_editor_refresh(request, project_id):
     project = get_object_or_404(Project, pk=project_id)
     try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = {}
+    selected_by_field = payload.get("selected_dates_by_field") or {}
+    from .forms import ReportCreateForm
+
+    selection_form = ReportCreateForm(project=project)
+    selected_dates_by_engine = {}
+    selected_dates_by_configuration = {}
+    if selection_form.use_configuration_calendars:
+        for item in selection_form.configuration_date_fields:
+            dates = selected_by_field.get(item["field_name"]) or []
+            selected_dates_by_configuration[str(item["configuration_id"])] = {
+                "engine": item["engine"],
+                "dates": dates,
+            }
+    else:
+        selected_dates_by_engine = {
+            engine: selected_by_field.get(f"{engine}_dates") or []
+            for engine in ("yandex", "google")
+        }
+    try:
         refreshed_count = refresh_provider_visibility(project)
     except Exception:
         return JsonResponse(
@@ -288,7 +332,11 @@ def topvisor_editor_refresh(request, project_id):
             },
             status=502,
         )
-    rows = refresh_editor_rows(project)
+    rows = refresh_editor_rows(
+        project,
+        selected_dates_by_engine=selected_dates_by_engine,
+        selected_dates_by_configuration=selected_dates_by_configuration,
+    )
     message = (
         f"Данные Topvisor обновлены ({refreshed_count} снимков)."
         if refreshed_count

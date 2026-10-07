@@ -147,7 +147,12 @@ def _repair_editor_rows(project, rows):
 
     maps = _snapshot_maps(project)
     for row in rows:
-        snapshot = _find_snapshot(maps, row)
+        exact_date = bool(row.get("snapshot_date"))
+        locator = {
+            **row,
+            "month": row.get("snapshot_date") or row.get("month"),
+        }
+        snapshot = _find_snapshot(maps, locator, exact_date=exact_date)
         if snapshot is None:
             continue
         exact = provider_visibility(snapshot)
@@ -233,8 +238,8 @@ def apply():
 
     original_editor_data = views._topvisor_editor_data
 
-    def topvisor_editor_data(project):
-        rows, segments = original_editor_data(project)
+    def topvisor_editor_data(project, *args, **kwargs):
+        rows, segments = original_editor_data(project, *args, **kwargs)
         return _repair_editor_rows(project, rows), segments
 
     views._topvisor_editor_data = topvisor_editor_data

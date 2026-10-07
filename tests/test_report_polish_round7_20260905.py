@@ -8,6 +8,7 @@ import pytest
 from apps.metrics.models import RankingSnapshot
 from apps.projects.models import Project
 from apps.reports import services, views
+from apps.reports.forms import ReportCreateForm
 from apps.reports.models import ProjectReportSettings
 from apps.reports.runtime_fixes_round7 import (
     _follow_monthly_table_toggle,
@@ -189,6 +190,59 @@ def test_editor_uses_newest_keyword_total_for_every_month_and_whole_percentages(
     assert by_month["2026-09"]["top3_percent"] == 10
     assert by_month["2026-09"]["top10_percent"] == 30
     assert by_month["2026-09"]["top11_30_percent"] == 36
+
+
+def test_editor_rejects_isolated_partial_latest_snapshot_and_keeps_exact_source_date():
+    project = _project()
+    first = _snapshot(project, date(2026, 9, 1), "31.08", "31.08")
+    selected = _snapshot(project, date(2026, 9, 20), "29.85", "29.85")
+    partial = _snapshot(project, date(2026, 9, 24), "10.94", "10.94")
+    first.tracked_keyword_count = 5084
+    first.provenance["tops"] = {"all": 5084, "1_3": 1100, "1_10": 2500, "11_30": 1500}
+    selected.tracked_keyword_count = 5111
+    selected.provenance["tops"] = {
+        "all": 5111,
+        "1_3": 1042,
+        "1_10": 2426,
+        "11_30": 1587,
+    }
+    partial.tracked_keyword_count = 75
+    partial.provenance["tops"] = {"all": 75, "1_3": 6, "1_10": 40, "11_30": 31}
+    for snapshot in (first, selected, partial):
+        snapshot.save(update_fields=["tracked_keyword_count", "provenance"])
+
+    rows, _segments = views._topvisor_editor_data(project)
+
+    september = next(row for row in rows if row["month"] == "2026-09-01")
+    assert september["snapshot_date"] == "2026-09-20"
+    assert september["total"] == 5111
+    assert september["top10"] == 2426
+
+    form = ReportCreateForm(project=project)
+    available = {value for value, _label in form.fields["yandex_dates"].choices}
+    assert "2026-09-20" in available
+    assert "2026-09-24" not in available
+
+
+def test_editor_uses_exact_selected_complete_day_inside_month():
+    project = _project()
+    early = _snapshot(project, date(2026, 8, 10), "12", "12")
+    late = _snapshot(project, date(2026, 8, 25), "15", "15")
+    early.tracked_keyword_count = 1000
+    late.tracked_keyword_count = 1000
+    early.provenance["tops"] = {"all": 1000, "1_3": 100, "1_10": 300, "11_30": 250}
+    late.provenance["tops"] = {"all": 1000, "1_3": 200, "1_10": 400, "11_30": 300}
+    early.save(update_fields=["tracked_keyword_count", "provenance"])
+    late.save(update_fields=["tracked_keyword_count", "provenance"])
+
+    rows, _segments = views._topvisor_editor_data(
+        project,
+        selected_dates_by_engine={"yandex": ["2026-08-10"]},
+    )
+
+    august = next(row for row in rows if row["month"] == "2026-08-01")
+    assert august["snapshot_date"] == "2026-08-10"
+    assert august["top3"] == 100
 
 
 def test_clear_after_live_refresh_returns_current_topvisor_display_value():

@@ -167,6 +167,16 @@ def validate_topvisor_manual_rows(value):
             month = date.fromisoformat(f"{month}-01").isoformat() if month else ""
         except ValueError:
             raise forms.ValidationError("Укажите корректный месяц в ручной строке.") from None
+        snapshot_date = str(row.get("snapshot_date") or "")[:10]
+        if snapshot_date:
+            try:
+                snapshot_date = date.fromisoformat(snapshot_date).isoformat()
+            except ValueError:
+                raise forms.ValidationError("Укажите корректную дату снимка Topvisor.") from None
+            if snapshot_date[:7] != month[:7]:
+                raise forms.ValidationError(
+                    "Дата снимка Topvisor должна относиться к месяцу строки."
+                )
         if not month:
             raise forms.ValidationError("Месяц в ручной строке обязателен.")
         if not engine:
@@ -183,6 +193,7 @@ def validate_topvisor_manual_rows(value):
                 "engine": engine,
                 "region": region,
                 "month": month,
+                "snapshot_date": snapshot_date,
                 "visibility": number(row.get("visibility", 0), maximum=100, label="видимость"),
                 "total": number(
                     row.get("total", 0), maximum=10_000_000, integer=True, label="всего"
@@ -586,6 +597,25 @@ class ReportCreateForm(forms.Form):
             project.position_provider == project.PositionProvider.FILE_IMPORT
             and bool(self.configuration_date_fields)
         ) or (len(configurations) == 3 and len(self.configuration_date_fields) == 3)
+        partial_topvisor_ids = set()
+        if project.position_provider == project.PositionProvider.TOPVISOR:
+            from .topvisor_snapshot_selection import partial_snapshot_ids
+
+            snapshot_metadata = list(
+                RankingSnapshot.objects.filter(project=project)
+                .only(
+                    "id",
+                    "snapshot_date",
+                    "search_engine",
+                    "region",
+                    "topvisor_configuration_id",
+                    "tracked_keyword_count",
+                    "provenance",
+                    "created_at",
+                )
+                .order_by("snapshot_date", "created_at", "id")
+            )
+            partial_topvisor_ids = partial_snapshot_ids(snapshot_metadata)
         if self.use_configuration_calendars:
             for index, item in enumerate(self.configuration_date_fields):
                 field_name = f"configuration_dates_{index}"
@@ -595,6 +625,7 @@ class ReportCreateForm(forms.Form):
                         search_engine__iexact=item["engine"],
                         topvisor_configuration_id=item["configuration_id"],
                     )
+                    .exclude(pk__in=partial_topvisor_ids)
                     .order_by("-snapshot_date")
                     .values_list("snapshot_date", flat=True)
                     .distinct()
@@ -609,11 +640,15 @@ class ReportCreateForm(forms.Form):
         for engine in ("yandex", "google"):
             available = []
             if required[engine]:
-                rows = RankingSnapshot.objects.filter(
-                    project=project,
-                    search_engine__iexact=engine,
-                    topvisor_configuration_id__in=required[engine],
-                ).values_list("snapshot_date", "topvisor_configuration_id")
+                rows = (
+                    RankingSnapshot.objects.filter(
+                        project=project,
+                        search_engine__iexact=engine,
+                        topvisor_configuration_id__in=required[engine],
+                    )
+                    .exclude(pk__in=partial_topvisor_ids)
+                    .values_list("snapshot_date", "topvisor_configuration_id")
+                )
                 by_date = defaultdict(set)
                 for day, config in rows:
                     by_date[day].add(config)

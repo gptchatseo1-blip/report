@@ -3,6 +3,7 @@ import calendar
 import json
 import logging
 import secrets
+from collections import defaultdict
 from datetime import date, timedelta
 
 from django.conf import settings
@@ -145,9 +146,16 @@ def _top_percent(value, total):
     return int(value * 100 / total + 0.5)
 
 
-def _topvisor_editor_data(project):
-    """Latest editable rows and every configured search-engine/region pair."""
+def _topvisor_editor_data(
+    project,
+    *,
+    selected_dates_by_engine=None,
+    selected_dates_by_configuration=None,
+):
+    """Editable monthly rows bound to an exact, complete provider snapshot."""
     from apps.metrics.models import RankingSnapshot
+
+    from .topvisor_snapshot_selection import partial_snapshot_ids
 
     if project.position_provider == Project.PositionProvider.SERPHUNT:
         try:
@@ -192,34 +200,80 @@ def _topvisor_editor_data(project):
             "ranking_depth": depth,
         }
 
-    snapshots = RankingSnapshot.objects.filter(
+    snapshot_query = RankingSnapshot.objects.filter(
         project=project, snapshot_date__gte=timezone.localdate() - timedelta(days=550)
     )
     if active_ids:
-        snapshots = snapshots.filter(
+        snapshot_query = snapshot_query.filter(
             Q(topvisor_configuration_id__in=active_ids) | Q(topvisor_configuration_id="")
         )
-    snapshots = snapshots.prefetch_related("positions").order_by(
-        "snapshot_date", "created_at", "id"
+    snapshots = list(
+        snapshot_query.only(
+            "id",
+            "snapshot_date",
+            "search_engine",
+            "region",
+            "topvisor_configuration_id",
+            "tracked_keyword_count",
+            "ranking_depth",
+            "visibility",
+            "provenance",
+            "created_at",
+        ).order_by("snapshot_date", "created_at", "id")
     )
-    latest = {}
-    for snapshot in snapshots:
-        key = (
+    partial_ids = (
+        partial_snapshot_ids(snapshots)
+        if project.position_provider == Project.PositionProvider.TOPVISOR
+        else set()
+    )
+    stable = [snapshot for snapshot in snapshots if snapshot.pk not in partial_ids]
+    selected_dates_by_engine = {
+        str(engine).casefold(): {str(day)[:10] for day in dates}
+        for engine, dates in (selected_dates_by_engine or {}).items()
+    }
+    selected_dates_by_configuration = selected_dates_by_configuration or {}
+    by_month = defaultdict(list)
+    latest_totals = {}
+    for snapshot in stable:
+        segment_key = (
             snapshot.search_engine,
             snapshot.region,
             snapshot.topvisor_configuration_id,
-            snapshot.snapshot_date.replace(day=1),
         )
-        latest[key] = snapshot
-    latest_totals = {}
-    for (engine, region, configuration, _month), snapshot in sorted(latest.items()):
         provider_total = provider_tops(snapshot).get("all")
         if provider_total:
-            # Topvisor uses the keyword total from the newest check as the
-            # denominator for every point of the selected TOP-% chart.
-            latest_totals[(engine, region, configuration)] = provider_total
+            # Topvisor uses the newest complete keyword total as the common
+            # denominator for the selected TOP-% chart.
+            latest_totals[segment_key] = provider_total
+        by_month[(*segment_key, snapshot.snapshot_date.replace(day=1))].append(snapshot)
+
+    latest = {}
+    for key, candidates in by_month.items():
+        engine, _region, configuration, _month = key
+        configuration_selection = selected_dates_by_configuration.get(str(configuration)) or {}
+        selected_dates = {
+            str(day)[:10] for day in configuration_selection.get("dates", [])
+        } or selected_dates_by_engine.get(str(engine).casefold(), set())
+        exact = [
+            snapshot
+            for snapshot in candidates
+            if snapshot.snapshot_date.isoformat() in selected_dates
+        ]
+        latest[key] = max(
+            exact or candidates,
+            key=lambda item: (item.snapshot_date, item.created_at, item.pk),
+        )
+
+    selected_ids = [snapshot.pk for snapshot in latest.values()]
+    selected_snapshots = {
+        snapshot.pk: snapshot
+        for snapshot in RankingSnapshot.objects.filter(pk__in=selected_ids).prefetch_related(
+            "positions"
+        )
+    }
     rows = []
     for (engine, region, configuration, month), snapshot in sorted(latest.items()):
+        snapshot = selected_snapshots[snapshot.pk]
         segment_key = (engine.casefold(), " ".join(region.split()).casefold())
         segments.setdefault(
             segment_key,
@@ -250,6 +304,7 @@ def _topvisor_editor_data(project):
                 "engine": engine,
                 "region": region,
                 "month": month.isoformat(),
+                "snapshot_date": snapshot.snapshot_date.isoformat(),
                 "visibility": float(snapshot.visibility) if snapshot.visibility is not None else 0,
                 "total": total,
                 "top3": top3,

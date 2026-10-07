@@ -97,8 +97,13 @@ def _calendar_chart_segment(base_manual_segment, base_buckets, payload, source_s
         point = dict(source)
         point["month"] = selected_date
         editor_point = rendered_by_month.get(selected_date[:7])
+        editor_matches_day = (
+            editor_point
+            and str(editor_point.get("editor_snapshot_date") or "")[:10] == selected_date
+        )
         if editor_point and (
-            editor_point.get("editor_distribution") or editor_point.get("manual_override")
+            editor_point.get("manual_override")
+            or (editor_point.get("editor_distribution") and editor_matches_day)
         ):
             distribution = dict(editor_point.get("distribution") or {})
             manual_buckets = dict(distribution.get("manual_buckets") or {})

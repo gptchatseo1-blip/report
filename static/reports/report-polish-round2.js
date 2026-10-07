@@ -131,6 +131,7 @@
     engine: String(row.engine || '').toLowerCase(),
     region: String(row.region || '').trim(),
     month: String(row.month).length === 7 ? `${row.month}-01` : String(row.month),
+    snapshot_date: String(row.snapshot_date || ''),
     include_in_report: Boolean(row._include),
     deleted: Boolean(row._deleted),
     manual_override: manualOverride(row),
