@@ -5,10 +5,9 @@ from apps.yandex.crypto import decrypt_token, encrypt_token
 
 
 class TopvisorCredential(models.Model):
-    """One encrypted Topvisor account shared by every project."""
+    """One encrypted Topvisor account available to every internal project."""
 
-    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
-    user_id = models.CharField("ID пользователя Topvisor", max_length=255)
+    user_id = models.CharField("ID пользователя Topvisor", max_length=255, unique=True)
     api_key_encrypted = models.BinaryField(editable=False)
     api_key_last_four = models.CharField(max_length=4, blank=True, editable=False)
     last_verified_at = models.DateTimeField(null=True, blank=True)
@@ -20,7 +19,7 @@ class TopvisorCredential(models.Model):
         verbose_name_plural = "Реквизиты Topvisor"
 
     def __str__(self):
-        return "Общие реквизиты Topvisor"
+        return f"Topvisor — {self.user_id}"
 
     def set_api_key(self, api_key):
         self.api_key_encrypted = encrypt_token(api_key)
@@ -40,6 +39,14 @@ class TopvisorProjectMapping(models.Model):
     )
     topvisor_project_id = models.CharField("ID проекта Topvisor", max_length=64)
     topvisor_project_name = models.CharField("Проект Topvisor", max_length=255, blank=True)
+    topvisor_credential = models.ForeignKey(
+        TopvisorCredential,
+        on_delete=models.SET_NULL,
+        related_name="project_mappings",
+        null=True,
+        blank=True,
+        verbose_name="Аккаунт Topvisor",
+    )
     selected_configurations = models.JSONField(
         "Конфигурации поиска", default=list, help_text="ID конкретных поисковой системы и региона"
     )

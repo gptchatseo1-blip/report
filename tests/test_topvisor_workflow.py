@@ -307,6 +307,149 @@ def test_connection_can_add_second_topvisor_project(client, settings, monkeypatc
     assert {item["region_name"] for item in saved.selected_configurations} == {"Москва", "Россия"}
 
 
+def test_multiple_accounts_are_listed_together_and_save_the_selected_account(
+    client, settings, monkeypatch
+):
+    from apps.topvisor.models import TopvisorCredential
+
+    cache.clear()
+    first = Project.objects.create(name="First account", domain="first-account.example")
+    _connection(first, settings, "account-one", "key-one")
+    second_credential = _connection(first, settings, "account-two", "key-two")
+    user = get_user_model().objects.create_user("multi-account", password="secret")
+    client.force_login(user)
+
+    monkeypatch.setattr(
+        TopvisorClient,
+        "iter_projects",
+        lambda self: iter(
+            [
+                {
+                    "id": 42 if self.credentials.user_id == "account-one" else 84,
+                    "name": "Project one"
+                    if self.credentials.user_id == "account-one"
+                    else "Project two",
+                }
+            ]
+        ),
+    )
+    configuration_accounts = []
+
+    def configurations(api, project_id):
+        configuration_accounts.append((api.credentials.user_id, str(project_id)))
+        return [{"id": 7, "search_engine": "google", "region_name": "Москва", "depth": 50}]
+
+    monkeypatch.setattr(TopvisorClient, "get_search_configurations", configurations)
+    url = reverse("topvisor:connection", args=[first.id])
+    selector = f"{second_credential.pk}:84"
+
+    page = client.get(url).content.decode()
+    assert "Project one — аккаунт account-one" in page
+    assert "Project two — аккаунт account-two" in page
+    assert client.get(url, {"topvisor_project": selector}).status_code == 200
+    response = client.post(
+        url,
+        {
+            "action": "mapping",
+            "topvisor_project": selector,
+            "configurations": [f"{second_credential.pk}:84:7"],
+        },
+    )
+
+    assert response.status_code == 302
+    saved = TopvisorProjectMapping.objects.get(project=first)
+    assert saved.topvisor_credential == second_credential
+    assert saved.selected_configurations[0]["_topvisor_credential_id"] == str(second_credential.pk)
+    assert configuration_accounts[-1] == ("account-two", "84")
+    assert TopvisorCredential.objects.count() == 2
+
+
+def test_credentials_page_adds_a_second_account_without_replacing_first(
+    client, settings, monkeypatch
+):
+    from apps.topvisor.models import TopvisorCredential
+
+    settings.CREDENTIAL_ENCRYPTION_KEY = "stable-test-encryption-key"
+    settings.TOPVISOR_USER_ID = settings.TOPVISOR_API_KEY = ""
+    user = get_user_model().objects.create_user("account-admin", password="secret", is_staff=True)
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ())
+    url = reverse("topvisor:credentials")
+
+    for user_id, api_key in (("account-one", "key-one"), ("account-two", "key-two")):
+        response = client.post(
+            url,
+            {
+                "action": "credentials",
+                "create_new": "1",
+                "user_id": user_id,
+                "api_key": api_key,
+            },
+        )
+        assert response.status_code == 302
+
+    assert list(
+        TopvisorCredential.objects.order_by("user_id").values_list("user_id", flat=True)
+    ) == ["account-one", "account-two"]
+    assert TopvisorCredential.objects.get(user_id="account-one").get_api_key() == "key-one"
+    assert TopvisorCredential.objects.get(user_id="account-two").get_api_key() == "key-two"
+
+
+def test_sync_uses_the_account_saved_on_each_configuration(settings, monkeypatch):
+    project = Project.objects.create(name="Accounts sync", domain="accounts-sync.example")
+    first_credential = _connection(project, settings, "account-one", "key-one")
+    second_credential = _connection(project, settings, "account-two", "key-two")
+    selected = TopvisorProjectMapping.objects.create(
+        project=project,
+        topvisor_project_id="42",
+        topvisor_credential=first_credential,
+        selected_configurations=[
+            {
+                "id": "7",
+                "_configuration_id": f"{first_credential.pk}:42:7",
+                "_topvisor_credential_id": str(first_credential.pk),
+                "_topvisor_project_id": "42",
+                "search_engine": "google",
+                "region_name": "Москва",
+                "depth": 20,
+            },
+            {
+                "id": "8",
+                "_configuration_id": f"{second_credential.pk}:84:8",
+                "_topvisor_credential_id": str(second_credential.pk),
+                "_topvisor_project_id": "84",
+                "search_engine": "yandex",
+                "region_name": "Россия",
+                "depth": 20,
+            },
+        ],
+    )
+
+    class AccountClient:
+        def __init__(self, account):
+            self.account = account
+            self.calls = []
+
+        def get_positions(self, project_id, **_filters):
+            self.calls.append(str(project_id))
+            return []
+
+    clients = {
+        str(first_credential.pk): AccountClient("account-one"),
+        str(second_credential.pk): AccountClient("account-two"),
+    }
+    monkeypatch.setattr(
+        "apps.topvisor.services.client_for_configuration",
+        lambda _mapping, configuration: clients[configuration["_topvisor_credential_id"]],
+    )
+
+    run = sync_positions(mapping=selected, report_month=date(2026, 8, 1))
+
+    assert run.status == run.Status.SUCCESS
+    assert clients[str(first_credential.pk)].calls == ["42", "42", "42"]
+    assert clients[str(second_credential.pk)].calls == ["84", "84", "84"]
+
+
 def test_sync_routes_each_configuration_to_its_topvisor_project():
     project = Project.objects.create(name="Multi sync", domain="multi-sync.example")
     selected = TopvisorProjectMapping.objects.create(
@@ -600,7 +743,7 @@ def test_global_credentials_are_encrypted_replaced_retained_and_deleted(
         url, {"action": "credentials", "user_id": "123", "api_key": "first-api-secret"}
     )
     assert response.status_code == 302
-    connection = TopvisorCredential.objects.get(pk=1)
+    connection = TopvisorCredential.objects.get(user_id="123")
     assert b"first-api-secret" not in bytes(connection.api_key_encrypted)
     assert bytes(connection.api_key_encrypted) != b"pending"
     assert connection.get_api_key() == "first-api-secret"
@@ -760,13 +903,8 @@ def _connection(project, settings, user_id="uid", api_key="project-secret"):
     return value
 
 
-@pytest.mark.parametrize(
-    ("posted_user_id", "posted_api_key"),
-    [("changed-user", ""), ("uid", "changed-api-key")],
-)
-def test_changed_credentials_remove_all_existing_mappings(
-    client, settings, monkeypatch, posted_user_id, posted_api_key
-):
+def test_changed_account_id_removes_only_its_existing_mappings(client, settings, monkeypatch):
+    posted_user_id = "changed-user"
     project = Project.objects.create(name="Changed", domain=f"{posted_user_id}.example")
     _connection(project, settings)
     selected = mapping(project)
@@ -778,11 +916,28 @@ def test_changed_credentials_remove_all_existing_mappings(
 
     response = client.post(
         reverse("topvisor:credentials"),
-        {"action": "credentials", "user_id": posted_user_id, "api_key": posted_api_key},
+        {"action": "credentials", "user_id": posted_user_id, "api_key": ""},
     )
     assert response.status_code == 302
     assert not TopvisorProjectMapping.objects.filter(pk=selected.pk).exists()
     assert not TopvisorProjectMapping.objects.filter(pk=other_selected.pk).exists()
+
+
+def test_changed_api_key_keeps_existing_mapping(client, settings, monkeypatch):
+    project = Project.objects.create(name="Changed key", domain="changed-key.example")
+    _connection(project, settings)
+    selected = mapping(project)
+    user = get_user_model().objects.create_user("changed-key", password="secret", is_staff=True)
+    client.force_login(user)
+    monkeypatch.setattr(TopvisorClient, "check_access", lambda self: ())
+
+    response = client.post(
+        reverse("topvisor:credentials"),
+        {"action": "credentials", "user_id": "uid", "api_key": "changed-api-key"},
+    )
+
+    assert response.status_code == 302
+    assert TopvisorProjectMapping.objects.filter(pk=selected.pk).exists()
 
 
 def test_unchanged_credentials_keep_existing_mapping(client, settings, monkeypatch):

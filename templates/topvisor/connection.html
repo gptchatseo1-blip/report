@@ -25,8 +25,9 @@
 
 {% if verified %}
   {% if safe_error %}
-    <div class="card"><span class="badge danger">Нет доступа</span><p>{{ safe_error }}</p></div>
-  {% else %}
+    <div class="card"><span class="badge warning-badge">Частичный доступ</span><p>{{ safe_error }}</p></div>
+  {% endif %}
+  {% if form.topvisor_project.field.choices %}
     <div class="card">
       <span class="badge success">API доступен</span>
       {% if mapping %}<p>Подключено проектов Topvisor: <strong>{{ configured_projects|length }}</strong>. Выбрано конфигураций: {{ mapping.selected_configurations|length }}.</p>{% endif %}
@@ -38,13 +39,13 @@
       <div class="connected-provider-projects">
         {% for item in configured_projects %}
         <article>
-          <div><strong>{{ item.name }}</strong><small>ID {{ item.id }} · конфигураций: {{ item.configuration_count }}</small></div>
+          <div><strong>{{ item.name }}</strong><small>Аккаунт {{ item.account }} · ID {{ item.id }} · конфигураций: {{ item.configuration_count }}</small></div>
           <div class="actions">
-            <a class="button secondary" href="?topvisor_project={{ item.id }}">Изменить</a>
+            <a class="button secondary" href="?topvisor_project={{ item.selector_id }}">Изменить</a>
             <form method="post" onsubmit="return confirm('Удалить этот проект Topvisor из подключения?')">
               {% csrf_token %}
               <input type="hidden" name="action" value="remove_project">
-              <input type="hidden" name="provider_project_id" value="{{ item.id }}">
+              <input type="hidden" name="provider_project" value="{{ item.selector_id }}">
               <button class="delete-button">Удалить</button>
             </form>
           </div>
@@ -82,6 +83,8 @@
       </form>
       {% endif %}
     </section>
+  {% elif not safe_error %}
+    <div class="card"><p>В подключённых аккаунтах Topvisor проекты не найдены.</p></div>
   {% endif %}
 {% endif %}
 

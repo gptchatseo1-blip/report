@@ -253,17 +253,43 @@ class TopvisorClient:
         )
 
 
-def credentials_for_project(project):
-    """Resolve the one Topvisor account shared by every internal project."""
-    from .models import TopvisorCredential
-
-    credential = TopvisorCredential.objects.filter(pk=1).first()
+def credentials_for_credential(credential):
     if credential:
         return TopvisorCredentials(credential.user_id, credential.get_api_key()), False
     credentials = TopvisorCredentials(settings.TOPVISOR_USER_ID, settings.TOPVISOR_API_KEY)
     return credentials, bool(credentials.user_id and credentials.api_key)
 
 
+def credentials_for_project(project):
+    """Resolve the primary Topvisor account for a mapped internal project."""
+    from .models import TopvisorCredential, TopvisorProjectMapping
+
+    mapping = (
+        TopvisorProjectMapping.objects.select_related("topvisor_credential")
+        .filter(project=project)
+        .first()
+    )
+    credential = mapping.topvisor_credential if mapping else None
+    credential = credential or TopvisorCredential.objects.order_by("pk").first()
+    return credentials_for_credential(credential)
+
+
 def client_for_project(project):
     credentials, legacy = credentials_for_project(project)
     return TopvisorClient(credentials=credentials), legacy
+
+
+def client_for_configuration(mapping, configuration):
+    """Resolve the account saved with one selected Topvisor configuration."""
+    from .models import TopvisorCredential
+
+    credential_id = configuration.get("_topvisor_credential_id")
+    credential = None
+    if credential_id and str(credential_id) != "legacy":
+        credential = TopvisorCredential.objects.filter(pk=credential_id).first()
+        if credential is None:
+            raise TopvisorError("Аккаунт Topvisor для выбранной конфигурации удалён.")
+    credential = credential or mapping.topvisor_credential
+    credential = credential or TopvisorCredential.objects.order_by("pk").first()
+    credentials, _legacy = credentials_for_credential(credential)
+    return TopvisorClient(credentials=credentials)
