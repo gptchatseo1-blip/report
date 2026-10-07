@@ -1190,6 +1190,57 @@ def test_landing_comparison_export_restores_conclusions_for_both_engines(
     assert text.count("Лечение —") == 2
 
 
+def test_landing_comparison_export_uses_its_own_parent_groups_for_conclusions(
+    rich_version, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    payload = rich_version.snapshot.payload
+    payload["display_options"] = {
+        "configuration_version": 3,
+        "include_metrika": True,
+        "metrika_search_segment": True,
+        "include_metrika_landing_page_comparison": True,
+        "metrika_url_segments": {
+            "commercial": [],
+            "landing_comparison_subsections": [
+                {"name": "Лечение", "patterns": ["https://demo.example/services/"]},
+                {
+                    "name": "Диагностика",
+                    "patterns": ["https://demo.example/catalog/diagnostics/"],
+                },
+            ],
+            "categories": [
+                {
+                    "name": "Приоритетная категория",
+                    "patterns": ["https://demo.example/services/priority/"],
+                }
+            ],
+            "subsections": [
+                {
+                    "name": "Название отдельной услуги",
+                    "patterns": ["https://demo.example/services/priority/item/"],
+                }
+            ],
+        },
+    }
+    ReportDatasetSnapshot.objects.filter(pk=rich_version.snapshot.pk).update(payload=payload)
+    rich_version.snapshot.refresh_from_db()
+
+    document = Document(
+        io.BytesIO(
+            _artifact_bytes(
+                generate_artifact(version=rich_version, artifact_type="docx", is_draft=True)
+            )
+        )
+    )
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+    assert text.count("По коммерческим разделам:") == 2
+    assert text.count("Лечение —") == 2
+    assert "Самый популярный здесь раздел — Приоритетная категория." in text
+    assert "Название отдельной услуги" not in text
+
+
 def test_modern_report_options_control_sections_and_top_tables(rich_version, settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     version = create_report_version(
