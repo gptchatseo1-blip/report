@@ -43,6 +43,17 @@ class TopvisorCredentialAdmin(admin.ModelAdmin):
 
 @admin.register(TopvisorProjectMapping)
 class TopvisorProjectMappingAdmin(admin.ModelAdmin):
-    list_display = ["project", "topvisor_project_name", "topvisor_project_id", "last_checked_at"]
-    search_fields = ["project__name", "topvisor_project_name", "topvisor_project_id"]
+    list_display = [
+        "project",
+        "topvisor_credential",
+        "topvisor_project_name",
+        "topvisor_project_id",
+        "last_checked_at",
+    ]
+    search_fields = [
+        "project__name",
+        "topvisor_credential__user_id",
+        "topvisor_project_name",
+        "topvisor_project_id",
+    ]
     readonly_fields = ["last_checked_at", "created_at", "updated_at"]

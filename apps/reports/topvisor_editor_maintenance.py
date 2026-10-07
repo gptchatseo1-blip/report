@@ -142,7 +142,7 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
     if project.position_provider != Project.PositionProvider.TOPVISOR:
         return 0
 
-    from apps.topvisor.client import client_for_project
+    from apps.topvisor.client import client_for_configuration
     from apps.topvisor.models import TopvisorProjectMapping
     from apps.topvisor.services import (
         _summary_tops,
@@ -156,7 +156,7 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
         return 0
 
     target = (_engine_key(engine), _normalized(region)) if engine else None
-    api = client or client_for_project(project)[0]
+    account_clients = {}
     updated = 0
     retrieved_at = timezone.now()
 
@@ -172,6 +172,18 @@ def refresh_provider_visibility(project, *, engine=None, region=None, client=Non
         segment = (_engine_key(config_engine), _normalized(region_label or config_region))
         if target and segment != target:
             continue
+
+        account_id = str(
+            configuration.get("_topvisor_credential_id")
+            or mapping.topvisor_credential_id
+            or "legacy"
+        )
+        if client is not None:
+            api = client
+        else:
+            if account_id not in account_clients:
+                account_clients[account_id] = client_for_configuration(mapping, configuration)
+            api = account_clients[account_id]
 
         region_index = configuration.get("region_index")
         if region_index in (None, ""):

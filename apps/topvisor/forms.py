@@ -11,6 +11,7 @@ def configuration_label(item):
 
 
 class TopvisorCredentialsForm(forms.Form):
+    credential_id = forms.IntegerField(required=False, widget=forms.HiddenInput)
     user_id = forms.CharField(label="ID пользователя Topvisor", max_length=255)
     api_key = forms.CharField(
         label="API-ключ Topvisor",
@@ -40,7 +41,15 @@ class TopvisorProjectForm(forms.Form):
         super().__init__(*args, **kwargs)
         self.configurations = {configuration_id(item): item for item in configurations}
         self.fields["topvisor_project"].choices = [
-            (str(item["id"]), item.get("name") or item.get("site") or str(item["id"]))
+            (
+                str(item.get("_selector_id") or item["id"]),
+                (
+                    f"{item.get('name') or item.get('site') or item['id']} — "
+                    f"аккаунт {item.get('_topvisor_user_id')}"
+                    if item.get("_topvisor_user_id")
+                    else item.get("name") or item.get("site") or str(item["id"])
+                ),
+            )
             for item in projects
         ]
         self.fields["configurations"].choices = [

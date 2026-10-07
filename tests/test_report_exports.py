@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import re
 import shutil
 import zipfile
@@ -1028,7 +1029,7 @@ def test_configured_url_segments_render_three_level_tables_and_separate_charts(
     )
 
 
-def test_landing_comparison_conclusions_use_its_own_configured_groups():
+def test_landing_comparison_conclusions_derive_popular_categories_from_urls():
     def row(engine, url, visits, *, level=None):
         value = {
             "dimensions": [
@@ -1046,14 +1047,16 @@ def test_landing_comparison_conclusions_use_its_own_configured_groups():
     domain = "https://demo.example"
     current = [
         row("Яндекс", f"{domain}/articles/post/", 600),
-        row("Яндекс", f"{domain}/treatment/trauma/", 150),
-        row("Яндекс", f"{domain}/treatment/neuro/", 100),
+        row("Яндекс", f"{domain}/treatment/travmatologiya/", 150),
+        row("Яндекс", f"{domain}/treatment/nevrologiya/", 100),
+        row("Яндекс", f"{domain}/treatment/ortopediya/", 75),
         row("Яндекс", f"{domain}/diagnostics/uzi/", 50),
     ]
     previous = [
         row("Яндекс", f"{domain}/articles/post/", 500),
-        row("Яндекс", f"{domain}/treatment/trauma/", 120),
-        row("Яндекс", f"{domain}/treatment/neuro/", 80),
+        row("Яндекс", f"{domain}/treatment/travmatologiya/", 120),
+        row("Яндекс", f"{domain}/treatment/nevrologiya/", 80),
+        row("Яндекс", f"{domain}/treatment/ortopediya/", 50),
         row("Яндекс", f"{domain}/diagnostics/uzi/", 100),
     ]
     current_hierarchy = [
@@ -1081,11 +1084,6 @@ def test_landing_comparison_conclusions_use_its_own_configured_groups():
             {"name": "Диагностика", "patterns": [f"{domain}/diagnostics/"]},
         ],
         information_groups=[{"name": "Статьи", "patterns": [f"{domain}/articles/"]}],
-        subsection_groups=[
-            {"name": "Травматология", "patterns": [f"{domain}/treatment/trauma/"]},
-            {"name": "Неврология", "patterns": [f"{domain}/treatment/neuro/"]},
-            {"name": "УЗИ", "patterns": [f"{domain}/diagnostics/uzi/"]},
-        ],
         provider_hierarchy=True,
     )
 
@@ -1098,12 +1096,12 @@ def test_landing_comparison_conclusions_use_its_own_configured_groups():
     assert paragraphs[1] == "По коммерческим разделам:"
     assert paragraphs[2].splitlines() == [
         "Лечение — +25% по сравнению с прошлым месяцем. Самые популярные здесь разделы — "
-        "Травматология и Неврология.",
+        "Травматология, Неврология и Ортопедия.",
         "Диагностика — −50% по сравнению с прошлым месяцем. Самый популярный здесь раздел — УЗИ.",
     ]
 
 
-def test_landing_comparison_conclusions_ignore_unconfigured_service_page_slugs():
+def test_landing_comparison_conclusions_ignore_direct_service_page_slugs():
     def row(url, visits):
         return {
             "dimensions": [
@@ -1118,11 +1116,11 @@ def test_landing_comparison_conclusions_ignore_unconfigured_service_page_slugs()
     domain = "https://demo.example"
     current = [
         row(f"{domain}/treatment/blokada-poyasnichnogo-otdela-pozvonochnika/", 500),
-        row(f"{domain}/treatment/trauma/doctor-one/", 150),
-        row(f"{domain}/treatment/trauma/doctor-two/", 100),
-        row(f"{domain}/treatment/neuro/service/", 200),
+        row(f"{domain}/treatment/travmatologiya/doctor-one/", 150),
+        row(f"{domain}/treatment/travmatologiya/doctor-two/", 100),
+        row(f"{domain}/treatment/nevrologiya/service/", 200),
     ]
-    previous = [row(f"{domain}/treatment/trauma/doctor-one/", 100)]
+    previous = [row(f"{domain}/treatment/travmatologiya/doctor-one/", 100)]
 
     paragraphs = _landing_comparison_conclusions(
         engine="Яндекс",
@@ -1132,10 +1130,6 @@ def test_landing_comparison_conclusions_ignore_unconfigured_service_page_slugs()
         previous_hierarchy_rows=previous,
         total_values=({}, {}),
         commercial_groups=[{"name": "Лечение", "patterns": [f"{domain}/treatment/"]}],
-        subsection_groups=[
-            {"name": "Травматология", "patterns": [f"{domain}/treatment/trauma/"]},
-            {"name": "Неврология", "patterns": [f"{domain}/treatment/neuro/"]},
-        ],
     )
 
     assert paragraphs == [
@@ -1144,6 +1138,72 @@ def test_landing_comparison_conclusions_ignore_unconfigured_service_page_slugs()
         "Самые популярные здесь разделы — Травматология и Неврология.",
     ]
     assert "Blokada" not in " ".join(paragraphs)
+
+
+def test_landing_comparison_conclusions_use_exact_hierarchy_totals_and_whole_percentages():
+    def row(url, visits, *, level=None):
+        value = {
+            "dimensions": [
+                {"id": "google", "name": "Google"},
+                {"id": url, "name": url},
+            ],
+            "visits": str(visits),
+            "users": str(visits),
+            "bounce_rate": "10",
+        }
+        if level is not None:
+            value["hierarchy_level"] = level
+        return value
+
+    domain = "https://demo.example"
+    paragraphs = _landing_comparison_conclusions(
+        engine="Google",
+        current_rows=[row(f"{domain}/diagnostics/uzi/service/", 2700)],
+        previous_rows=[row(f"{domain}/diagnostics/uzi/service/", 3100)],
+        current_hierarchy_rows=[
+            row(f"{domain}/", 9000, level=1),
+            row(f"{domain}/diagnostics/", 3167, level=2),
+            row(f"{domain}/diagnostics/uzi/", 2700, level=3),
+        ],
+        previous_hierarchy_rows=[
+            row(f"{domain}/", 9500, level=1),
+            row(f"{domain}/diagnostics/", 3569, level=2),
+            row(f"{domain}/diagnostics/uzi/", 3100, level=3),
+        ],
+        total_values=({"visits": 9000}, {"visits": 9500}),
+        commercial_groups=[{"name": "Диагностика", "patterns": [f"{domain}/diagnostics/"]}],
+        provider_hierarchy=True,
+    )
+
+    assert paragraphs[-1] == (
+        "Диагностика — −11% по сравнению с прошлым месяцем. Самый популярный здесь раздел — УЗИ."
+    )
+
+
+def test_landing_comparison_conclusions_render_rounded_zero_as_unchanged():
+    def row(url, visits):
+        return {
+            "dimensions": [
+                {"id": "yandex", "name": "Яндекс"},
+                {"id": url, "name": url},
+            ],
+            "visits": str(visits),
+            "users": str(visits),
+            "bounce_rate": "10",
+        }
+
+    domain = "https://demo.example"
+    paragraphs = _landing_comparison_conclusions(
+        engine="Яндекс",
+        current_rows=[row(f"{domain}/treatment/travmatologiya/", 999)],
+        previous_rows=[row(f"{domain}/treatment/travmatologiya/", 1000)],
+        current_hierarchy_rows=[row(f"{domain}/treatment/", 999)],
+        previous_hierarchy_rows=[row(f"{domain}/treatment/", 1000)],
+        total_values=({}, {}),
+        commercial_groups=[{"name": "Лечение", "patterns": [f"{domain}/treatment/"]}],
+    )
+
+    assert paragraphs[-1].startswith("Лечение — не изменилось по сравнению с прошлым месяцем.")
 
 
 def test_landing_comparison_export_restores_conclusions_for_both_engines(
@@ -1194,7 +1254,11 @@ def test_landing_comparison_export_uses_its_own_parent_groups_for_conclusions(
     rich_version, settings, tmp_path
 ):
     settings.MEDIA_ROOT = tmp_path
-    payload = rich_version.snapshot.payload
+    payload = json.loads(
+        json.dumps(rich_version.snapshot.payload).replace(
+            "/services/priority/", "/services/prioritetnaya-kategoriya/"
+        )
+    )
     payload["display_options"] = {
         "configuration_version": 3,
         "include_metrika": True,

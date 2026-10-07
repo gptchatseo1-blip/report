@@ -16,7 +16,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import matplotlib
 from django.conf import settings
@@ -3401,7 +3401,7 @@ def _landing_conclusion_percent(value):
     number = _decimal_or_none(value)
     if number is None:
         return None
-    rounded = number.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    rounded = number.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return _number(rounded, "%")
 
 
@@ -3410,6 +3410,156 @@ def _landing_conclusion_list(values):
     if len(values) < 2:
         return "".join(values)
     return ", ".join(values[:-1]) + " и " + values[-1]
+
+
+_RUSSIAN_SLUG_ACRONYMS = {
+    "uzi": "УЗИ",
+    "mrt": "МРТ",
+    "kt": "КТ",
+    "mskt": "МСКТ",
+    "enmg": "ЭНМГ",
+    "ekg": "ЭКГ",
+    "eeg": "ЭЭГ",
+    "lor": "ЛОР",
+    "eko": "ЭКО",
+}
+_RUSSIAN_TRANSLITERATION = (
+    ("shch", "щ"),
+    ("sch", "щ"),
+    ("yo", "ё"),
+    ("jo", "ё"),
+    ("zh", "ж"),
+    ("kh", "х"),
+    ("ts", "ц"),
+    ("cz", "ц"),
+    ("ch", "ч"),
+    ("sh", "ш"),
+    ("yu", "ю"),
+    ("ju", "ю"),
+    ("ya", "я"),
+    ("ja", "я"),
+    ("ye", "е"),
+    ("iy", "ий"),
+    ("yy", "ый"),
+    ("ph", "ф"),
+)
+
+
+def _russian_slug_label(slug):
+    """Build a readable Russian label for a provider URL segment."""
+    source = unquote(str(slug or "")).strip("-_/ ").casefold()
+    if not source:
+        return "Раздел"
+    words = []
+    for raw_word in re.split(r"[-_\s]+", source):
+        if not raw_word:
+            continue
+        if raw_word in _RUSSIAN_SLUG_ACRONYMS:
+            words.append(_RUSSIAN_SLUG_ACRONYMS[raw_word])
+            continue
+        value = raw_word
+        for latin, cyrillic in _RUSSIAN_TRANSLITERATION:
+            value = value.replace(latin, cyrillic)
+        converted = []
+        for index, character in enumerate(value):
+            if character == "c":
+                following = value[index + 1 : index + 2]
+                converted.append("с" if following in {"e", "i", "y"} else "к")
+            else:
+                converted.append(
+                    {
+                        "a": "а",
+                        "b": "б",
+                        "d": "д",
+                        "e": "е",
+                        "f": "ф",
+                        "g": "г",
+                        "h": "х",
+                        "i": "и",
+                        "j": "й",
+                        "k": "к",
+                        "l": "л",
+                        "m": "м",
+                        "n": "н",
+                        "o": "о",
+                        "p": "п",
+                        "q": "к",
+                        "r": "р",
+                        "s": "с",
+                        "t": "т",
+                        "u": "у",
+                        "v": "в",
+                        "w": "в",
+                        "x": "кс",
+                        "y": "ы",
+                        "z": "з",
+                    }.get(character, character)
+                )
+        words.append("".join(converted))
+    label = " ".join(words).strip()
+    return label[:1].upper() + label[1:] if label else "Раздел"
+
+
+def _landing_group_roots(hierarchy, group):
+    roots = []
+    for pattern in group.get("patterns") or []:
+        matches = [url for url in hierarchy if _url_matches_pattern(url, pattern)]
+        if not matches:
+            continue
+        root = min(
+            matches,
+            key=lambda url: (
+                len([part for part in urlsplit(url).path.split("/") if part]),
+                len(url),
+            ),
+        )
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _aggregate_hierarchy_groups(hierarchy, groups):
+    result = {}
+    for group in groups:
+        roots = _landing_group_roots(hierarchy, group)
+        result[group["name"]] = {
+            "visits": sum(
+                (_decimal_or_none(hierarchy[url].get("visits")) or Decimal(0) for url in roots),
+                Decimal(0),
+            )
+        }
+    return result
+
+
+def _popular_landing_categories(hierarchy, group, *, source_rows=(), limit=3):
+    categories = {}
+    for root in _landing_group_roots(hierarchy, group):
+        parsed_root = urlsplit(root)
+        root_parts = [part for part in parsed_root.path.split("/") if part]
+        for url, values in hierarchy.items():
+            parsed = urlsplit(url)
+            parts = [part for part in parsed.path.split("/") if part]
+            if parsed.netloc != parsed_root.netloc or len(parts) != len(root_parts) + 1:
+                continue
+            if parts[: len(root_parts)] != root_parts:
+                continue
+            candidate_prefix = parsed.path.rstrip("/") + "/"
+            slug_words = [part for part in re.split(r"[-_]+", parts[-1]) if part]
+            has_descendants = any(
+                urlsplit(_landing_url(row)).path.startswith(candidate_prefix)
+                and urlsplit(_landing_url(row)).path.rstrip("/") != parsed.path.rstrip("/")
+                for row in source_rows
+            )
+            if len(slug_words) > 2 and not has_descendants:
+                continue
+            category_url = f"{parsed.scheme or parsed_root.scheme or 'https'}://{parsed.netloc}/"
+            category_url += "/".join(parts) + "/"
+            categories[category_url] = (
+                _decimal_or_none(values.get("visits")) or Decimal(0),
+                _russian_slug_label(parts[-1]),
+            )
+    ordered = sorted(categories.values(), key=lambda item: (-item[0], item[1].casefold()))
+    return [label for visits, label in ordered[:limit] if visits > 0]
 
 
 def _landing_conclusion_hierarchy(rows, engine, *, provider_hierarchy):
@@ -3450,8 +3600,6 @@ def _landing_comparison_conclusions(
 
     current_engine_rows = [row for row in current_rows if _search_engine_name(row) == engine]
     previous_engine_rows = [row for row in previous_rows if _search_engine_name(row) == engine]
-    current_groups = _aggregate_configured_groups(current_engine_rows, commercial_groups)
-    previous_groups = _aggregate_configured_groups(previous_engine_rows, commercial_groups)
 
     current_hierarchy = _landing_conclusion_hierarchy(
         current_hierarchy_rows,
@@ -3463,6 +3611,8 @@ def _landing_comparison_conclusions(
         engine,
         provider_hierarchy=provider_hierarchy,
     )
+    current_groups = _aggregate_hierarchy_groups(current_hierarchy, commercial_groups)
+    previous_groups = _aggregate_hierarchy_groups(previous_hierarchy, commercial_groups)
     current_total = _decimal_or_none((total_values[0] or {}).get("visits"))
     if current_total is None:
         current_total = next(
@@ -3540,47 +3690,37 @@ def _landing_comparison_conclusions(
             current_groups.get(name, {}).get("visits"),
             previous_groups.get(name, {}).get("visits"),
         )
-        if change is None:
+        rounded_change = (
+            change.quantize(Decimal("1"), rounding=ROUND_HALF_UP) if change is not None else None
+        )
+        if rounded_change is None:
             change_text = "нет базы сравнения"
+        elif rounded_change == 0:
+            change_text = "не изменилось"
         else:
-            sign = "+" if change > 0 else "−" if change < 0 else ""
-            change_text = f"{sign}{_landing_conclusion_percent(abs(change))}"
+            sign = "+" if rounded_change > 0 else "−"
+            change_text = f"{sign}{_landing_conclusion_percent(abs(rounded_change))}"
 
-        named_subsections = {}
-        for subsection in subsection_groups:
-            subsection_name = str(subsection.get("name") or "").strip()
-            if not subsection_name or subsection_name.casefold() == str(name).casefold():
-                continue
-            target = named_subsections.setdefault(
-                subsection_name.casefold(), {"name": subsection_name, "patterns": []}
+        popular = _popular_landing_categories(
+            current_hierarchy,
+            group,
+            source_rows=current_engine_rows,
+        )
+        if not popular and current_engine_rows:
+            derived_hierarchy = _landing_hierarchy(
+                _aggregate_detail_rows(current_engine_rows, _landing_url)
             )
-            for pattern in subsection.get("patterns") or []:
-                if pattern not in target["patterns"]:
-                    target["patterns"].append(pattern)
-
-        subsection_visits = []
-        for subsection in named_subsections.values():
-            visits = sum(
-                (
-                    _decimal_or_none(row.get("visits")) or Decimal(0)
-                    for row in current_engine_rows
-                    if any(
-                        _url_matches_pattern(_landing_url(row), pattern)
-                        for pattern in group.get("patterns") or []
-                    )
-                    and any(
-                        _url_matches_pattern(_landing_url(row), pattern)
-                        for pattern in subsection.get("patterns") or []
-                    )
-                ),
-                Decimal(0),
+            popular = _popular_landing_categories(
+                derived_hierarchy,
+                group,
+                source_rows=current_engine_rows,
             )
-            if visits > 0:
-                subsection_visits.append((visits, subsection["name"]))
-        subsection_visits.sort(key=lambda item: (-item[0], item[1].casefold()))
-        popular = [label for _visits, label in subsection_visits[:3]]
 
-        line = f"{name} — {change_text} по сравнению с прошлым месяцем."
+        line = (
+            f"{name} — {change_text}."
+            if rounded_change is None
+            else f"{name} — {change_text} по сравнению с прошлым месяцем."
+        )
         if popular:
             lead = (
                 "Самый популярный здесь раздел"
