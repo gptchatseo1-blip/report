@@ -4577,15 +4577,39 @@ def _render_metrika(doc, payload, blocks):
                 else {}
             )
             commercial_groups = _configured_url_groups(payload, "commercial")
-            conclusion_groups = [
+            preferred_group_names = {"лечение", "диагностика", "реабилитация"}
+            comparison_parent_groups = [
                 group
                 for expected in ("лечение", "диагностика", "реабилитация")
-                for group in commercial_groups
+                for group in comparison_subsection_groups
                 if group["name"].casefold() == expected
-            ] or commercial_groups
-            conclusion_subsections = [
-                *comparison_subsection_groups,
-                *_configured_url_groups(payload, "subsections"),
+            ]
+            if comparison_parent_groups:
+                # Existing projects use this block's own URL groups for the
+                # main sections shown after the Google/Yandex tables.  Keep
+                # that contract so conclusions do not disappear when the
+                # separate generic "commercial" setting is empty.
+                conclusion_groups = comparison_parent_groups
+                comparison_category_groups = [
+                    group
+                    for group in comparison_subsection_groups
+                    if group["name"].casefold() not in preferred_group_names
+                ]
+            elif commercial_groups:
+                conclusion_groups = [
+                    group
+                    for expected in ("лечение", "диагностика", "реабилитация")
+                    for group in commercial_groups
+                    if group["name"].casefold() == expected
+                ] or commercial_groups
+                comparison_category_groups = comparison_subsection_groups
+            else:
+                # Backwards-compatible fallback for saved projects whose only
+                # URL-group configuration belongs to this comparison block.
+                conclusion_groups = comparison_subsection_groups
+                comparison_category_groups = []
+            conclusion_categories = [
+                *comparison_category_groups,
                 *_configured_url_groups(payload, "categories"),
             ]
             information_groups = _configured_url_groups(payload, "information")
@@ -4625,7 +4649,7 @@ def _render_metrika(doc, payload, blocks):
                         ),
                         commercial_groups=conclusion_groups,
                         information_groups=information_groups,
-                        subsection_groups=conclusion_subsections,
+                        subsection_groups=conclusion_categories,
                         provider_hierarchy=has_provider_hierarchy,
                     )
                     for conclusion in conclusion_paragraphs:
