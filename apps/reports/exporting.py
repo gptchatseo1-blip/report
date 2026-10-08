@@ -925,6 +925,7 @@ def _render_position_table(doc, payload, segment, start, end):
                 if str(item.get("configuration_id") or "") == configuration_id
             ),
             key=lambda item: str(item.get("date") or ""),
+            reverse=True,
         )
         dates = [str(item.get("date"))[:10] for item in sources]
 

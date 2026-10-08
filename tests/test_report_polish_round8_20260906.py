@@ -219,16 +219,16 @@ def test_selected_day_positions_are_columns_inside_filtered_top_table():
     assert [cell.text for cell in table.rows[0].cells] == [
         "Запросы",
         "WS",
-        "14.07",
         "16.08",
+        "14.07",
         "Имя группы",
     ]
     assert len(table.rows) == 2
     assert [cell.text for cell in table.rows[1].cells] == [
         "top query",
         "100",
-        "8",
         "3",
+        "8",
         "Группа",
     ]
 
