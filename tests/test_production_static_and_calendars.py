@@ -110,6 +110,19 @@ def test_javascript_updates_period_during_every_render():
     assert "render();" in javascript
 
 
+def test_calendar_assets_are_compatible_with_firefox():
+    static_root = Path(__file__).resolve().parents[1] / "static" / "reports"
+    javascript = (static_root / "calendar.js").read_text()
+    css = (static_root / "app.css").read_text()
+
+    assert ".at(" not in javascript
+    assert ".calendar-month{min-width:0}" in css
+    assert (
+        ".calendar-grid button{position:relative;display:grid;place-items:center;width:100%" in css
+    )
+    assert "min-height:1.65rem" in css
+
+
 def test_position_sync_refreshes_calendar_dates_without_page_reload():
     static_root = Path(__file__).resolve().parents[1] / "static" / "reports"
     builder = (static_root / "report-builder.js").read_text()

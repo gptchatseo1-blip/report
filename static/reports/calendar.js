@@ -22,7 +22,8 @@
       inputs = [...root.querySelectorAll('.calendar-source input[type=checkbox]')];
       allowed = new Map(inputs.map(input => [input.value, input]));
       if (allowed.size && focusLatest) {
-        const latest = new Date([...allowed.keys()].sort().at(-1) + 'T12:00:00');
+        const availableDates = [...allowed.keys()].sort();
+        const latest = new Date(availableDates[availableDates.length - 1] + 'T12:00:00');
         endMonth = monthIndex(latest);
       }
       if (toolbar) toolbar.hidden = !allowed.size;
@@ -32,9 +33,10 @@
 
     function updateSummary() {
       const chosen = inputs.filter(input => input.checked).map(input => input.value).sort();
+      const lastChosen = chosen[chosen.length - 1];
       summary.textContent = chosen.length < 2
         ? (inputs.length === 1 ? 'Для сравнения нужна ещё минимум одна дата.' : `${label} — выберите минимум две даты.`)
-        : `${label} — период: ${formatDate(chosen[0])}–${formatDate(chosen.at(-1))}. Точек на графике: ${chosen.length}`;
+        : `${label} — период: ${formatDate(chosen[0])}–${formatDate(lastChosen)}. Точек на графике: ${chosen.length}`;
     }
 
     function render() {
@@ -140,7 +142,7 @@
     function updateRangeFromExactSelection() {
       const selected = checkboxes().filter(input => input.checked).map(input => input.dataset.periodMonth).sort();
       start.value = selected[0] || '';
-      end.value = selected.at(-1) || '';
+      end.value = selected[selected.length - 1] || '';
       updateSummary();
       updateSyncMonth();
     }
