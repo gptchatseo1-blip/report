@@ -13,6 +13,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.metrics.models import MetricPoint, SourceSnapshot
+from apps.metrics.url_groups import url_group_key
 from apps.projects.models import Project
 from apps.reports.exporting import generate_artifact
 from apps.reports.models import ProjectReportSettings, Report
@@ -617,6 +618,129 @@ def test_landing_page_total_comes_from_the_same_dimensioned_report(identity, yan
     assert total["users"] == "16092"
 
 
+def test_direct_landing_data_survives_sync_and_snapshot_without_changing_engine_series(
+    identity, yandex_settings
+):
+    from apps.yandex.services import _configuration_fingerprint
+
+    group = {"name": "Красота", "patterns": ["https://site.example/beauty/*"]}
+    saved_values = {
+        "metrika_info_url_groups": "Статьи | https://site.example/articles/*",
+        "metrika_commercial_url_groups": "Красота | https://site.example/beauty/*",
+        "metrika_category_url_groups": "Красота | https://site.example/beauty/*",
+        "metrika_search_attribution": "lastsign",
+    }
+    saved = ProjectReportSettings.objects.create(project=identity[1], values=saved_values)
+    mapping = mapping_with_goal(identity, yandex_settings)
+
+    class DirectLandingMetrika(FakeMetrika):
+        def stat(self, **params):
+            dimensions = params.get("dimensions", "")
+            filters = params.get("filters", "")
+            if dimensions == "ym:s:startURL":
+                return {
+                    "data": [
+                        {
+                            "dimensions": [
+                                {"id": "https://site.example/", "name": "https://site.example/"}
+                            ],
+                            "metrics": [1984, 1493, 10],
+                        }
+                    ],
+                    "totals": [17463, 14954, 10],
+                    "total_rows": 1,
+                }
+            if "SearchEngineRoot,ym:s:startURL" == dimensions.removeprefix("ym:s:<attribution>"):
+                return {
+                    "data": [
+                        {
+                            "dimensions": [
+                                {"id": "yandex", "name": "Яндекс"},
+                                {"id": "https://site.example/", "name": "https://site.example/"},
+                            ],
+                            "metrics": [1970, 1492, 10],
+                        }
+                    ],
+                    "totals": [17463, 14954, 10],
+                }
+            if "=~" in filters:
+                self.calls.append(params)
+                if dimensions:
+                    return {
+                        "data": [
+                            {
+                                "dimensions": [{"id": "yandex", "name": "Яндекс"}],
+                                "metrics": [600, 500, 10],
+                            }
+                        ]
+                    }
+                return {"data": [{"metrics": [351, 310, 10]}], "totals": [351, 310, 10]}
+            return super().stat(**params)
+
+    api = DirectLandingMetrika()
+    run = sync_metrika(mapping=mapping, report_month=date(2026, 10, 1), client=api)
+    assert run.status == "success"
+    source = SourceSnapshot.objects.get(project=mapping.project, period_start=date(2026, 10, 1))
+    variant = source.payload["detail_variants"]["search"]["humans"]
+    assert variant["landing_pages"][0]["visits"] == "1970"
+    assert variant["landing_pages_direct"][0]["visits"] == "1984"
+    assert variant["landing_pages_direct"][0]["users"] == "1493"
+    assert variant["landing_pages_direct_total"]["visits"] == "17463"
+    assert variant["landing_group_totals"][url_group_key(group)]["visits"] == "351"
+    group_calls = [call for call in api.calls if "=~" in call.get("filters", "")]
+    assert group_calls
+    assert all("ym:s:startURLDomain=~" in call["filters"] for call in group_calls)
+    assert all(call["attribution"] == "cross_device_last_significant" for call in group_calls)
+    assert any(
+        "isRobot=='No'" in call["filters"] and "=='organic'" in call["filters"]
+        for call in group_calls
+    )
+
+    report = Report.objects.create(project=mapping.project, report_month=date(2026, 10, 1))
+    version = create_report_version(
+        report=report,
+        selection={
+            "display_options": {
+                "configuration_version": 3,
+                "include_metrika_sections": True,
+                "include_metrika_categories": True,
+                "include_metrika_url_groups": True,
+                "include_metrika_landing_pages": True,
+                "include_metrika_landing_page_comparison": True,
+            },
+            "yandex_metrika": [
+                str(snapshot_id)
+                for snapshot_id in SourceSnapshot.objects.filter(
+                    project=mapping.project
+                ).values_list("id", flat=True)
+            ],
+        },
+    )
+    periods = version.snapshot.payload["calculated"]["sources"]["sources"]["yandex_metrika"][
+        "period_details"
+    ]
+    assert len(periods) == 3
+    assert all(
+        period["payload"]["detail_variants"]["search"]["humans"]["landing_group_totals"][
+            url_group_key(group)
+        ]["visits"]
+        == "351"
+        for period in periods
+    )
+    detail = periods[-1]["payload"]["detail_variants"]["search"]["humans"]
+    assert detail["landing_pages_direct"][0]["visits"] == "1984"
+    assert detail["landing_hierarchy_direct"]
+    assert detail["information_group_engine_totals"]
+    saved.refresh_from_db()
+    assert saved.values == saved_values
+
+    before = _configuration_fingerprint(mapping, "test-version")
+    mapping.project.report_settings.values["metrika_category_url_groups"] += (
+        "\nУЗИ | /diagnostics/uzi/"
+    )
+    assert _configuration_fingerprint(mapping, "test-version") != before
+
+
 def test_late_failure_preserves_existing_snapshots(identity, yandex_settings):
     mapping = mapping_with_goal(identity, yandex_settings)
     sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=FakeMetrika())
@@ -649,7 +773,9 @@ def test_goal_requests_are_batched_and_rate_limit_is_reported(identity, yandex_s
     run = sync_metrika(mapping=mapping, report_month=date(2026, 3, 1), client=api)
 
     assert run.status == run.Status.SUCCESS
-    assert len(api.calls) == 149
+    goal_calls = [call for call in api.calls if "ym:s:goal" in call["metrics"]]
+    assert len(goal_calls) == 60  # Five goal batches, four variants, three months.
+    assert all(len(call["metrics"].split(",")) <= 18 for call in goal_calls)
     limited = sync_metrika(
         mapping=mapping,
         report_month=date(2026, 3, 1),

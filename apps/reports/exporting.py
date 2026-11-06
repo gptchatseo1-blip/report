@@ -41,11 +41,13 @@ from matplotlib.patches import Circle, FancyBboxPatch, Patch, PathPatch, Rectang
 from matplotlib.path import Path as MplPath  # noqa: E402
 from matplotlib.ticker import FuncFormatter, MaxNLocator  # noqa: E402
 
+from apps.metrics.url_groups import combined_url_group, url_group_key
+
 from .models import GeneratedArtifact, NarrativeBlock, ReportDatasetSnapshot, ValidationIssue
 from .narratives import TOP_SECTION_RANGES, section_enabled
 from .validation import get_publication_readiness
 
-GENERATOR_VERSION = "mvp1.10-2026-09-09"
+GENERATOR_VERSION = "mvp1.11-2026-11-06-url-aggregates"
 MIMES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
@@ -2545,6 +2547,10 @@ def _metrika_period_rows(payload, key):
         else:
             rows = variant.get(detail_key) or []
             total = variant.get(f"{detail_key}_total") or {}
+            if key == "landing_pages_direct" and "landing_pages_direct" not in variant:
+                # Existing immutable snapshots keep their original detail format.
+                rows = variant.get("landing_pages") or []
+                total = variant.get("landing_pages_total") or {}
         periods.append(
             {
                 "period_start": detail.get("period_start"),
@@ -2552,6 +2558,9 @@ def _metrika_period_rows(payload, key):
                 "rows": rows,
                 "total": total,
                 "payload": source,
+                "group_totals": variant.get("landing_group_totals"),
+                "hierarchy_rows": variant.get("landing_hierarchy_direct"),
+                "information_group_engine_totals": variant.get("information_group_engine_totals"),
             }
         )
     return periods
@@ -3281,7 +3290,19 @@ def _group_period_values(periods, groups):
     return [
         {
             "period_start": period.get("period_start"),
-            "values": _aggregate_configured_groups(period.get("rows") or [], groups),
+            "values": (
+                {
+                    group["name"]: {
+                        metric: _decimal_or_none(
+                            (period["group_totals"].get(url_group_key(group)) or {}).get(metric)
+                        )
+                        for metric in ("visits", "users", "bounce_rate")
+                    }
+                    for group in groups
+                }
+                if period.get("group_totals") is not None
+                else _aggregate_configured_groups(period.get("rows") or [], groups)
+            ),
         }
         for period in periods
     ]
@@ -3306,7 +3327,7 @@ def _metrika_groups_chart(periods, groups, *, title="Визиты", only_group=N
         figure, axis = plt.subplots(figsize=(7.2, 3.45), dpi=150, facecolor="white")
         legend_handles = []
         for index, group in enumerate(selected):
-            values = [row["values"].get(group["name"], {}).get("visits", 0) for row in grouped]
+            values = [row["values"].get(group["name"], {}).get("visits") for row in grouped]
             pattern_label = " › ".join(
                 _url_pattern_label(pattern) for pattern in group.get("patterns") or []
             )
@@ -3314,7 +3335,7 @@ def _metrika_groups_chart(periods, groups, *, title="Визиты", only_group=N
             color = METRIKA_COLORS[index % len(METRIKA_COLORS)]
             axis.plot(
                 labels,
-                [float(value) for value in values],
+                [float(value) if value is not None else float("nan") for value in values],
                 color=color,
                 linewidth=1.6,
                 label=legend,
@@ -3564,7 +3585,7 @@ def _popular_landing_categories(hierarchy, group, *, source_rows=(), limit=3):
 
 
 def _landing_conclusion_hierarchy(rows, engine, *, provider_hierarchy):
-    matching = [row for row in rows if _search_engine_name(row) == engine]
+    matching = [row for row in rows if engine is None or _search_engine_name(row) == engine]
     if provider_hierarchy:
         exact_levels = []
         for row in matching:
@@ -3594,6 +3615,8 @@ def _landing_comparison_conclusions(
     information_groups=(),
     subsection_groups=(),
     provider_hierarchy=False,
+    current_information_totals=None,
+    previous_information_totals=None,
 ):
     """Build conclusions only for the per-engine landing-page comparison block."""
     if not commercial_groups:
@@ -3625,8 +3648,33 @@ def _landing_comparison_conclusions(
             None,
         )
 
-    information_current = _aggregate_configured_groups(current_engine_rows, information_groups)
-    information_previous = _aggregate_configured_groups(previous_engine_rows, information_groups)
+    def information_values(totals, hierarchy, page_rows):
+        if totals is not None:
+            return {
+                group["name"]: {
+                    "visits": _decimal_or_none(
+                        next(
+                            (
+                                row.get("visits")
+                                for row in totals.get(url_group_key(group), [])
+                                if _search_engine_name(row) == engine
+                            ),
+                            "0",
+                        )
+                    )
+                }
+                for group in information_groups
+            }
+        if provider_hierarchy:
+            return _aggregate_hierarchy_groups(hierarchy, information_groups)
+        return _aggregate_configured_groups(page_rows, information_groups)
+
+    information_current = information_values(
+        current_information_totals, current_hierarchy, current_engine_rows
+    )
+    information_previous = information_values(
+        previous_information_totals, previous_hierarchy, previous_engine_rows
+    )
     editorial_current = editorial_previous = None
     if information_groups:
         editorial_group = max(
@@ -3742,13 +3790,16 @@ def _group_overview_text(periods, groups, *, commercial=False):
         return ""
     current = grouped[-1]["values"]
     previous = grouped[-2]["values"] if len(grouped) >= 2 else {}
-    leader = max(groups, key=lambda group: current.get(group["name"], {}).get("visits", 0))
-    current_total = sum(
-        (current.get(group["name"], {}).get("visits", 0) for group in groups), Decimal(0)
-    )
-    previous_total = sum(
-        (previous.get(group["name"], {}).get("visits", 0) for group in groups), Decimal(0)
-    )
+    leader = max(groups, key=lambda group: current.get(group["name"], {}).get("visits") or 0)
+    union_key = url_group_key(combined_url_group(groups))
+
+    def total(period, values):
+        if period.get("group_totals") is not None:
+            return period["group_totals"].get(union_key, {}).get("visits")
+        return sum((values.get(group["name"], {}).get("visits", 0) for group in groups), Decimal(0))
+
+    current_total = total(periods[-1], current)
+    previous_total = total(periods[-2], previous) if len(periods) >= 2 else None
     delta = _relative_delta(current_total, previous_total)
     trend = (
         "увеличение"
@@ -4267,9 +4318,18 @@ def _configured_groups_table(
     *,
     expanded_groups=(),
     total_values=None,
+    provider_hierarchy=False,
 ):
-    current_pages = _aggregate_detail_rows(current_rows, _landing_url)
-    previous_pages = _aggregate_detail_rows(previous_rows, _landing_url)
+    current_pages = (
+        _landing_conclusion_hierarchy(current_rows, None, provider_hierarchy=provider_hierarchy)
+        if provider_hierarchy
+        else _aggregate_detail_rows(current_rows, _landing_url)
+    )
+    previous_pages = (
+        _landing_conclusion_hierarchy(previous_rows, None, provider_hierarchy=provider_hierarchy)
+        if provider_hierarchy
+        else _aggregate_detail_rows(previous_rows, _landing_url)
+    )
     return _landing_hierarchy_table(
         doc,
         payload,
@@ -4277,6 +4337,7 @@ def _configured_groups_table(
         previous_pages,
         expanded_groups=expanded_groups,
         total_values=total_values,
+        provider_hierarchy=provider_hierarchy,
     )
 
 
@@ -4600,8 +4661,13 @@ def _render_metrika(doc, payload, blocks):
         {
             **period,
             "rows": [row for row in period.get("rows") or [] if _belongs_to_project(payload, row)],
+            "hierarchy_rows": (
+                [row for row in period["hierarchy_rows"] if _belongs_to_project(payload, row)]
+                if period.get("hierarchy_rows") is not None
+                else None
+            ),
         }
-        for period in _metrika_period_rows(payload, "landing_pages")
+        for period in _metrika_period_rows(payload, "landing_pages_direct")
     ]
     if landing_periods:
         current_rows = landing_periods[-1]["rows"]
@@ -4792,6 +4858,16 @@ def _render_metrika(doc, payload, blocks):
                         information_groups=information_groups,
                         subsection_groups=conclusion_categories,
                         provider_hierarchy=has_provider_hierarchy,
+                        current_information_totals=(
+                            comparison_periods[-1].get("information_group_engine_totals")
+                            if comparison_periods
+                            else None
+                        ),
+                        previous_information_totals=(
+                            comparison_periods[-2].get("information_group_engine_totals")
+                            if len(comparison_periods) >= 2
+                            else None
+                        ),
                     )
                     for conclusion in conclusion_paragraphs:
                         doc.add_paragraph(conclusion)
@@ -4803,11 +4879,16 @@ def _render_metrika(doc, payload, blocks):
                 style="Table Heading",
             )
             _comparison_period_pills(doc, landing_periods)
+            direct_hierarchy = landing_periods[-1].get("hierarchy_rows")
+            previous_hierarchy = (
+                landing_periods[-2].get("hierarchy_rows") if len(landing_periods) >= 2 else None
+            )
+            use_direct_hierarchy = direct_hierarchy is not None and previous_hierarchy is not None
             _configured_groups_table(
                 doc,
                 payload,
-                current_rows,
-                previous_rows,
+                direct_hierarchy if use_direct_hierarchy else current_rows,
+                previous_hierarchy if use_direct_hierarchy else previous_rows,
                 [*information_groups, *commercial_groups],
                 expanded_groups=(),
                 total_values=(
@@ -4816,6 +4897,7 @@ def _render_metrika(doc, payload, blocks):
                 )
                 if len(landing_periods) >= 2
                 else None,
+                provider_hierarchy=use_direct_hierarchy,
             )
             if information_groups:
                 doc.add_paragraph(_group_overview_text(landing_periods, information_groups))

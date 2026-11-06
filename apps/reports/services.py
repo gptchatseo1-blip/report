@@ -174,6 +174,15 @@ def _metrika_payload_annotations(display_options):
         "report_detail_selected_landing_total": _json_path(
             "detail_variants", segment, robotness, "landing_pages_total"
         ),
+        "report_detail_direct_landing_total": _json_path(
+            "detail_variants", segment, robotness, "landing_pages_direct_total"
+        ),
+        "report_detail_landing_group_totals": _json_path(
+            "detail_variants", segment, robotness, "landing_group_totals"
+        ),
+        "report_detail_information_group_engine_totals": _json_path(
+            "detail_variants", "search", robotness, "information_group_engine_totals"
+        ),
         "report_detail_selected_geography_total": _json_path(
             "detail_variants", segment, robotness, "search_geography_total"
         ),
@@ -288,6 +297,24 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options, *, include_
             _snapshot_json_branch(snapshot, "detail_variants", segment, robotness, "landing_pages")
             or []
         )
+        direct_pages = _snapshot_json_branch(
+            snapshot, "detail_variants", segment, robotness, "landing_pages_direct"
+        )
+        if direct_pages is not None:
+            selected_detail["landing_pages_direct"] = direct_pages
+            selected_detail["landing_pages_direct_total"] = (
+                getattr(snapshot, "report_detail_direct_landing_total", None) or {}
+            )
+    if include_landing_history:
+        group_totals = getattr(snapshot, "report_detail_landing_group_totals", None)
+        if group_totals is not None:
+            selected_detail["landing_group_totals"] = group_totals
+        if include_large_details:
+            hierarchy = _snapshot_json_branch(
+                snapshot, "detail_variants", segment, robotness, "landing_hierarchy_direct"
+            )
+            if hierarchy is not None:
+                selected_detail["landing_hierarchy_direct"] = hierarchy
 
     search_detail = {
         "search_engines": getattr(snapshot, "report_detail_search_engines", None) or [],
@@ -307,6 +334,11 @@ def _report_metrika_payload_from_snapshot(snapshot, display_options, *, include_
         search_detail["landing_hierarchy"] = _visible_landing_hierarchy_rows(
             getattr(snapshot, "report_detail_search_landing_hierarchy", None)
         )
+        information_totals = getattr(
+            snapshot, "report_detail_information_group_engine_totals", None
+        )
+        if information_totals is not None:
+            search_detail["information_group_engine_totals"] = information_totals
     compact["detail_variants"] = {"search": {robotness: search_detail}}
     if segment != "search":
         compact["detail_variants"][segment] = {robotness: selected_detail}
