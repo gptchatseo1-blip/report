@@ -73,16 +73,17 @@
 {% if mapping %}
 <section class="sync-log">
   <h2>Последние запуски Метрики</h2>
+  <p class="source-help">Запросы считаются для каждого запуска, включая повторные попытки. Для старых запусков расход не восстанавливается.</p>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Начало</th><th>Месяц</th><th>Статус</th><th>Ошибка</th><th><span class="sr-only">Действия</span></th></tr></thead>
+      <thead><tr><th>Начало</th><th>Месяц</th><th>Статус</th><th title="Включая повторные HTTP-попытки">Запросов API</th><th>Ошибка</th><th><span class="sr-only">Действия</span></th></tr></thead>
       <tbody>
       {% for run in runs %}
       <tr>
-        <td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.error_message|default:'—' }}</td>
+        <td>{{ run.started_at|date:'d.m.Y H:i' }}</td><td>{{ run.report_month|date:'m.Y' }}</td><td>{{ run.get_status_display }}</td><td>{{ run.request_count|default_if_none:'—' }}{% if run.request_count != None %}<br><small>Повторных: {{ run.retry_count }}</small>{% endif %}</td><td>{{ run.error_message|default:'—' }}{% if run.quota_error_code %}<br><small>{{ run.quota_error_code }}</small>{% endif %}</td>
         <td><form method="post" action="{% url 'yandex:delete-metrika-run' project.id run.id %}" class="run-delete-form" onsubmit="return confirm('Удалить запись запуска Метрики?')">{% csrf_token %}<button class="delete-button" aria-label="Удалить запись запуска Метрики">Удалить</button></form></td>
       </tr>
-      {% empty %}<tr><td colspan="5">Запусков нет.</td></tr>{% endfor %}
+      {% empty %}<tr><td colspan="6">Запусков нет.</td></tr>{% endfor %}
       </tbody>
     </table>
   </div>

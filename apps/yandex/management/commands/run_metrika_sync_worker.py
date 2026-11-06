@@ -4,6 +4,7 @@ import time
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.yandex.models import YandexMetrikaSyncRun
@@ -21,7 +22,11 @@ class Command(BaseCommand):
         while True:
             YandexMetrikaSyncRun.objects.filter(
                 status=YandexMetrikaSyncRun.Status.RUNNING,
-                started_at__lt=timezone.now() - timedelta(minutes=30),
+            ).filter(
+                Q(heartbeat_at__lt=timezone.now() - timedelta(minutes=30))
+                | Q(
+                    heartbeat_at__isnull=True, started_at__lt=timezone.now() - timedelta(minutes=30)
+                )
             ).update(
                 status=YandexMetrikaSyncRun.Status.FAILED,
                 completed_at=timezone.now(),
@@ -35,7 +40,7 @@ class Command(BaseCommand):
             if run:
                 claimed = YandexMetrikaSyncRun.objects.filter(
                     pk=run.pk, status=YandexMetrikaSyncRun.Status.QUEUED
-                ).update(status=YandexMetrikaSyncRun.Status.RUNNING)
+                ).update(status=YandexMetrikaSyncRun.Status.RUNNING, heartbeat_at=timezone.now())
                 if claimed:
                     self.stdout.write(f"Processing Metrika sync run {run.pk}")
                     execute_queued_metrika_sync(run.pk)

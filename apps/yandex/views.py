@@ -32,6 +32,7 @@ from .models import (
     YandexWebmasterProjectMapping,
     YandexWebmasterSyncRun,
 )
+from .quotas import quota_message
 from .services import enqueue_metrika_sync as sync_metrika
 from .services import sync_webmaster
 
@@ -73,10 +74,24 @@ def _sync_message(run):
     unavailable = len(getattr(run, "unavailable_goal_ids", []))
     if unavailable:
         message += f" Недоступные цели пропущены: {unavailable}."
+    if getattr(run, "request_count", None) is not None:
+        message += f" Запросов API: {run.request_count}, из них повторных: {run.retry_count}."
     return message
 
 
 def _sync_json(mapping, source, run):
+    telemetry = (
+        {
+            "request_count": getattr(run, "request_count", None),
+            "retry_count": getattr(run, "retry_count", 0),
+            "quota_error_code": getattr(run, "quota_error_code", ""),
+            "wait_until": (
+                run.wait_until.isoformat() if getattr(run, "wait_until", None) else None
+            ),
+        }
+        if source == SourceSnapshot.Source.METRIKA
+        else {}
+    )
     if run.status in {
         YandexMetrikaSyncRun.Status.QUEUED,
         YandexMetrikaSyncRun.Status.RUNNING,
@@ -87,6 +102,12 @@ def _sync_json(mapping, source, run):
             or run.status == YandexMetrikaSyncRun.Status.RUNNING
             else "Синхронизация Метрики поставлена в очередь. Страницу можно закрыть."
         )
+        if getattr(run, "wait_until", None) and run.wait_until > timezone.now():
+            message = "Синхронизация ожидает разрешённого времени запроса. "
+            if run.quota_error_code:
+                message += quota_message(run.quota_error_code, run.wait_until, daily=False)
+        if getattr(run, "request_count", None) is not None:
+            message += f" Запросов API: {run.request_count}, из них повторных: {run.retry_count}."
         return JsonResponse(
             {
                 "ok": True,
@@ -97,12 +118,23 @@ def _sync_json(mapping, source, run):
                     "yandex:metrika-sync-status", args=[mapping.project_id, run.id]
                 ),
                 "message": message,
+                **telemetry,
             },
             status=202,
         )
     if run.status != run.Status.SUCCESS:
+        message = run.error_message or "Синхронизация не выполнена."
+        if (
+            source == SourceSnapshot.Source.METRIKA
+            and getattr(run, "request_count", None) is not None
+        ):
+            message += f" Запросов API: {run.request_count}, из них повторных: {run.retry_count}."
         return JsonResponse(
-            {"ok": False, "message": run.error_message or "Синхронизация не выполнена."},
+            {
+                "ok": False,
+                "message": message,
+                **telemetry,
+            },
             status=400,
         )
     snapshot_rows = SourceSnapshot.objects.filter(project=mapping.project, source=source)
@@ -134,6 +166,7 @@ def _sync_json(mapping, source, run):
                 mapping.last_successful_sync_at or timezone.now()
             ).strftime("%d.%m.%Y %H:%M"),
             "periods": periods,
+            **telemetry,
         }
     )
 

@@ -153,6 +153,7 @@ YANDEX_WEBMASTER_API_BASE_URL = os.getenv(
 )
 YANDEX_REQUEST_TIMEOUT_SECONDS = float(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "15"))
 YANDEX_MAX_RETRIES = int(os.getenv("YANDEX_MAX_RETRIES", "3"))
+YANDEX_METRIKA_MIN_INTERVAL_SECONDS = float(os.getenv("YANDEX_METRIKA_MIN_INTERVAL_SECONDS", "2"))
 CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
 
 # TLS is normally terminated by the reverse proxy. Production deployments must enable
