@@ -14,6 +14,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.metrics.models import MetricPoint, SourceSnapshot
+from apps.metrics.url_groups import combined_url_group, url_group_filter, url_group_key
 
 from .client import (
     CORE_METRICS,
@@ -67,7 +68,7 @@ TRAFFIC_SOURCE_DETAIL_METRICS = (
 )
 logger = logging.getLogger(__name__)
 OPTIONAL_WEBMASTER_CODES = {"HOST_NOT_INDEXED", "HOST_NOT_LOADED"}
-METRIKA_COLLECTOR_VERSION = "metrika-2026-09-09-v11"
+METRIKA_COLLECTOR_VERSION = "metrika-2026-11-06-v12"
 WEBMASTER_COLLECTOR_VERSION = "webmaster-2026-09-08-v7"
 GOALS_PER_REQUEST = 6
 
@@ -101,6 +102,9 @@ def _configuration_fingerprint(mapping, collector_version):
         configuration["search_attribution"] = (getattr(report_settings, "values", {}) or {}).get(
             "metrika_search_attribution"
         ) or "lastsign"
+        configuration["landing_groups"] = sorted(
+            url_group_key(group) for group in _configured_landing_groups(mapping.project)[0]
+        )
     return hashlib.sha256(
         json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -201,6 +205,102 @@ def _detail_total(response, *, extended=False):
     if extended:
         names.extend(("page_depth", "avg_visit_duration_seconds"))
     return {name: str(_value({"metrics": totals}, index)) for index, name in enumerate(names)}
+
+
+def _configured_landing_groups(project):
+    from apps.reports.forms import parse_named_url_groups
+
+    settings_row = getattr(project, "report_settings", None)
+    values = getattr(settings_row, "values", {}) or {}
+    legacy_segments = values.get("metrika_url_segments") or {}
+    segments = {
+        kind: (
+            parse_named_url_groups(values[field])
+            if field in values
+            else legacy_segments.get(kind, [])
+        )
+        for kind, field in (
+            ("information", "metrika_info_url_groups"),
+            ("commercial", "metrika_commercial_url_groups"),
+            ("categories", "metrika_category_url_groups"),
+            ("subsections", "metrika_subsection_url_groups"),
+        )
+    }
+    groups = []
+    for kind in ("information", "commercial", "categories", "subsections"):
+        selected = segments.get(kind) or []
+        groups.extend(selected)
+        if kind in {"information", "commercial"} and selected:
+            groups.append(combined_url_group(selected))
+    if not segments.get("categories"):
+        for group in project.url_groups.filter(active=True).prefetch_related("rules"):
+            groups.append(
+                {
+                    "name": group.name,
+                    "patterns": [
+                        {"value": rule.pattern, "type": rule.type}
+                        for rule in group.rules.all()
+                        if rule.active
+                    ],
+                }
+            )
+    unique = {url_group_key(group): group for group in groups if group.get("patterns")}
+    return list(unique.values()), segments.get("information") or []
+
+
+def _direct_landing_report(client, filter_value, common, *, response=None):
+    params = {
+        **common,
+        "metrics": SEARCH_DETAIL_METRICS,
+        "dimensions": START_URL,
+        "limit": 10000,
+        "sort": "-ym:s:visits",
+        "lang": "ru",
+    }
+    if response is None:
+        response = _stat_with_filter(client, filter_value, **params)
+    rows = list(response.get("data") or [])
+    total_rows = response.get("total_rows")
+    if response.get("total_rows_rounded") or response.get("contains_sensitive_data"):
+        # A privacy-limited/rounded row count is not an exact pagination target.
+        total_rows = None
+    while rows and (
+        len(rows) < total_rows if total_rows is not None else len(rows) % params["limit"] == 0
+    ):
+        page = _stat_with_filter(client, filter_value, **params, offset=len(rows) + 1)
+        batch = page.get("data") or []
+        if not batch:
+            if total_rows is not None:
+                raise YandexAPIError("Incomplete landing-page response")
+            break
+        rows.extend(batch)
+    response = {**response, "data": rows}
+    result = _detail_rows(response, 1)
+    for row in result:
+        row["dimensions"].insert(0, {"id": "all", "name": "Все источники"})
+    return result, _detail_total(response)
+
+
+def _landing_group_totals(client, filter_value, common, groups, *, engine_dimension=None):
+    totals = {}
+    for group in groups:
+        group_filter = url_group_filter(group)
+        if not group_filter:
+            continue
+        filters = f"({filter_value}) AND {group_filter}" if filter_value else group_filter
+        params = {**common, "metrics": SEARCH_DETAIL_METRICS, "lang": "ru"}
+        if engine_dimension:
+            params.update(dimensions=engine_dimension, limit=100)
+        response = _stat_with_filter(client, filters, **params)
+        if engine_dimension:
+            values = _detail_rows(response, 1)
+        else:
+            values = _detail_total(response)
+            if not values:
+                values = _detail_total({"totals": (response.get("data") or [{}])[0].get("metrics")})
+            values = values or {"visits": "0", "users": "0", "bounce_rate": "0"}
+        totals[url_group_key(group)] = values
+    return totals
 
 
 def _landing_hierarchy_rows(
@@ -536,6 +636,7 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
         )
 
     detail_variants = {"search": {}, "all": {}}
+    landing_groups, information_groups = _configured_landing_groups(mapping.project)
     for segment, robotness, filter_value in (
         ("search", "humans", attribution_settings["search_humans_filter"]),
         ("search", "all", attribution_settings["search_all_filter"]),
@@ -611,6 +712,34 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
             "landing_pages_total": _detail_total(landing_pages_response),
             "landing_hierarchy": landing_hierarchy,
         }
+        # These five report blocks need direct page/group aggregates. Keep the
+        # existing per-engine detail series intact for the comparison tables.
+        if segment == "search":
+            direct_pages, direct_total = _direct_landing_report(client, filter_value, common)
+            direct_hierarchy = _landing_hierarchy_rows(client, filter_value, common)
+        else:
+            direct_pages, direct_total = _direct_landing_report(
+                client, filter_value, common, response=landing_pages_response
+            )
+            direct_hierarchy = landing_hierarchy
+        detail_variants[segment][robotness].update(
+            landing_pages_direct=direct_pages,
+            landing_pages_direct_total=direct_total,
+            landing_hierarchy_direct=direct_hierarchy,
+            landing_group_totals=_landing_group_totals(
+                client, filter_value, common, landing_groups
+            ),
+        )
+        if segment == "search":
+            detail_variants[segment][robotness]["information_group_engine_totals"] = (
+                _landing_group_totals(
+                    client,
+                    filter_value,
+                    common,
+                    information_groups,
+                    engine_dimension=attribution_settings["search_engine"],
+                )
+            )
         for code, value in _geography_totals(geography_details).items():
             points.append(
                 {
