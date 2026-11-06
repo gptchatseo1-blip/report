@@ -18,9 +18,9 @@
         const data = await response.json();
         if (!response.ok && response.status !== 202) throw new Error(data.message);
         if (data.queued) {
-          persistedMetrikaStatus.textContent = data.status === 'queued'
+          persistedMetrikaStatus.textContent = data.message || (data.status === 'queued'
             ? 'Синхронизация Метрики в очереди. Отчёт можно создавать после завершения.'
-            : 'Синхронизация Метрики выполняется. Отчёт можно создавать после завершения.';
+            : 'Синхронизация Метрики выполняется. Отчёт можно создавать после завершения.');
           window.setTimeout(poll, 2000);
           return;
         }
@@ -63,6 +63,7 @@
           await new Promise(resolve => window.setTimeout(resolve, 2000));
           response = await fetch(data.status_url, {credentials: 'same-origin'});
           data = await response.json();
+          if (progress && data.message) progress.textContent = data.message;
           if (!response.ok && response.status !== 202) throw new Error(data.message);
         }
         if (!data.ok) throw new Error(data.message);

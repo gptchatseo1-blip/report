@@ -29,6 +29,7 @@ from .client import (
     YandexUnauthorized,
 )
 from .models import YandexMetrikaSyncRun, YandexWebmasterSyncRun
+from .quotas import quota_message
 
 METRIC_CODES = (
     "visits",
@@ -960,6 +961,35 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
     )
     client = client or MetrikaClient(mapping.connection)
     staged_paths = []
+    original_progress = getattr(client, "progress", None)
+    metered_client = all(
+        hasattr(client, name) for name in ("request_count", "retry_count", "progress")
+    )
+    if metered_client:
+        initial_requests, initial_retries = client.request_count, client.retry_count
+
+        def progress(event, **values):
+            fields = {"heartbeat_at": timezone.now()}
+            if event == "request":
+                fields.update(
+                    request_count=values["count"] - initial_requests,
+                    retry_count=values["retries"] - initial_retries,
+                    wait_until=None,
+                )
+            elif event in {"wait", "quota"}:
+                fields["wait_until"] = values["until"]
+                if values.get("code"):
+                    fields["quota_error_code"] = values["code"]
+            for key, value in fields.items():
+                setattr(run, key, value)
+            YandexMetrikaSyncRun.objects.filter(pk=run.pk).update(**fields)
+            if original_progress is not None:
+                original_progress(event, **values)
+
+        client.progress = progress
+        run.request_count, run.retry_count = 0, 0
+        run.heartbeat_at = timezone.now()
+        run.save(update_fields=["request_count", "retry_count", "heartbeat_at"])
     try:
         prune_sync_runs(mapping.project)
         months = tuple(shift_month(month, offset) for offset in (-2, -1, 0))
@@ -1029,6 +1059,7 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
             run.fetched_period_count = len(staged_paths)
             run.reused_period_count = len(reusable)
             run.unavailable_goal_ids = sorted(unavailable_goal_ids)
+            run.wait_until = None
             run.save(
                 update_fields=[
                     "status",
@@ -1036,6 +1067,7 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
                     "fetched_period_count",
                     "reused_period_count",
                     "unavailable_goal_ids",
+                    "wait_until",
                 ]
             )
         run.reused_period_count = len(reusable)
@@ -1059,12 +1091,21 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
         )
         run.status = run.Status.FAILED
         run.completed_at = timezone.now()
-        run.error_message = (
-            "Лимит запросов Яндекс.Метрики временно исчерпан. Повторите позже."
-            if exc.http_status == 429
-            else "Не удалось получить данные Яндекс.Метрики. Повторите позже."
+        if exc.http_status == 429:
+            run.quota_error_code = exc.error_code or "unknown"
+            run.wait_until = exc.retry_at
+            run.error_message = quota_message(exc.error_code, exc.retry_at, daily=exc.quota_daily)
+        else:
+            run.error_message = "Не удалось получить данные Яндекс.Метрики. Повторите позже."
+        run.save(
+            update_fields=[
+                "status",
+                "completed_at",
+                "error_message",
+                "quota_error_code",
+                "wait_until",
+            ]
         )
-        run.save(update_fields=["status", "completed_at", "error_message"])
         return run
     except Exception:
         logger.exception(
@@ -1076,6 +1117,8 @@ def sync_metrika(*, mapping, report_month, user=None, client=None, force_refresh
         run.save(update_fields=["status", "completed_at", "error_message"])
         return run
     finally:
+        if metered_client:
+            client.progress = original_progress
         for path in staged_paths:
             try:
                 os.unlink(path)
@@ -1089,7 +1132,8 @@ def execute_queued_metrika_sync(run_id):
     ).get(pk=run_id)
     if run.status == run.Status.QUEUED:
         run.status = run.Status.RUNNING
-        run.save(update_fields=["status"])
+        run.heartbeat_at = timezone.now()
+        run.save(update_fields=["status", "heartbeat_at"])
     if run.status != run.Status.RUNNING:
         return run
     return sync_metrika(

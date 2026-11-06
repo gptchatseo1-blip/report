@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from .credentials import get_oauth_credentials
 from .crypto import decrypt_token, encrypt_token
+from .quotas import MetrikaQuota, QuotaBlocked, error_type, quota_details
 
 CORE_METRICS = (
     "ym:s:visits",
@@ -33,10 +34,14 @@ GOAL_CONVERSION_RATE = "ym:s:goal{id}conversionRate"
 class YandexAPIError(Exception):
     """Safe provider error; response bodies and credentials are never exposed."""
 
-    def __init__(self, message, *, http_status=None, error_code=""):
+    def __init__(
+        self, message, *, http_status=None, error_code="", retry_at=None, quota_daily=None
+    ):
         super().__init__(message)
         self.http_status = http_status
         self.error_code = error_code
+        self.retry_at = retry_at
+        self.quota_daily = quota_daily
 
 
 class YandexUnauthorized(YandexAPIError):
@@ -68,10 +73,64 @@ def exchange_token(parameters, *, credentials=None):
 
 
 class MetrikaClient:
-    def __init__(self, connection, *, sleep=time.sleep, opener=urllib.request.urlopen):
+    def __init__(
+        self,
+        connection,
+        *,
+        sleep=time.sleep,
+        opener=urllib.request.urlopen,
+        quota=None,
+        clock=timezone.now,
+    ):
         self.connection = connection
         self.sleep = sleep
         self.opener = opener
+        self.clock = clock
+        self.quota = quota if quota is not None else MetrikaQuota(clock=clock)
+        self.progress = None
+        self.request_count = 0
+        self.retry_count = 0
+
+    def _notify(self, event, **values):
+        if self.progress is not None:
+            self.progress(event, **values)
+
+    def _pause(self, seconds, *, code="", until=None):
+        until = until or self.clock() + timedelta(seconds=seconds)
+        self._notify("wait", until=until, code=code)
+        remaining = seconds
+        while remaining > 0:
+            chunk = min(30, remaining)
+            self.sleep(chunk)
+            remaining -= chunk
+            self._notify("heartbeat")
+
+    def _before_request(self, path, params, *, retry):
+        while True:
+            try:
+                delay, code = self.quota.acquire(self.connection, path, params)
+            except QuotaBlocked as exc:
+                raise YandexAPIError(
+                    "Действует суточное ограничение Метрики.",
+                    http_status=429,
+                    error_code=exc.code,
+                    retry_at=exc.until,
+                    quota_daily=True,
+                ) from None
+            if delay <= 0:
+                break
+            if delay > 30 and self.progress is None:
+                raise YandexAPIError(
+                    "Метрика временно ограничила частоту запросов.",
+                    http_status=429,
+                    error_code=code,
+                    retry_at=self.clock() + timedelta(seconds=delay),
+                    quota_daily=False,
+                )
+            self._pause(delay, code=code)
+        self.request_count += 1
+        self.retry_count += int(retry)
+        self._notify("request", count=self.request_count, retries=self.retry_count)
 
     def _refresh(self):
         if not self.connection.refresh_token_encrypted:
@@ -116,17 +175,44 @@ class MetrikaClient:
         )
         for attempt in range(settings.YANDEX_MAX_RETRIES + 1):
             try:
+                self._before_request(path, params, retry=attempt > 0 or refreshed)
                 with self.opener(
                     request, timeout=settings.YANDEX_REQUEST_TIMEOUT_SECONDS
                 ) as response:
                     return json.loads(response.read())
             except urllib.error.HTTPError as exc:
+                try:
+                    payload = json.loads(exc.read())
+                except (ValueError, TypeError):
+                    payload = {}
+                provider_code = error_type(payload)
                 if exc.code == 401 and not refreshed:
                     self._refresh()
                     return self._request(path, params, refreshed=True)
-                if (
-                    exc.code == 429 or 500 <= exc.code < 600
-                ) and attempt < settings.YANDEX_MAX_RETRIES:
+                if exc.code == 429:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    daily, until = quota_details(provider_code, payload, retry_after, self.clock())
+                    if not path.startswith("stat/") and not daily and retry_after is None:
+                        until = self.clock() + timedelta(seconds=2)
+                    self.quota.defer(self.connection, params, provider_code, until, daily=daily)
+                    self._notify("quota", code=provider_code or "unknown", until=until)
+                    delay = max(0, (until - self.clock()).total_seconds())
+                    # Long waits belong to the background worker, not a web request.
+                    if (
+                        not daily
+                        and attempt < settings.YANDEX_MAX_RETRIES
+                        and (delay <= 30 or self.progress is not None)
+                    ):
+                        self._pause(delay, code=provider_code, until=until)
+                        continue
+                    raise YandexAPIError(
+                        "Превышена квота Метрики.",
+                        http_status=429,
+                        error_code=provider_code,
+                        retry_at=until,
+                        quota_daily=daily,
+                    ) from None
+                if 500 <= exc.code < 600 and attempt < settings.YANDEX_MAX_RETRIES:
                     retry_after = exc.headers.get("Retry-After") if exc.headers else None
                     self.sleep(
                         float(retry_after)
@@ -134,11 +220,7 @@ class MetrikaClient:
                         else 0.5 * 2**attempt + random.uniform(0, 0.25)
                     )
                     continue
-                try:
-                    payload = json.loads(exc.read())
-                except (ValueError, TypeError):
-                    payload = {}
-                error_code = str(payload.get("error_code") or payload.get("code") or "")
+                error_code = provider_code
                 if exc.code in (401, 403):
                     raise YandexUnauthorized(
                         "Подключение Яндекса требует повторной авторизации для Метрики.",

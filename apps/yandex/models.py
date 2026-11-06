@@ -2,6 +2,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from apps.projects.models import Project
 from apps.yandex.crypto import decrypt_token, encrypt_token
@@ -119,6 +120,11 @@ class YandexMetrikaSyncRun(models.Model):
     reused_period_count = models.PositiveSmallIntegerField(default=0)
     unavailable_goal_ids = models.JSONField(default=list, blank=True)
     error_message = models.CharField(max_length=500, blank=True)
+    request_count = models.PositiveIntegerField("Запросов API", null=True, blank=True)
+    retry_count = models.PositiveIntegerField("Повторных запросов", default=0)
+    quota_error_code = models.CharField(max_length=80, blank=True)
+    wait_until = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
@@ -127,6 +133,17 @@ class YandexMetrikaSyncRun(models.Model):
 
     def __str__(self):
         return f"{self.mapping} — {self.report_month:%m.%Y}: {self.status}"
+
+
+class MetrikaQuotaState(models.Model):
+    """Shared pacing/cooldowns; no tokens or request payloads are retained."""
+
+    key = models.CharField(max_length=80, primary_key=True)
+    next_request_at = models.DateTimeField(default=timezone.now)
+    error_code = models.CharField(max_length=80, blank=True)
+
+    def __str__(self):
+        return self.key
 
 
 class YandexWebmasterProjectMapping(models.Model):
