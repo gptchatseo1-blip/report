@@ -689,6 +689,7 @@ def test_direct_landing_data_survives_sync_and_snapshot_without_changing_engine_
     assert variant["landing_group_totals"][url_group_key(group)]["visits"] == "351"
     group_calls = [call for call in api.calls if "=~" in call.get("filters", "")]
     assert group_calls
+    assert all("ym:s:startURLDomain=~" in call["filters"] for call in group_calls)
     assert all(call["attribution"] == "cross_device_last_significant" for call in group_calls)
     assert any(
         "isRobot=='No'" in call["filters"] and "=='organic'" in call["filters"]

@@ -4661,6 +4661,11 @@ def _render_metrika(doc, payload, blocks):
         {
             **period,
             "rows": [row for row in period.get("rows") or [] if _belongs_to_project(payload, row)],
+            "hierarchy_rows": (
+                [row for row in period["hierarchy_rows"] if _belongs_to_project(payload, row)]
+                if period.get("hierarchy_rows") is not None
+                else None
+            ),
         }
         for period in _metrika_period_rows(payload, "landing_pages_direct")
     ]

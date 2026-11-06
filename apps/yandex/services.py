@@ -105,6 +105,7 @@ def _configuration_fingerprint(mapping, collector_version):
         configuration["landing_groups"] = sorted(
             url_group_key(group) for group in _configured_landing_groups(mapping.project)[0]
         )
+        configuration["landing_domain"] = mapping.project.normalized_domain
     return hashlib.sha256(
         json.dumps(configuration, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -281,10 +282,12 @@ def _direct_landing_report(client, filter_value, common, *, response=None):
     return result, _detail_total(response)
 
 
-def _landing_group_totals(client, filter_value, common, groups, *, engine_dimension=None):
+def _landing_group_totals(
+    client, filter_value, common, groups, *, engine_dimension=None, domain=""
+):
     totals = {}
     for group in groups:
-        group_filter = url_group_filter(group)
+        group_filter = url_group_filter(group, domain=domain)
         if not group_filter:
             continue
         filters = f"({filter_value}) AND {group_filter}" if filter_value else group_filter
@@ -727,7 +730,11 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
             landing_pages_direct_total=direct_total,
             landing_hierarchy_direct=direct_hierarchy,
             landing_group_totals=_landing_group_totals(
-                client, filter_value, common, landing_groups
+                client,
+                filter_value,
+                common,
+                landing_groups,
+                domain=mapping.project.normalized_domain,
             ),
         )
         if segment == "search":
@@ -738,6 +745,7 @@ def _fetch_month(client, mapping, month, *, attribution="lastsign"):
                     common,
                     information_groups,
                     engine_dimension=attribution_settings["search_engine"],
+                    domain=mapping.project.normalized_domain,
                 )
             )
         for code, value in _geography_totals(geography_details).items():

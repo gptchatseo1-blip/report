@@ -265,6 +265,7 @@ def test_render_routes_direct_data_to_the_agreed_blocks_only(monkeypatch):
             "landing_hierarchy_direct": [
                 page("https://site.test/", 17463, 14954, level=1),
                 page("https://site.test/beauty/", visits, 310, level=2),
+                page("https://other.test/beauty/", 9999, 9000, level=2),
             ],
             "landing_group_totals": {url_group_key(group): {"visits": str(visits)}},
         }
@@ -309,4 +310,5 @@ def test_render_routes_direct_data_to_the_agreed_blocks_only(monkeypatch):
     assert paragraphs.count("Раздел «Красота» (https://site.test/beauty/) — +7,3%.") == 2
     assert "Коммерческий раздел «Красота» (https://site.test/beauty/) — +7,3%." in paragraphs
     assert "1984 визитов за месяц" in paragraphs
+    assert all("other.test" not in row.cells[0].text for table in doc.tables for row in table.rows)
     assert payload == original

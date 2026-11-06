@@ -20,7 +20,7 @@ def combined_url_group(groups):
     return {"patterns": [pattern for group in groups for pattern in group.get("patterns") or []]}
 
 
-def url_group_filter(group):
+def url_group_filter(group, *, domain=""):
     """Match the exporter's full-URL, path and host/path candidates in the API.
 
     One OR filter covers every mask so intersecting masks count a visit once.
@@ -61,4 +61,12 @@ def url_group_filter(group):
             expression = "|".join(dict.fromkeys(expressions))
             quoted = expression.replace("\\", "\\\\").replace("'", "\\'")
             clauses.append(f"{dimension}=~'{quoted}'")
-    return "(" + " OR ".join(clauses) + ")" if clauses else ""
+    if not clauses:
+        return ""
+    expression = "(" + " OR ".join(clauses) + ")"
+    if domain:
+        host = domain.casefold().removeprefix("www.").rstrip(".")
+        host_expression = rf"(?i:^(?:www\.)?{re.escape(host)}\.?$)"
+        quoted_host = host_expression.replace("\\", "\\\\").replace("'", "\\'")
+        expression += f" AND ym:s:startURLDomain=~'{quoted_host}'"
+    return expression
