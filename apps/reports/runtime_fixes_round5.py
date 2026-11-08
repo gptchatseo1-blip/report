@@ -79,6 +79,10 @@ def sanitize_stale_topvisor_visibility(project, value):
     if project is None or getattr(project, "position_provider", "") != "topvisor":
         return value
 
+    from .topvisor_percentages import repair_stale_topvisor_percentages
+
+    value = repair_stale_topvisor_percentages(project, value)
+
     was_string = isinstance(value, str)
     try:
         rows = json.loads(value or "[]") if was_string else value
