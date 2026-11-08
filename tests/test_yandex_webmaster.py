@@ -506,6 +506,7 @@ def test_host_selection_uses_server_list_and_requires_mismatch_confirmation(
 ):
     user, project, connection = context
     client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     monkeypatch.setattr(WebmasterClient, "user", lambda self: {"user_id": 7})
     monkeypatch.setattr(
         WebmasterClient,
@@ -633,11 +634,12 @@ def test_webmaster_iks_checkbox_is_project_scoped_and_post_only(client, context)
     assert item.include_iks is False
 
 
-def test_missing_scope_requires_reauthorization(client, context):
+def test_missing_scope_requires_reauthorization(client, context, monkeypatch):
     user, project, connection = context
     connection.scopes = ["metrika:read"]
     connection.save(update_fields=["scopes"])
     client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     response = client.post(
         reverse("yandex:select-host", args=[project.id]),
         {"connection_id": connection.id, "host_id": "x"},
@@ -897,7 +899,7 @@ def test_unverified_host_is_visible_but_cannot_be_selected(client, context, monk
     }
     monkeypatch.setattr(WebmasterClient, "user", lambda self: {"user_id": 7})
     monkeypatch.setattr(WebmasterClient, "hosts", lambda self, uid: [host])
-    monkeypatch.setattr(WebmasterClient, "counters", lambda self: iter([]))
+    monkeypatch.setattr(MetrikaClient, "counters", lambda self: iter([]))
     response = client.get(reverse("yandex:connection", args=[project.id]))
     assert "unverified" in response.content.decode()
     response = client.post(
