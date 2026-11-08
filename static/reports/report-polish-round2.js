@@ -506,6 +506,7 @@
     document.body.classList.add('report-modal-open');
     const sequence = ++previewSequence;
     if (form.dataset.editorPreviewUrl) {
+      setStatus('');
       container.textContent = 'Загрузка данных выбранных дат…';
       try {
         const sources = await calendarRows();
