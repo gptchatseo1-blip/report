@@ -78,8 +78,10 @@
       _uid: ++uid,
       _base: base,
       _manualOnly: false,
+      _manualTops: Boolean(manualOverride && topFields.some(name => !numberEqual(merged[name] ?? 0, base[name] ?? 0))),
       _manualVisibility: manualOverride && stored && hasOwn(stored, 'visibility') ? stored.visibility : null,
       _include: include,
+      _frozen: Boolean(stored && include),
       _deleted: Boolean(stored?.deleted),
     };
   });
@@ -93,6 +95,7 @@
       _manualOnly: true,
       _manualVisibility: source.visibility ?? null,
       _include: hasOwn(source, 'include_in_report') ? source.include_in_report !== false : true,
+      _frozen: true,
       _deleted: Boolean(source.deleted),
     });
   });
@@ -125,6 +128,42 @@
     return topFields.some(name => !numberEqual(row[name] ?? 0, row._base[name] ?? 0));
   };
   const manualOverride = row => row._manualOnly || row._manualVisibility !== null || topChanged(row);
+
+  const applyCalendarRows = sources => {
+    let changed = false;
+    sources.forEach(source => {
+      const row = rows.find(item => rowKey(item) === rowKey(source));
+      if (!row || row._manualOnly || row._frozen || row._deleted) return;
+      if (row.configuration_id && String(row.configuration_id) !== String(source.configuration_id)) return;
+      if (String(row.month).slice(0, 7) !== String(row._base?.month || '').slice(0, 7)) return;
+      const keepManualTops = row._manualTops;
+      const changedSource = row.snapshot_date !== source.snapshot_date
+        || !numberEqual(row._base?.visibility, source.visibility);
+      const changedTops = !keepManualTops && topFields.some(name => !numberEqual(row[name], source[name]));
+      row._base = {...source};
+      row.snapshot_date = source.snapshot_date;
+      row.automatic_visibility = source.visibility;
+      if (!keepManualTops) topFields.forEach(name => { row[name] = source[name]; });
+      changed = changed || changedSource || changedTops;
+    });
+    return changed;
+  };
+
+  const calendarRows = async () => {
+    const selected = Object.fromEntries([...form.querySelectorAll('[data-calendar]')].map(calendar => [
+      calendar.dataset.fieldName,
+      [...calendar.querySelectorAll('.calendar-source input[type=checkbox]:checked')].map(input => input.value),
+    ]));
+    const response = await fetch(form.dataset.editorPreviewUrl, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+      body: JSON.stringify({selected_dates_by_field: selected}),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok || !Array.isArray(data.rows)) throw new Error();
+    return data.rows;
+  };
 
   const serializableRows = () => rows.filter(row => row.month).map(row => ({
     configuration_id: String(row.configuration_id || ''),
@@ -264,6 +303,7 @@
     if (!Number.isFinite(percent) || !Number.isFinite(count) || percent < 0 || percent > 100 || count < 0) return false;
     row[`${name}_percent`] = Math.max(0, Math.min(100, Math.round(percent)));
     row[name] = Math.max(0, Math.round(count));
+    row._manualTops = true;
     return true;
   };
   const topValue = (row, name) => {
@@ -386,6 +426,7 @@
         include.title = 'Выводить месяц в таблице отчёта';
         include.addEventListener('change', () => {
           row._include = include.checked;
+          row._frozen = include.checked;
           markDirty(0);
           void flushSave();
         });
@@ -442,6 +483,7 @@
           _manualOnly: true,
           _manualVisibility: null,
           _include: true,
+          _frozen: true,
           _deleted: false,
         };
         rows.push(row);
@@ -455,17 +497,33 @@
   }
 
   let lastFocused = null;
+  let previewSequence = 0;
   const focusableSelector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
-  function openModal() {
+  async function openModal() {
     if (trigger.disabled) return;
     lastFocused = document.activeElement;
     backdrop.hidden = false;
     document.body.classList.add('report-modal-open');
-    renderRows();
+    const sequence = ++previewSequence;
+    if (form.dataset.editorPreviewUrl) {
+      container.textContent = 'Загрузка данных выбранных дат…';
+      try {
+        const sources = await calendarRows();
+        if (sequence !== previewSequence || backdrop.hidden) return;
+        const changed = applyCalendarRows(sources);
+        renderRows();
+        if (changed) markDirty(0);
+      } catch (_error) {
+        if (sequence !== previewSequence || backdrop.hidden) return;
+        container.textContent = 'Не удалось загрузить данные выбранных дат. Закройте окно и повторите попытку.';
+        setStatus('Ошибка загрузки', 'error');
+      }
+    } else renderRows();
     requestAnimationFrame(() => closeButton.focus());
   }
   async function closeModal() {
     if (backdrop.hidden) return true;
+    previewSequence += 1;
     const savedOk = await flushSave();
     if (!savedOk) return false;
     backdrop.hidden = true;

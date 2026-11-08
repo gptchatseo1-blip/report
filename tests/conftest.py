@@ -2,6 +2,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def block_live_http_requests(monkeypatch):
+    def reject_connection(*_args, **_kwargs):
+        raise AssertionError("Live HTTP connections are disabled in tests; use a fake response.")
+
+    # HTTPSConnection.connect delegates here before opening a socket or sending
+    # credentials. This also protects clients that bound urlopen before fixtures.
+    monkeypatch.setattr("http.client.HTTPConnection.connect", reject_connection)
+
+
+@pytest.fixture(autouse=True)
 def disable_external_favicon_fetch(settings):
     settings.REPORT_FAVICON_FETCH_ENABLED = False
     settings.YANDEX_METRIKA_MIN_INTERVAL_SECONDS = 0

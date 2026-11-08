@@ -310,6 +310,61 @@ def clear_editor_segment(project, engine, region):
 
 @login_required
 @require_POST
+def topvisor_editor_preview(request, project_id):
+    """Read calendar-bound automatic rows without refreshing or persisting anything."""
+    project = get_object_or_404(Project, pk=project_id)
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    selected = payload.get("selected_dates_by_field") if isinstance(payload, dict) else None
+    if not isinstance(selected, dict):
+        return JsonResponse({"ok": False, "message": "Не указаны даты календаря."}, status=400)
+
+    from .forms import ReportCreateForm
+
+    form = ReportCreateForm(project=project)
+    fields = (
+        form.configuration_date_fields
+        if form.use_configuration_calendars
+        else [
+            {"engine": engine, "field_name": f"{engine}_dates"} for engine in ("yandex", "google")
+        ]
+    )
+    by_engine = {}
+    by_configuration = {}
+    for item in fields:
+        name = item["field_name"]
+        dates = selected.get(name, [])
+        available = {value for value, _label in form.fields[name].choices}
+        if not isinstance(dates, list) or any(
+            not isinstance(day, str) or day not in available for day in dates
+        ):
+            return JsonResponse({"ok": False, "message": "Выбрана недоступная дата."}, status=400)
+        if form.use_configuration_calendars:
+            by_configuration[str(item["configuration_id"])] = {"dates": dates}
+        else:
+            by_engine[item["engine"]] = dates
+    automatic = _automatic_rows(
+        project,
+        selected_dates_by_engine=by_engine,
+        selected_dates_by_configuration=by_configuration,
+    )
+    rows = [
+        row
+        for row in automatic
+        if row["snapshot_date"]
+        in (
+            by_configuration.get(str(row["configuration_id"]), {}).get("dates", [])
+            if form.use_configuration_calendars
+            else by_engine.get(row["engine"], [])
+        )
+    ]
+    return JsonResponse({"ok": True, "rows": rows})
+
+
+@login_required
+@require_POST
 def topvisor_editor_refresh(request, project_id):
     project = get_object_or_404(Project, pk=project_id)
     try:
