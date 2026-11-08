@@ -233,18 +233,12 @@ def _topvisor_editor_data(
     }
     selected_dates_by_configuration = selected_dates_by_configuration or {}
     by_month = defaultdict(list)
-    latest_totals = {}
     for snapshot in stable:
         segment_key = (
             snapshot.search_engine,
             snapshot.region,
             snapshot.topvisor_configuration_id,
         )
-        provider_total = provider_tops(snapshot).get("all")
-        if provider_total:
-            # Topvisor uses the newest complete keyword total as the common
-            # denominator for the selected TOP-% chart.
-            latest_totals[segment_key] = provider_total
         by_month[(*segment_key, snapshot.snapshot_date.replace(day=1))].append(snapshot)
 
     latest = {}
@@ -290,10 +284,9 @@ def _topvisor_editor_data(
         local_top10 = sum(value <= 10 for value in ranked)
         local_top11_30 = sum(11 <= value <= min(snapshot.ranking_depth, 30) for value in ranked)
         exact_tops = provider_tops(snapshot)
-        total = latest_totals.get(
-            (engine, region, configuration),
-            exact_tops.get("all", len(positions)),
-        )
+        # TOP counts and their denominator must describe the same concrete check.
+        # A later keyword-set change must never rebase historical table rows.
+        total = exact_tops.get("all", len(positions))
         top3 = exact_tops.get("1_3", local_top3)
         top10 = exact_tops.get("1_10", local_top10)
         top11_30 = exact_tops.get("11_30", local_top11_30)

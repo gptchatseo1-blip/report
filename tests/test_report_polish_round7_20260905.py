@@ -160,7 +160,7 @@ def test_live_refresh_stores_exact_provider_top_counts_and_editor_percentages():
     assert rows[-1]["top11_30_percent"] == 28
 
 
-def test_editor_uses_newest_keyword_total_for_every_month_and_whole_percentages():
+def test_editor_uses_each_snapshot_keyword_total_and_whole_percentages():
     project = _project()
     august = _snapshot(project, date(2026, 8, 17), "15.0000", "15")
     september = _snapshot(project, date(2026, 9, 21), "16.0000", "16")
@@ -182,10 +182,10 @@ def test_editor_uses_newest_keyword_total_for_every_month_and_whole_percentages(
     rows, _segments = views._topvisor_editor_data(project)
     by_month = {row["month"][:7]: row for row in rows}
 
-    assert by_month["2026-08"]["total"] == 2974
-    assert by_month["2026-08"]["top3_percent"] == 9
-    assert by_month["2026-08"]["top10_percent"] == 25
-    assert by_month["2026-08"]["top11_30_percent"] == 28
+    assert by_month["2026-08"]["total"] == 2396
+    assert by_month["2026-08"]["top3_percent"] == 11
+    assert by_month["2026-08"]["top10_percent"] == 31
+    assert by_month["2026-08"]["top11_30_percent"] == 34
     assert by_month["2026-09"]["total"] == 2974
     assert by_month["2026-09"]["top3_percent"] == 10
     assert by_month["2026-09"]["top10_percent"] == 30
