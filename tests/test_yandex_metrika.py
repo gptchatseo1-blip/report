@@ -118,6 +118,7 @@ def test_counter_selection_uses_server_response_and_site2(
     user, project = identity
     connection = make_connection(user)
     client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     monkeypatch.setattr(
         MetrikaClient,
         "counter",
@@ -173,6 +174,7 @@ def test_unavailable_counter_and_goals_are_safe(client, identity, yandex_setting
         counter_domain=project.domain,
     )
     client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     secret = TEST_ACCESS_TOKEN
     monkeypatch.setattr(
         MetrikaClient, "counter", lambda *_: (_ for _ in ()).throw(YandexAPIError("Безопасно"))
@@ -277,6 +279,7 @@ def test_goals_use_compact_picker_with_selected_count(
         selected_goals=[{"id": "7", "name": "Order", "label": "Order"}],
     )
     client.force_login(user)
+    monkeypatch.setattr(MetrikaClient, "counters", lambda *_: iter([]))
     monkeypatch.setattr(
         MetrikaClient,
         "goals",
