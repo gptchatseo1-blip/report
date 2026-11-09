@@ -146,12 +146,15 @@ def _search_landing_hierarchy_expression(robotness):
 
 
 def _metrika_payload_annotations(display_options):
-    """Return only report-visible Metrika JSON branches from PostgreSQL.
+    """Describe only report-visible Metrika JSON branches.
 
     A synchronized source snapshot can contain four copies of 10,000-row detail
     reports.  Loading ``SourceSnapshot.payload`` and compacting it in Python makes
     the web worker decode every copy first, which can consume more than 1 GB.  JSON
-    key transforms make the database return only the selected branches.
+    key transforms make the database return only the selected branches. These
+    expressions must be evaluated in separate queries: PostgreSQL detoasts the
+    complete JSON column for every expression and retains those copies until
+    the query finishes evaluating the row.
     """
     options = display_options or {}
     robotness = options.get("metrika_robotness")
@@ -202,6 +205,19 @@ def _metrika_payload_annotations(display_options):
         ),
         "report_goal_rows": _json_path("goals_by_segment", segment, goal_robotness),
     }
+
+
+def _load_metrika_payload_branches(snapshot, display_options):
+    """Bound PostgreSQL memory to one source JSON extraction per query.
+
+    Even tiny metadata fields can each allocate another complete decompressed
+    source document. Combining all branches in one SELECT can exhaust the VPS
+    memory before any of the compact results reach Python.
+    """
+    rows = SourceSnapshot.objects.filter(pk=snapshot.pk)
+    for name, expression in _metrika_payload_annotations(display_options).items():
+        value = rows.annotate(**{name: expression}).values_list(name, flat=True).get()
+        setattr(snapshot, name, value)
 
 
 def _snapshot_json_branch(snapshot, *keys):
@@ -634,10 +650,13 @@ def build_source_facts(
             rows = SourceSnapshot.objects.filter(project=project, source=source, id__in=ids)
         options = display_options or {}
         if source == SourceSnapshot.Source.METRIKA:
-            rows = rows.defer("payload").annotate(**_metrika_payload_annotations(options))
+            rows = rows.defer("payload")
         snapshots = list(
             rows.prefetch_related("metrics").order_by("period_start", "period_end", "id")
         )
+        if source == SourceSnapshot.Source.METRIKA:
+            for snapshot in snapshots:
+                _load_metrika_payload_branches(snapshot, options)
         points = []
         all_traffic_totals = []
         segment = "search" if options.get("metrika_search_segment", True) else "all"
