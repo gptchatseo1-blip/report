@@ -61,6 +61,32 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
+# Django's default console handler is disabled when DEBUG=False. Route request
+# failures directly to stderr so Docker captures the traceback in production.
+# The formatter deliberately omits request objects, headers and POST bodies.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "server_error": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "server_error": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+            "formatter": "server_error",
+            "level": "ERROR",
+        },
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["server_error"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
+}
+
 if os.getenv("POSTGRES_HOST"):
     DATABASES = {
         "default": {
