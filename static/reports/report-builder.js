@@ -389,10 +389,22 @@
     });
   });
 
+  const availableDaysInView = calendar => {
+    const months = [...calendar.querySelectorAll('.calendar-month')].filter(month => !month.hidden);
+    return months.reduce(
+      (total, month) => total + month.querySelectorAll('[data-date]:not([disabled])').length,
+      0,
+    );
+  };
+
   form.addEventListener('submit', event => {
-    const invalid = [...form.querySelectorAll('[data-calendar]')].find(calendar => (
-      calendar.querySelectorAll('.calendar-source input[type=checkbox]:checked').length < 2
-    ));
+    const invalid = [...form.querySelectorAll('[data-calendar]')].find(calendar => {
+      // A region without a check in the visible month cannot supply two dates.
+      // Blocking the whole report for it hides every other region, so such a
+      // calendar is skipped: the server marks the region as unavailable.
+      if (availableDaysInView(calendar) < 2) return false;
+      return calendar.querySelectorAll('.calendar-source input[type=checkbox]:checked').length < 2;
+    });
     if (!invalid) return;
     event.preventDefault();
     showNotice('Выберите периоды для формирования отчёта.', 'error');

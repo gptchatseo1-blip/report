@@ -327,29 +327,40 @@ def _url_segment_settings(cleaned):
     }
 
 
-def _calendar_months(field, count=3):
-    """Return an initial, fully rendered calendar; JavaScript only enhances it."""
+MONTH_NAMES = (
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+)
+
+
+def _month_title(value):
+    return f"{MONTH_NAMES[value.month - 1]} {value.year}"
+
+
+def _calendar_months(field, count=3, anchor=None):
+    """Return an initial, fully rendered calendar; JavaScript only enhances it.
+
+    ``anchor`` pins the last visible month.  Configuration calendars share one
+    anchor so that a region without a check in the report month still shows that
+    month (greyed out) instead of silently ending a month earlier.
+    """
     available = {str(value) for value, _label in field.field.choices}
     if not available:
         return []
     selected = set(field.value() or [])
-    latest = date.fromisoformat(max(available)).replace(day=1)
+    latest = (anchor or date.fromisoformat(max(available))).replace(day=1)
     start_index = latest.year * 12 + latest.month - count
     months = []
-    month_names = (
-        "Январь",
-        "Февраль",
-        "Март",
-        "Апрель",
-        "Май",
-        "Июнь",
-        "Июль",
-        "Август",
-        "Сентябрь",
-        "Октябрь",
-        "Ноябрь",
-        "Декабрь",
-    )
     for offset in range(count):
         index = start_index + offset
         year, zero_month = divmod(index, 12)
@@ -372,7 +383,7 @@ def _calendar_months(field, count=3):
             {
                 "year": year,
                 "month": month,
-                "title": f"{month_names[month - 1]} {year}",
+                "title": f"{MONTH_NAMES[month - 1]} {year}",
                 "weeks": weeks,
             }
         )
@@ -391,10 +402,27 @@ def _calendar_period(months):
 
 def _calendar_fields(form):
     if form.use_configuration_calendars:
+        latest_by_field = {
+            item["field_name"]: max(
+                (str(value) for value, _label in form.fields[item["field_name"]].choices),
+                default="",
+            )
+            for item in form.configuration_date_fields
+        }
+        common_latest = max((value for value in latest_by_field.values() if value), default="")
+        anchor = date.fromisoformat(common_latest).replace(day=1) if common_latest else None
         fields = []
         for item in form.configuration_date_fields:
             field = form[item["field_name"]]
-            months = _calendar_months(field, count=2)
+            months = _calendar_months(field, count=2, anchor=anchor)
+            note = ""
+            own_latest = latest_by_field.get(item["field_name"], "")
+            if anchor and own_latest and date.fromisoformat(own_latest).replace(day=1) < anchor:
+                note = (
+                    f"За {_month_title(anchor).lower()} съёмок нет. "
+                    f"Последняя — {date.fromisoformat(own_latest):%d.%m.%Y}. "
+                    "Регион не будет включён в отчёт."
+                )
             fields.append(
                 {
                     "engine": item["engine"],
@@ -404,6 +432,7 @@ def _calendar_fields(form):
                     "months": months,
                     "period": _calendar_period(months),
                     "month_count": 2,
+                    "note": note,
                 }
             )
         return fields
@@ -422,6 +451,7 @@ def _calendar_fields(form):
                 "months": months,
                 "period": _calendar_period(months),
                 "month_count": 3,
+                "note": "",
             }
         )
     return fields
@@ -942,6 +972,16 @@ def report_create(request, project_id):
             if created
             else "Для существующего отчёта создана новая неизменяемая версия.",
         )
+        for missing in getattr(form, "configurations_without_month_data", []):
+            detail = ""
+            if missing.get("last_date"):
+                last = date.fromisoformat(missing["last_date"])
+                detail = f" Последняя съёмка — {last:%d.%m.%Y}."
+            messages.warning(
+                request,
+                f"{missing['label']}: за {missing['month']:%m.%Y} съёмок позиций нет.{detail}"
+                " Регион не будет включён в отчёт.",
+            )
         return redirect("reports:report-detail", report_id=report.id)
     reports = project.reports.annotate(
         version_count=Count("versions"), latest_version_at=Max("versions__created_at")
