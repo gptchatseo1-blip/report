@@ -472,6 +472,7 @@ class ReportCreateForm(forms.Form):
         self.source_period_options = {}
         self.topvisor_report_link_fields = []
         self.configuration_date_fields = []
+        self.configurations_without_month_data = []
         self.use_configuration_calendars = False
         if project is None:
             for name in (
@@ -766,12 +767,31 @@ class ReportCreateForm(forms.Form):
         if webmaster_date_from and webmaster_date_to and webmaster_date_from > webmaster_date_to:
             self.add_error("webmaster_date_to", "Дата окончания должна быть не раньше даты начала.")
         if self.use_configuration_calendars:
+            month = cleaned.get("month")
             for item in self.configuration_date_fields:
                 field_name = item["field_name"]
-                if len(cleaned.get(field_name, [])) < 2:
+                selected = cleaned.get(field_name, [])
+                available = [str(value) for value, _label in self.fields[field_name].choices]
+                month_prefix = f"{month:%Y-%m}" if month else ""
+                month_dates = [
+                    value for value in available if month_prefix and value.startswith(month_prefix)
+                ]
+                if len(selected) < 2:
                     label = f"{item['engine_label']} · {item['region'] or 'Регион не указан'}"
-                    self.add_error(field_name, f"{label}: выберите минимум две доступные даты.")
-                cleaned[field_name] = sorted(cleaned.get(field_name, []))
+                    if month and not month_dates:
+                        # Topvisor made no check in the report month.  Blocking the
+                        # whole report for that would hide every other region, so the
+                        # configuration is reported as unavailable instead.
+                        self.configurations_without_month_data.append(
+                            {
+                                "label": label,
+                                "month": month,
+                                "last_date": max(available, default=""),
+                            }
+                        )
+                    else:
+                        self.add_error(field_name, f"{label}: выберите минимум две доступные даты.")
+                cleaned[field_name] = sorted(selected)
         else:
             for engine, label in (("yandex", "Яндекс"), ("google", "Google")):
                 if engine in self.connected_engines and len(cleaned.get(f"{engine}_dates", [])) < 2:

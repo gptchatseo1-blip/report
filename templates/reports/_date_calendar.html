@@ -7,5 +7,6 @@
     </div>
     <p class="calendar-legend" data-calendar-legend{% if not months %} hidden{% endif %}><i aria-hidden="true"></i> Есть съём позиций</p>
     <p class="calendar-summary" data-summary aria-live="polite">{% if field.value|length >= 2 %}{{ label }} — выбрано дат: {{ field.value|length }}.{% elif field.field.choices|length == 1 %}Для сравнения нужна ещё минимум одна дата.{% else %}{{ label }} — выберите минимум две даты.{% endif %}</p>
+    {% if note %}<p class="calendar-note" data-calendar-note>{{ note }}</p>{% endif %}
     <p data-calendar-empty{% if months %} hidden{% endif %}>Для {{ label }} нет доступных дат. Выполните синхронизацию позиций.</p>
 </section>
