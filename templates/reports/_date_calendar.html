@@ -1,4 +1,4 @@
-<section class="date-calendar" data-calendar data-label="{{ label }}{% if region %} · {{ region }}{% endif %}" data-engine="{{ engine }}" data-field-name="{{ field.name }}" data-month-count="{{ month_count|default:3 }}">
+<section class="date-calendar" data-calendar data-label="{{ label }}{% if region %} · {{ region }}{% endif %}" data-engine="{{ engine }}" data-field-name="{{ field.name }}" data-month-count="{{ month_count|default:3 }}" data-anchor="{{ anchor }}">
   <h3>{{ label }}{% if region %} <small>{{ region }}</small>{% endif %}</h3>{{ field.errors }}
     <div class="calendar-source" hidden>{{ field }}</div>
     <div class="calendar-toolbar" data-calendar-toolbar{% if not months %} hidden{% endif %}><button type="button" class="calendar-arrow" data-prev aria-label="Предыдущий период">←</button><span class="calendar-period" data-period aria-live="polite">{{ period }}</span><button type="button" class="calendar-arrow" data-next aria-label="Следующий период">→</button></div>

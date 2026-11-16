@@ -421,7 +421,7 @@ def _calendar_fields(form):
                 note = (
                     f"За {_month_title(anchor).lower()} съёмок нет. "
                     f"Последняя — {date.fromisoformat(own_latest):%d.%m.%Y}. "
-                    "Регион не будет включён в отчёт."
+                    "Будет включён заданный период."
                 )
             fields.append(
                 {
@@ -432,6 +432,7 @@ def _calendar_fields(form):
                     "months": months,
                     "period": _calendar_period(months),
                     "month_count": 2,
+                    "anchor": anchor.strftime("%Y-%m") if anchor else "",
                     "note": note,
                 }
             )
@@ -451,6 +452,7 @@ def _calendar_fields(form):
                 "months": months,
                 "period": _calendar_period(months),
                 "month_count": 3,
+                "anchor": "",
                 "note": "",
             }
         )
@@ -980,7 +982,7 @@ def report_create(request, project_id):
             messages.warning(
                 request,
                 f"{missing['label']}: за {missing['month']:%m.%Y} съёмок позиций нет.{detail}"
-                " Регион не будет включён в отчёт.",
+                " В отчёт войдут только выбранные даты.",
             )
         return redirect("reports:report-detail", report_id=report.id)
     reports = project.reports.annotate(

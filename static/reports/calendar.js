@@ -16,15 +16,22 @@
     const legend = root.querySelector('[data-calendar-legend]');
     const empty = root.querySelector('[data-calendar-empty]');
     const label = root.dataset.label;
+    const anchor = root.dataset.anchor || '';
     const mobile = () => matchMedia('(max-width: 700px)').matches;
 
     function readAvailableDates(focusLatest = false) {
       inputs = [...root.querySelectorAll('.calendar-source input[type=checkbox]')];
       allowed = new Map(inputs.map(input => [input.value, input]));
       if (allowed.size && focusLatest) {
-        const availableDates = [...allowed.keys()].sort();
-        const latest = new Date(availableDates[availableDates.length - 1] + 'T12:00:00');
-        endMonth = monthIndex(latest);
+        if (anchor) {
+          // Every configuration calendar shares one month window, so a region
+          // without checks in the report month still shows that month.
+          endMonth = monthIndex(new Date(`${anchor}-01T12:00:00`));
+        } else {
+          const availableDates = [...allowed.keys()].sort();
+          const latest = new Date(availableDates[availableDates.length - 1] + 'T12:00:00');
+          endMonth = monthIndex(latest);
+        }
       }
       if (toolbar) toolbar.hidden = !allowed.size;
       if (legend) legend.hidden = !allowed.size;
