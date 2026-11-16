@@ -473,6 +473,7 @@ class ReportCreateForm(forms.Form):
         self.topvisor_report_link_fields = []
         self.configuration_date_fields = []
         self.configurations_without_month_data = []
+        self.missing_topvisor_links = []
         self.use_configuration_calendars = False
         if project is None:
             for name in (
@@ -825,15 +826,16 @@ class ReportCreateForm(forms.Form):
                     if not cleaned.get(item["name"]) and legacy_url:
                         cleaned[item["name"]] = legacy_url
                     if not cleaned.get(item["name"]):
-                        self.add_error(
-                            item["name"],
-                            "Укажите ссылку для этой поисковой системы и региона.",
+                        # A missing link must not block the whole report: the block
+                        # is simply left out and the user is warned after creation.
+                        label = " · ".join(
+                            part
+                            for part in (item.get("engine_label", ""), item.get("region", ""))
+                            if part
                         )
+                        self.missing_topvisor_links.append(label or item["name"])
             elif not legacy_url:
-                self.add_error(
-                    "topvisor_report_url",
-                    "Укажите ссылку или отключите её вывод в отчёте.",
-                )
+                self.missing_topvisor_links.append("Topvisor")
         if cleaned.get("include_top_tables") and not any(
             cleaned.get(name)
             for name in (

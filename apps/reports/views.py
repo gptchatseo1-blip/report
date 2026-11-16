@@ -984,7 +984,20 @@ def report_create(request, project_id):
                 f"{missing['label']}: за {missing['month']:%m.%Y} съёмок позиций нет.{detail}"
                 " В отчёт войдут только выбранные даты.",
             )
+        missing_links = getattr(form, "missing_topvisor_links", [])
+        if missing_links:
+            messages.warning(
+                request,
+                "Ссылки на отчёт Topvisor не указаны ("
+                + ", ".join(missing_links)
+                + "). В отчёте этих ссылок не будет.",
+            )
         return redirect("reports:report-detail", report_id=report.id)
+    first_error = next(
+        (str(error) for errors in form.errors.values() for error in errors),
+        "проверьте заполнение формы.",
+    )
+    messages.error(request, f"Отчёт не создан: {first_error}")
     reports = project.reports.annotate(
         version_count=Count("versions"), latest_version_at=Max("versions__created_at")
     )
