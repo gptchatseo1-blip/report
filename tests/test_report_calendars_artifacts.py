@@ -434,13 +434,16 @@ def test_new_snapshot_stores_flexible_report_options(client, user, project):
     assert saved["webmaster_date_to"] == "2026-07-31"
 
 
-def test_topvisor_report_link_requires_url(project):
+def test_topvisor_report_link_without_url_does_not_block_report(project):
     form = ReportCreateForm(
         {"include_topvisor_report_link": "on"},
         project=project,
     )
-    assert not form.is_valid()
-    assert "topvisor_report_url" in form.errors
+    # A missing link must not stop report creation: the block is skipped and the
+    # user gets a warning instead.
+    assert "topvisor_report_url" not in form.errors
+    assert form.missing_topvisor_links
+    assert form.is_valid()
 
 
 def test_topvisor_report_links_are_required_and_saved_per_engine_region(client, user, project):
@@ -471,7 +474,7 @@ def test_topvisor_report_links_are_required_and_saved_per_engine_region(client, 
     assert 'name="topvisor_report_url_0"' in html
     assert 'name="topvisor_report_url_1"' in html
 
-    invalid = ReportCreateForm(
+    partial = ReportCreateForm(
         {
             "yandex_dates": ["2026-07-01", "2026-07-31"],
             "include_topvisor_report_link": "on",
@@ -479,8 +482,8 @@ def test_topvisor_report_links_are_required_and_saved_per_engine_region(client, 
         },
         project=project,
     )
-    assert not invalid.is_valid()
-    assert "topvisor_report_url_1" in invalid.errors
+    assert partial.is_valid(), partial.errors
+    assert any("Санкт-Петербург" in label for label in partial.missing_topvisor_links)
 
     response = client.post(
         reverse("reports:report-create", args=[project.id]),
@@ -497,6 +500,27 @@ def test_topvisor_report_links_are_required_and_saved_per_engine_region(client, 
         "ya-msk": "https://topvisor.example/msk",
         "ya-spb": "https://topvisor.example/spb",
     }
+
+
+def test_report_is_created_when_topvisor_links_are_empty(client, user, project):
+    mapping(
+        project,
+        [{"id": "ya-msk", "search_engine": "yandex", "region_name": "Москва"}],
+    )
+    for day in (date(2026, 7, 1), date(2026, 7, 31)):
+        ranking(project, day, "yandex", "ya-msk", region="Москва")
+    client.force_login(user)
+
+    response = client.post(
+        reverse("reports:report-create", args=[project.id]),
+        {
+            "yandex_dates": ["2026-07-01", "2026-07-31"],
+            "include_topvisor_report_link": "on",
+        },
+    )
+    assert response.status_code == 302
+    options = ReportDatasetSnapshot.objects.get().payload["display_options"]
+    assert options["topvisor_report_urls"] == {}
 
 
 @pytest.mark.parametrize("show_urls", [False, True])
