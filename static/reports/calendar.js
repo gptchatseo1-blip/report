@@ -19,6 +19,18 @@
     const anchor = root.dataset.anchor || '';
     const mobile = () => matchMedia('(max-width: 700px)').matches;
 
+    // The server already renders the shared month window. Take that window as
+    // the source of truth: rebuilding it from each calendar's own last check
+    // would silently move a region without checks in the report month back.
+    const renderedMonths = [...root.querySelectorAll('.calendar-month')];
+    const serverWindow = renderedMonths.length > 0;
+    if (serverWindow) {
+      const last = renderedMonths[renderedMonths.length - 1];
+      const year = Number(last.dataset.year);
+      const month = Number(last.dataset.month);
+      if (year && month) endMonth = year * 12 + (month - 1);
+    }
+
     function readAvailableDates(focusLatest = false) {
       inputs = [...root.querySelectorAll('.calendar-source input[type=checkbox]')];
       allowed = new Map(inputs.map(input => [input.value, input]));
@@ -27,7 +39,7 @@
           // Every configuration calendar shares one month window, so a region
           // without checks in the report month still shows that month.
           endMonth = monthIndex(new Date(`${anchor}-01T12:00:00`));
-        } else {
+        } else if (!serverWindow) {
           const availableDates = [...allowed.keys()].sort();
           const latest = new Date(availableDates[availableDates.length - 1] + 'T12:00:00');
           endMonth = monthIndex(latest);
