@@ -352,3 +352,13 @@ docker exec report-caddy-1 caddy reload --config /etc/caddy/Caddyfile
 curl -fsSI https://report.rendom.beget.tech/static/reports/app.<hash>.css
 curl -fsSI https://report.rendom.beget.tech/static/reports/calendar.<hash>.js
 ```
+
+## Развёртывание на новом сервере
+
+Пошаговая инструкция — [deploy/README.md](deploy/README.md): установка Docker и Caddy,
+заполнение `.env`, запуск через `deploy/compose.prod.yaml`, обновление до последней
+версии и резервное копирование базы и файлов отчётов.
+
+Конфигурация сервера больше не хранится только на машине: в репозитории лежат
+`deploy/Caddyfile` и `deploy/compose.prod.yaml`. Данные (база, `media/`, `.env`)
+в git не входят — их переносят отдельно.

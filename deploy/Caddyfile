@@ -1,0 +1,15 @@
+# Caddy на хосте: терминирует TLS и проксирует всё приложение.
+#
+# Замените report.example.com на реальное имя хоста перед установкой:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo editor /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Важно: статику отдаёт само приложение (WhiteNoise с хешированными именами),
+# поэтому отдельный file_server или смонтированный каталог /static/ добавлять
+# нельзя — иначе браузер получит старые CSS/JS после обновления.
+
+report.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8000
+}

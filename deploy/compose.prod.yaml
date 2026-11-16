@@ -1,0 +1,26 @@
+# Дополнительный слой compose для развёртывания на одном сервере.
+#
+# Приложение слушает только localhost, снаружи его закрывает обратный прокси
+# (deploy/Caddyfile), а контейнеры перезапускаются после перезагрузки машины.
+#
+# Запуск:
+#   docker compose -f compose.yaml -f deploy/compose.prod.yaml up -d --build
+#
+# Проверка:
+#   curl --fail http://127.0.0.1:8000/health/
+
+services:
+  db:
+    restart: unless-stopped
+
+  web:
+    image: report-web:latest
+    pull_policy: never
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:8000:8000"
+
+  metrika-worker:
+    image: report-web:latest
+    pull_policy: never
+    restart: unless-stopped
