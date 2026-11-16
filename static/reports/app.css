@@ -106,3 +106,5 @@
 .source-controls button { min-height: 2.75rem; white-space: nowrap; }
 @media (max-width: 950px) { .project-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 650px) { .project-cards { grid-template-columns: 1fr; } .settings-links { justify-content: flex-start; } .projects-head { align-items: flex-start; } .project-card-actions { flex-wrap: wrap; } .project-action-primary,.project-action-secondary { flex: 1 1 auto; } .report-provider-actions { justify-content: flex-start; margin-left: 0; } .source-controls { grid-template-columns: 1fr; width: 100%; } .source-controls button { width: 100%; } }
+
+.calendar-note{margin:.15rem 0 .5rem;padding:.4rem .55rem;border-radius:6px;border-left:3px solid #e08b2c;background:#fff6e8;color:#8a4b08;font-size:.72rem;line-height:1.35}
